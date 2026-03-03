@@ -1,0 +1,449 @@
+<!--
+  WORDPRESS IMPORT INSTRUCTIONS
+  ==============================
+  1. Create a new Post in WordPress
+  2. Switch to the Code Editor (⋮ menu > Code editor)
+  3. Select ALL text below this comment block and paste
+  4. Switch back to Visual Editor to verify
+
+  Plugins required:
+  - Prismatic (syntax highlighting)
+
+  Mermaid diagrams are loaded via CDN (no plugin needed).
+  The <script> tag at the bottom handles rendering.
+-->
+
+<h1 id="p2p-from-scratch-part-3-append-only-truth">P2P from Scratch — Part 3: Append-Only Truth</h1>
+
+<blockquote>
+<p>&quot;The question of whether a computer can think is no more interesting than the question of whether a submarine can swim.&quot;
+— Edsger Dijkstra</p>
+</blockquote>
+
+<p><strong>Excerpt:</strong> You have an encrypted pipe between two peers. Now you need something worth sending through it. Hypercore is an append-only log where every byte is cryptographically verifiable — a peer can download a single block out of millions and prove it hasn&#39;t been tampered with, using only a handful of hashes and one signature. This post explains the data structure that everything else in the Holepunch stack is built on.</p>
+
+<blockquote class="series-nav">
+<p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
+<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <strong>Part 3: Append-Only Truth (You are here)</strong> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
+</blockquote>
+
+<hr>
+<h2 id="the-problem-trust-without-a-server">The Problem: Trust Without a Server</h2>
+
+<p>In a client-server world, you trust data because you trust the server. You ask a database for row 42, and you believe the response because the server is yours (or belongs to a company you trust). The connection is encrypted with TLS, the server has a certificate, and that&#39;s the end of the story.</p>
+<p>In peer-to-peer, there&#39;s no server. A stranger on the Internet sends you a chunk of data and claims it&#39;s block 42 of some log. Why should you believe them?</p>
+<p>You can&#39;t trust the peer — they might be compromised, malicious, or simply buggy. You can&#39;t trust the network — someone might have tampered with the data in transit. You need a way to verify the data <em>itself</em>, independent of who sent it to you.</p>
+<p>This is what <a href="https://github.com/holepunchto/hypercore" target="_blank">Hypercore</a> provides: an append-only log where every block is bound to a cryptographic proof chain that terminates in a single Ed25519 signature. If the proof checks out, the data is authentic — regardless of which peer delivered it.</p>
+<blockquote class="callout-insight">
+<p><strong>Key Insight:</strong> The trust model is inverted compared to client-server. In HTTPS, you trust the <em>channel</em> (TLS certificate) and therefore trust the data. In Hypercore, you trust the <em>data</em> (Merkle proof + signature) regardless of the channel. A block verified by its proof is equally trustworthy whether it came from the original author, a mirror, or a stranger&#39;s cache.</p>
+</blockquote>
+
+<hr>
+<h2 id="append-only-why-immutability-matters">Append-Only: Why Immutability Matters</h2>
+
+<p>A Hypercore is a log. You can append new blocks to the end. You cannot modify or delete existing blocks.</p>
+<p>This seems limiting — but it&#39;s the foundation of everything that follows. If history is immutable, then:</p>
+<ul>
+<li><strong>Verification is permanent.</strong> Once you&#39;ve verified block 42, it will never change. You can cache it, share it, replicate it — the proof remains valid forever.</li>
+<li><strong>Replication is simple.</strong> Two peers compare their lengths. Whoever has more blocks sends the difference. There are no merge conflicts, no version vectors, no three-way diffs.</li>
+<li><strong>Auditability is free.</strong> The full history of every change is preserved. You don&#39;t need a separate audit log — the data structure <em>is</em> the audit log.</li>
+</ul>
+<p>State changes are expressed as new facts appended to the log, not as mutations of existing entries. If you want to &quot;update&quot; a record, you append a new block that supersedes the old one. Higher layers (like Hyperbee, which we&#39;ll cover in Part 4) project the current state from this history.</p>
+<blockquote class="callout-term">
+<p><strong>Terminology:</strong> <strong>Append-only</strong> means new data is always added to the end. Existing entries are never modified. This is also called an <em>immutable log</em> or <em>event log</em>. It&#39;s the same idea behind database write-ahead logs, event sourcing, and blockchain ledgers — but without the blockchain.</p>
+</blockquote>
+
+<hr>
+<h2 id="the-data-structure-a-flat-in-order-merkle-tree">The Data Structure: A Flat In-Order Merkle Tree</h2>
+
+<p>Hypercore needs to let a peer verify any individual block without downloading the entire log. The classic solution is a Merkle tree — a binary tree of hashes where each parent is the hash of its children. To verify a leaf, you only need the hashes along the path from that leaf to the root.</p>
+<p>But Hypercore&#39;s tree isn&#39;t a standard Merkle tree. It uses a <strong>flat in-order tree</strong> — a scheme from <a href="https://www.rfc-editor.org/rfc/rfc7574" target="_blank">RFC 7574</a> (the Peer-to-Peer Streaming Peer Protocol) that maps a binary tree onto a flat array using a clever indexing scheme.</p>
+<h3 id="the-layout">The Layout</h3>
+
+<pre><code>Block:    0     1     2     3     4
+         ───   ───   ───   ───   ───
+Index:  [ 0 ] [ 2 ] [ 4 ] [ 6 ] [ 8 ]       ← Leaves (even indices)
+           \  /        \  /       |
+          [ 1 ]       [ 5 ]      ...          ← Depth 1 (odd)
+              \       /
+              [ 3 ]                           ← Depth 2</code></pre>
+
+<p>The rules are simple:</p>
+<ul>
+<li><strong>Even indices</strong> (0, 2, 4, 6, 8, ...) are <strong>leaf nodes</strong> — they correspond to data blocks.</li>
+<li><strong>Odd indices</strong> (1, 3, 5, 7, ...) are <strong>parent nodes</strong> — they store hashes of their children.</li>
+<li><strong>Depth</strong> = the number of trailing 1-bits in the binary representation of the index.</li>
+</ul>
+<p>That last rule is the elegant part. Let&#39;s see why:</p>
+<figure class="wp-block-table"><table>
+<thead>
+<tr><th>Index</th><th>Binary</th><th>Trailing 1-bits</th><th>Depth</th><th>Role</th></tr>
+</thead>
+<tbody>
+<tr><td>0</td><td>`000`</td><td>0</td><td>0</td><td>Leaf (block 0)</td></tr>
+<tr><td>1</td><td>`001`</td><td>1</td><td>1</td><td>Parent of [0, 2]</td></tr>
+<tr><td>2</td><td>`010`</td><td>0</td><td>0</td><td>Leaf (block 1)</td></tr>
+<tr><td>3</td><td>`011`</td><td>2</td><td>2</td><td>Parent of [1, 5]</td></tr>
+<tr><td>4</td><td>`100`</td><td>0</td><td>0</td><td>Leaf (block 2)</td></tr>
+<tr><td>5</td><td>`101`</td><td>1</td><td>1</td><td>Parent of [4, 6]</td></tr>
+<tr><td>6</td><td>`110`</td><td>0</td><td>0</td><td>Leaf (block 3)</td></tr>
+<tr><td>7</td><td>`111`</td><td>3</td><td>3</td><td>Root of a full 8-leaf tree</td></tr>
+</tbody>
+</table></figure>
+
+<blockquote class="callout-feynman">
+<p><strong>Feynman Moment:</strong> Why use trailing 1-bits for depth? Because it makes tree navigation pure bit arithmetic. To find a node&#39;s parent: increment the depth by 1 and halve the offset. To find children: decrement the depth and double the offset. No pointers, no linked lists, no memory allocation. The entire tree structure is implicit in the indices — O(1) navigation with no storage overhead.</p>
+</blockquote>
+
+<h3 id="navigation-via-bit-arithmetic">Navigation via Bit Arithmetic</h3>
+
+<p>Every node has a <code>(depth, offset)</code> pair that uniquely identifies it. The conversion is:</p>
+<pre><code>index = (1 + 2 × offset) × 2^depth − 1</code></pre>
+
+<p>And from this formula, all navigation falls out:</p>
+<figure class="wp-block-table"><table>
+<thead>
+<tr><th>Operation</th><th>Formula</th></tr>
+</thead>
+<tbody>
+<tr><td>Parent</td><td>`(depth + 1, floor(offset / 2))`</td></tr>
+<tr><td>Left child</td><td>`(depth − 1, offset × 2)`</td></tr>
+<tr><td>Right child</td><td>`(depth − 1, offset × 2 + 1)`</td></tr>
+<tr><td>Sibling</td><td>`(depth, offset ± 1)` — toggle the parity</td></tr>
+</tbody>
+</table></figure>
+
+<p>No recursion, no tree traversal. Just arithmetic.</p>
+<hr>
+<h2 id="how-blocks-are-hashed">How Blocks Are Hashed</h2>
+
+<p>Hypercore uses <a href="https://doc.libsodium.org/hashing/generic_hashing" target="_blank">BLAKE2b-256</a> (via libsodium&#39;s <code>crypto_generichash</code>) for all Merkle tree hashes. Each hash includes a <strong>type prefix</strong> to prevent <a href="https://en.wikipedia.org/wiki/Merkle_tree#Second_preimage_attack" target="_blank">second preimage attacks</a> — you can&#39;t trick the system into confusing a leaf hash for a parent hash.</p>
+<h3 id="leaf-hash-data-blocks">Leaf Hash (data blocks)</h3>
+
+<pre><code>leaf_hash = BLAKE2b-256( 0x00 || uint64_LE(data.length) || data )</code></pre>
+
+<p>The inputs are:</p>
+<ol>
+<li><strong><code>0x00</code></strong> — the leaf type prefix (one byte)</li>
+<li><strong>The byte length</strong> of the data, as a fixed 8-byte little-endian uint64</li>
+<li><strong>The raw data</strong> itself</li>
+</ol>
+<h3 id="parent-hash-internal-nodes">Parent Hash (internal nodes)</h3>
+
+<pre><code>parent_hash = BLAKE2b-256( 0x01 || uint64_LE(left.size + right.size) || left.hash || right.hash )</code></pre>
+
+<p>The inputs are:</p>
+<ol>
+<li><strong><code>0x01</code></strong> — the parent type prefix (one byte)</li>
+<li><strong>The combined byte size</strong> of both subtrees, as an 8-byte LE uint64</li>
+<li><strong>Left child&#39;s 32-byte hash</strong> (lower index always first)</li>
+<li><strong>Right child&#39;s 32-byte hash</strong></li>
+</ol>
+<p>Note that <code>size</code> propagates upward: every parent carries the total byte length of all data in its subtree. A leaf&#39;s size is <code>data.byteLength</code>. A parent&#39;s size is <code>left.size + right.size</code>.</p>
+<blockquote class="callout-term">
+<p><strong>Terminology:</strong> A <strong>second preimage attack</strong> is when an attacker creates different data that produces the same hash as legitimate data. Type prefixes prevent a specific variant: without them, an attacker could construct a fake &quot;data block&quot; whose raw bytes happen to match the concatenation of two child hashes, making a leaf look like a parent. The <code>0x00</code>/<code>0x01</code>/<code>0x02</code> prefixes make leaves, parents, and roots structurally distinguishable.</p>
+</blockquote>
+
+<hr>
+<h2 id="root-peaks-and-bagging">Root Peaks and Bagging</h2>
+
+<p>Here&#39;s where Hypercore diverges from a textbook Merkle tree. A classic Merkle tree has exactly one root — but that&#39;s only possible when the number of leaves is a power of 2.</p>
+<p>Hypercore is append-only. Its length changes with every append. After 5 appends, there are 5 leaves — not a power of 2. The tree can&#39;t form a single balanced root.</p>
+<p>Instead, Hypercore decomposes the leaf count into powers of 2 and maintains a <strong>separate root for each complete subtree</strong>. These roots are called <strong>peaks</strong> (like in a Merkle Mountain Range).</p>
+<p>For 5 leaves (binary: <code>101</code> = 4 + 1):</p>
+<pre><code>Peak 1: root of 4-leaf subtree           Peak 2: root of 1-leaf subtree
+              [ 3 ]                                [ 8 ]
+            /       \
+         [ 1 ]     [ 5 ]
+        /    \    /    \
+      [0]  [2] [4]  [6]</code></pre>
+
+<p>The peaks are computed by <code>fullRoots(2 × length)</code> from the <a href="https://github.com/mafintosh/flat-tree" target="_blank">flat-tree</a> module — a greedy decomposition of the block count into descending powers of 2.</p>
+<h3 id="tree-hash-bagging-the-peaks">Tree Hash (Bagging the Peaks)</h3>
+
+<p>To produce a single hash that commits to the entire log, Hypercore &quot;bags&quot; all the peaks into one hash:</p>
+<pre><code>tree_hash = BLAKE2b-256( 0x02 || root₀.hash || uint64_LE(root₀.index) || uint64_LE(root₀.size)
+                               || root₁.hash || uint64_LE(root₁.index) || uint64_LE(root₁.size)
+                               || ... )</code></pre>
+
+<p>This is a <strong>single hash</strong> over all root peaks — not a pairwise reduction. Each root contributes three fields:</p>
+<ol>
+<li>Its <strong>32-byte hash</strong></li>
+<li>Its <strong>flat-tree index</strong> (8-byte LE uint64)</li>
+<li>Its <strong>byte size</strong> (8-byte LE uint64)</li>
+</ol>
+<p>Including the index and size makes the commitment unambiguous — you can&#39;t reinterpret the same sequence of hashes as a different tree shape.</p>
+<blockquote class="callout-insight">
+<p><strong>Key Insight:</strong> The <code>0x02</code> root type prefix is the third domain separator. With three prefixes — <code>0x00</code> for leaves, <code>0x01</code> for parents, <code>0x02</code> for the tree hash — no valid hash at one level can be confused with a hash at another level. This is defense in depth: even if BLAKE2b were somehow broken for collisions, the type separation would still prevent cross-level attacks.</p>
+</blockquote>
+
+<hr>
+<h2 id="the-signature-binding-it-all-together">The Signature: Binding It All Together</h2>
+
+<p>The tree hash commits to every block in the log. But the tree hash alone doesn&#39;t prove <em>who</em> created the log. For that, Hypercore signs the tree hash with an Ed25519 key.</p>
+<p>The signed message is exactly <strong>112 bytes</strong>:</p>
+<figure class="wp-block-table"><table>
+<thead>
+<tr><th>Offset</th><th>Size</th><th>Content</th></tr>
+</thead>
+<tbody>
+<tr><td>0</td><td>32 bytes</td><td>**Namespace** — a deterministic domain separator derived from `'hypercore'`</td></tr>
+<tr><td>32</td><td>32 bytes</td><td>**Manifest hash** — identifies the Hypercore's signing and encryption scheme</td></tr>
+<tr><td>64</td><td>32 bytes</td><td>**Tree hash** — the bagged root peaks from above</td></tr>
+<tr><td>96</td><td>8 bytes</td><td>**Length** — the block count as uint64 LE</td></tr>
+<tr><td>104</td><td>8 bytes</td><td>**Fork** — the fork counter as uint64 LE</td></tr>
+</tbody>
+</table></figure>
+
+<pre><code>signature = Ed25519_sign( namespace || manifestHash || treeHash || length || fork, secretKey )</code></pre>
+
+<p>The <strong>namespace</strong> prevents cross-protocol attacks — a signature from a different protocol can&#39;t be replayed as a Hypercore signature. The <strong>manifest hash</strong> binds the signature to a specific Hypercore configuration. The <strong>length</strong> and <strong>fork</strong> counter tie the signature to a specific point in the log&#39;s history.</p>
+<blockquote class="callout-gotcha">
+<p><strong>Gotcha:</strong> The fork counter is critical for truncation safety. If a Hypercore owner truncates the log (removes blocks from the end), the fork counter increments monotonically. Any peer holding pre-truncation data can detect that the log was forked by comparing fork counters. Without this, an attacker could truncate a log, append different data, and re-sign — creating an alternative history that passes verification.</p>
+</blockquote>
+
+<hr>
+<h2 id="sparse-replication-download-only-what-you-need">Sparse Replication: Download Only What You Need</h2>
+
+<p>This is where the Merkle tree pays off. A peer doesn&#39;t need to download all million blocks to verify block 42. They need:</p>
+<ol>
+<li><strong>Block 42&#39;s data</strong> (to compute the leaf hash)</li>
+<li><strong>The uncle hashes</strong> — one sibling hash at each level from the leaf up to a root peak</li>
+<li><strong>The root peaks</strong> (if not already known)</li>
+<li><strong>The Ed25519 signature</strong> over the bagged root hash</li>
+</ol>
+<p>The verification walks upward from the leaf:</p>
+
+<div class="mermaid-container"><pre class="mermaid">
+graph BT
+    B42["Block 42<br/>Compute leaf hash"] --> P1["Parent<br/>hash(uncle₁, leaf)"]
+    U1["Uncle₁<br/>(from proof)"] --> P1
+    P1 --> P2["Parent<br/>hash(P1, uncle₂)"]
+    U2["Uncle₂<br/>(from proof)"] --> P2
+    P2 --> ROOT["Root Peak<br/>(known)"]
+    U3["Uncle₃<br/>(from proof)"] --> ROOT
+
+    ROOT --> BAG["Tree Hash<br/>bag all peaks"]
+    BAG --> SIG["Ed25519 Verify<br/>✓ or ✗"]
+
+    style B42 fill:#22272e,stroke:#539bf5,color:#e6edf3
+    style SIG fill:#22272e,stroke:#57ab5a,color:#e6edf3
+    style U1 fill:#22272e,stroke:#986ee2,color:#e6edf3
+    style U2 fill:#22272e,stroke:#986ee2,color:#e6edf3
+    style U3 fill:#22272e,stroke:#986ee2,color:#e6edf3
+</pre></div>
+
+<p><em>Figure 1: Verifying a single block. Purple nodes are the uncle hashes provided in the proof. Only a handful of hashes are needed, regardless of log size.</em></p>
+<h3 id="how-many-uncle-hashes">How Many Uncle Hashes?</h3>
+
+<p>The number of uncle hashes depends on <strong>which root peak&#39;s subtree</strong> contains the block — not on the total log size.</p>
+<p>Hypercore&#39;s tree is a Merkle mountain range. The <code>fullRoots</code> decomposition splits N blocks into complete subtrees whose sizes are the powers of 2 in N&#39;s binary representation. For a block in a subtree of size S, you need <code>log₂(S)</code> uncle hashes.</p>
+<p>For example, with 13 blocks (binary <code>1101</code> = 8 + 4 + 1):</p>
+<figure class="wp-block-table"><table>
+<thead>
+<tr><th>Block range</th><th>Subtree size</th><th>Uncle hashes needed</th></tr>
+</thead>
+<tbody>
+<tr><td>0–7</td><td>8</td><td>3</td></tr>
+<tr><td>8–11</td><td>4</td><td>2</td></tr>
+<tr><td>12</td><td>1</td><td>0 (it *is* the root)</td></tr>
+</tbody>
+</table></figure>
+
+<p>The worst case is <code>floor(log₂(N))</code> for blocks in the largest subtree. For a log with a million blocks, that&#39;s at most 19 hashes — each 32 bytes. A few hundred bytes to verify a block of any size.</p>
+<blockquote class="callout-insight">
+<p><strong>Key Insight:</strong> Sparse replication is what makes Hypercore practical for large datasets. A Hyperbee key-value store (Part 4) maps a B-tree onto a Hypercore. A key lookup only downloads the B-tree path nodes — not the entire database. A file in a Hyperdrive only downloads its content blocks — not every file in the drive. The Merkle tree makes each of these partial downloads independently verifiable.</p>
+</blockquote>
+
+<hr>
+<h2 id="fork-ids-handling-truncation-safely">Fork IDs: Handling Truncation Safely</h2>
+
+<p>Append-only sounds absolute, but sometimes you do need to remove blocks — garbage collection, error correction, or privacy (removing data that shouldn&#39;t have been shared). Hypercore supports this via <code>truncate()</code>, with a safety mechanism: <strong>fork IDs</strong>.</p>
+<p>When a Hypercore is truncated:</p>
+<ol>
+<li>The blocks beyond the new length are removed</li>
+<li>The <strong>fork counter increments</strong> monotonically (0 → 1 → 2 → ...)</li>
+<li>The fork counter is included in the signed message (the 8 bytes at offset 104)</li>
+<li>New data can be appended after the truncation point</li>
+</ol>
+<p>Any peer holding pre-truncation data can detect the fork by comparing the fork counter in the signature. If the counter doesn&#39;t match what they expect, they know the log&#39;s history was rewritten from that point forward.</p>
+<div class="code-filename">fork-detection.js</div>
+<pre><code class="language-js">const core = store.get({ key: remoteKey })
+await core.ready()
+
+// The fork counter is available on the core
+console.log(core.fork) // 0 = never truncated, 1+ = truncated
+
+core.on('truncate', (ancestors, forkId) =&gt; {
+  console.log(`Log truncated — ${ancestors} ancestors preserved (fork ${forkId})`)
+  // Invalidate any cached state derived from blocks beyond the new length
+})</code></pre>
+
+<blockquote class="callout-gotcha">
+<p><strong>Gotcha:</strong> Fork detection is about <em>detecting</em> history rewriting, not preventing it. The Hypercore owner holds the Ed25519 secret key and can always truncate and re-sign. The protection is for <em>peers</em>: they can detect that the log they cached is no longer consistent with the current signed state. Applications must decide how to handle forks — ignore them, alert the user, or reject the peer.</p>
+</blockquote>
+
+<hr>
+<h2 id="the-replication-protocol">The Replication Protocol</h2>
+
+<p>When two peers replicate a Hypercore, they open a Protomux channel (from <a href="part-2-encrypted-pipes.md">Part 2</a>) with protocol name <code>hypercore/alpha</code> and the Hypercore&#39;s <strong>discovery key</strong> as the channel id.</p>
+<p>The replication protocol has 10 message types:</p>
+<figure class="wp-block-table"><table>
+<thead>
+<tr><th>Index</th><th>Message</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td>0</td><td>`sync`</td><td>Announce local length and fork ID</td></tr>
+<tr><td>1</td><td>`request`</td><td>Ask for a specific block (with proof)</td></tr>
+<tr><td>2</td><td>`cancel`</td><td>Cancel a pending request</td></tr>
+<tr><td>3</td><td>`data`</td><td>Respond with block data + Merkle proof</td></tr>
+<tr><td>4</td><td>`noData`</td><td>Indicate requested data is unavailable</td></tr>
+<tr><td>5</td><td>`want`</td><td>Express interest in a block range</td></tr>
+<tr><td>6</td><td>`unwant`</td><td>Cancel interest in a range</td></tr>
+<tr><td>7</td><td>`bitfield`</td><td>Full bitfield of locally available blocks</td></tr>
+<tr><td>8</td><td>`range`</td><td>Download a contiguous range</td></tr>
+<tr><td>9</td><td>`extension`</td><td>Custom application-defined messages</td></tr>
+</tbody>
+</table></figure>
+
+<p>A typical replication exchange:</p>
+<ol>
+<li>Both peers send <code>sync</code> — announcing their length and fork ID</li>
+<li>Peers exchange <code>bitfield</code> or <code>want</code>/<code>unwant</code> to communicate which blocks they have and need</li>
+<li>One peer sends <code>request</code> for specific blocks</li>
+<li>The other responds with <code>data</code> — containing the block value <em>and</em> the Merkle proof (uncle hashes)</li>
+<li>The requester verifies the proof locally before accepting the block</li>
+</ol>
+<p>The discovery key (a hash of the Hypercore&#39;s public key) is used for the channel id instead of the public key itself. This prevents a network observer from learning <em>which</em> Hypercore is being replicated — they see the discovery key, but can&#39;t reverse it to the public key without already knowing it.</p>
+<blockquote class="callout-term">
+<p><strong>Terminology:</strong> The <strong>discovery key</strong> is <code>BLAKE2b-256(key=publicKey, data=&quot;hypercore&quot;)</code> — a keyed BLAKE2b hash where the Hypercore&#39;s public key is the hash key parameter (libsodium&#39;s <code>crypto_generichash</code> key argument) and the string <code>&quot;hypercore&quot;</code> is the data being hashed. It&#39;s a one-way derivation: knowing the discovery key doesn&#39;t reveal the public key (which grants read access). Peers use the discovery key to find each other via the DHT, but only peers who already know the public key can actually read the data. This separates <em>findability</em> from <em>access</em>.</p>
+</blockquote>
+
+<hr>
+<h2 id="in-practice-creating-and-verifying-a-hypercore">In Practice: Creating and Verifying a Hypercore</h2>
+
+<div class="code-filename">hypercore-demo.js</div>
+<pre><code class="language-js">const Hypercore = require('hypercore')
+const Corestore = require('corestore')
+
+const store = new Corestore('./my-storage')
+
+// Create a new Hypercore (generates Ed25519 keypair)
+const core = store.get({ name: 'my-log' })
+await core.ready()
+
+console.log('Public key:', core.key.toString('hex'))
+console.log('Discovery key:', core.discoveryKey.toString('hex'))
+
+// Append some blocks
+await core.append(Buffer.from('Hello'))
+await core.append(Buffer.from('World'))
+await core.append(Buffer.from('!'))
+
+console.log('Length:', core.length)        // 3
+console.log('Byte length:', core.byteLength) // 11
+console.log('Fork:', core.fork)            // 0 (never truncated)
+
+// Read a block — Hypercore verifies the Merkle proof automatically
+const block = await core.get(1)
+console.log('Block 1:', block.toString())  // &quot;World&quot;
+
+// The tree has 3 leaves → peaks at indices 1 and 4
+// Block 0 (index 0) and Block 1 (index 2) share parent at index 1
+// Block 2 (index 4) is a lone peak</code></pre>
+
+<p>When you call <code>core.get(1)</code>, Hypercore:</p>
+<ol>
+<li>Checks if block 1 is in local storage</li>
+<li>If not, requests it from connected peers (with Merkle proof)</li>
+<li>Verifies: leaf hash → uncle path → root peak → bagged tree hash → Ed25519 signature</li>
+<li>Stores the verified block locally</li>
+<li>Returns the data</li>
+</ol>
+<p>The verification is automatic. Application code never touches hashes or signatures directly.</p>
+<hr>
+<h2 id="the-tradeoffs">The Tradeoffs</h2>
+
+<figure class="wp-block-table"><table>
+<thead>
+<tr><th>What You Gain</th><th>What You Pay</th></tr>
+</thead>
+<tbody>
+<tr><td>Every block independently verifiable</td><td>Storage overhead for Merkle tree nodes (one hash per block + internal nodes)</td></tr>
+<tr><td>Sparse replication (download only what you need)</td><td>Must store uncle hashes alongside blocks for future proof generation</td></tr>
+<tr><td>Immutable history — verified once, trusted forever</td><td>Can't edit or delete without truncation + fork</td></tr>
+<tr><td>Single-writer simplicity (one keypair = one log)</td><td>Multi-writer requires a layer on top (Autobase, Part 6)</td></tr>
+<tr><td>Replication is just "compare lengths, send difference"</td><td>First sync includes the full Merkle proof chain, not just raw data</td></tr>
+</tbody>
+</table></figure>
+
+<p>The storage overhead is modest. Each internal node is a 32-byte hash plus an 8-byte size — 40 bytes. For a log with N blocks, there are roughly N internal nodes (a balanced binary tree has N−1 internal nodes). So the tree roughly doubles the metadata storage, but for most applications, the data blocks themselves dominate.</p>
+<hr>
+<h2 id="key-takeaways">Key Takeaways</h2>
+
+<ul>
+<li><p><strong>Hypercore is an append-only log with cryptographic verification.</strong> Every block is bound to a Merkle proof chain terminating in an Ed25519 signature. Trust the math, not the messenger.</p>
+</li>
+<li><p><strong>The flat in-order tree maps a binary tree to a flat array via bit arithmetic.</strong> Even indices are leaves, odd indices are parents, depth equals trailing 1-bits. Navigation is O(1) with no pointers.</p>
+</li>
+<li><p><strong>Three type prefixes prevent structural confusion.</strong> <code>0x00</code> for leaves, <code>0x01</code> for parents, <code>0x02</code> for root bagging. Each level is cryptographically distinguishable, preventing second preimage attacks.</p>
+</li>
+<li><p><strong>Root peaks handle non-power-of-2 lengths.</strong> The block count is decomposed into powers of 2, each producing a separate complete subtree root. All peaks are bagged into a single tree hash via one BLAKE2b-256 call.</p>
+</li>
+<li><p><strong>Sparse proofs are small.</strong> Verifying one block requires at most <code>floor(log₂(N))</code> uncle hashes — a few hundred bytes regardless of log size. This is what makes partial replication practical.</p>
+</li>
+<li><p><strong>Fork IDs protect against history rewriting.</strong> Truncation increments a monotonic fork counter embedded in the signature. Peers can detect when a log&#39;s history has changed.</p>
+</li>
+</ul>
+<hr>
+<h2 id="what-s-next">What's Next</h2>
+
+<p>We have a verified, append-only log. But a log is just a sequence of blocks — you can append and read by index, and that&#39;s it. Most applications need richer access patterns: sorted key-value lookups, file systems, range queries.</p>
+<p>In <a href="part-4-hyperbee-hyperdrive.md">Part 4</a>, we&#39;ll see how Hyperbee maps a B-tree onto Hypercore&#39;s sequential blocks to create a sparse-friendly sorted key-value store, and how Hyperdrive combines a Hyperbee (metadata) with Hyperblobs (content) to build a distributed file system. We&#39;ll also look at Corestore — the component that manages multiple Hypercores with deterministic key derivation from a single master seed.</p>
+<hr>
+<h2 id="references-further-reading">References & Further Reading</h2>
+
+<ol>
+<li><a href="https://github.com/holepunchto/hypercore" target="_blank">holepunchto/hypercore — Append-only log with cryptographic verification</a></li>
+<li><a href="https://github.com/holepunchto/hypercore-crypto" target="_blank">holepunchto/hypercore-crypto — BLAKE2b-256 hashing and Ed25519 signing</a></li>
+<li><a href="https://github.com/mafintosh/flat-tree" target="_blank">mafintosh/flat-tree — Flat in-order tree index arithmetic</a></li>
+<li><a href="https://www.rfc-editor.org/rfc/rfc7574" target="_blank">RFC 7574 — Peer-to-Peer Streaming Peer Protocol (bin number indexing)</a></li>
+<li><a href="https://www.datprotocol.com/deps/0002-hypercore/" target="_blank">DEP-0002 — Hypercore specification (Dat Enhancement Proposal)</a></li>
+<li><a href="https://doc.libsodium.org/hashing/generic_hashing" target="_blank">libsodium — Generic hashing (BLAKE2b)</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Merkle_tree" target="_blank">Wikipedia — Merkle tree</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Merkle_tree#Second_preimage_attack" target="_blank">Wikipedia — Second preimage attack</a></li>
+<li><a href="https://docs.pears.com/" target="_blank">Pear Runtime Documentation</a></li>
+</ol>
+<hr>
+<blockquote class="series-nav">
+<p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
+<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <strong>Part 3: Append-Only Truth (You are here)</strong> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
+</blockquote>
+
+
+<!-- Mermaid.js — renders <pre class="mermaid"> blocks -->
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'dark',
+  themeVariables: {
+    primaryColor: '#2d333b',
+    primaryTextColor: '#8b949e',
+    primaryBorderColor: '#373e47',
+    lineColor: '#539bf5',
+    secondaryColor: '#22272e',
+    tertiaryColor: '#1b1f24',
+    noteBkgColor: '#2d333b',
+    noteTextColor: '#8b949e',
+    noteBorderColor: '#986ee2',
+    actorBkg: '#2d333b',
+    actorBorder: '#373e47',
+    actorTextColor: '#cdd9e5',
+    actorLineColor: '#373e47',
+    signalColor: '#539bf5',
+    signalTextColor: '#8b949e',
+    sequenceNumberColor: '#1b1f24'
+  }
+});
+</script>

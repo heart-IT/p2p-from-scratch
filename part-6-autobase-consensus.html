@@ -1,0 +1,473 @@
+<!--
+  WORDPRESS IMPORT INSTRUCTIONS
+  ==============================
+  1. Create a new Post in WordPress
+  2. Switch to the Code Editor (⋮ menu > Code editor)
+  3. Select ALL text below this comment block and paste
+  4. Switch back to Visual Editor to verify
+
+  Plugins required:
+  - Prismatic (syntax highlighting)
+
+  Mermaid diagrams are loaded via CDN (no plugin needed).
+  The <script> tag at the bottom handles rendering.
+-->
+
+<h1 id="p2p-from-scratch-part-6-many-writers-one-truth">P2P from Scratch — Part 6: Many Writers, One Truth</h1>
+
+<blockquote>
+<p>&quot;A distributed system is one in which the failure of a computer you didn&#39;t even know existed can render your own computer unusable.&quot;
+— Leslie Lamport</p>
+</blockquote>
+
+<p><strong>Excerpt:</strong> Everything in the series so far has been single-writer: one keypair signs one Hypercore, and everyone else is a reader. But real collaboration requires multiple writers — and the moment two people can write concurrently, you face the hardest problem in distributed systems: ordering. Autobase takes independent Hypercores from different writers and linearizes them into a single, deterministic view using causal DAGs and quorum consensus. This post explains how.</p>
+
+<blockquote class="series-nav">
+<p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
+<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <strong>Part 6: Many Writers, One Truth (You are here)</strong> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
+</blockquote>
+
+<hr>
+<h2 id="the-problem-single-writer-isn-t-enough">The Problem: Single-Writer Isn't Enough</h2>
+
+<p>A Hypercore is powerful, but it has a fundamental constraint: one keypair, one writer. The owner of the Ed25519 secret key is the only person who can append blocks. Everyone else is a verifier.</p>
+<p>This works for publishing — one author, many readers. But think about a shared document, a group chat, or a collaborative database. Alice, Bob, and Carol each need to write. They&#39;re on different continents, behind different NATs, often offline. When they reconnect, their independent histories need to merge into a coherent whole.</p>
+<p>You can&#39;t just throw three Hypercores at the problem. Each core has its own ordering, its own signature chain, its own Merkle tree. If Alice writes &quot;set salary to 50k&quot; and Bob writes &quot;set salary to 60k&quot; at the same time, which one wins? Both are cryptographically valid. Neither references the other. Without a server to timestamp them, there&#39;s no natural ordering.</p>
+<p>This is the multi-writer problem. And the naive solutions all fail:</p>
+<ul>
+<li><strong>Last-write-wins</strong> — requires synchronized clocks (which P2P doesn&#39;t have)</li>
+<li><strong>Lock-based coordination</strong> — requires always-on connectivity (which P2P doesn&#39;t guarantee)</li>
+<li><strong>Leader election</strong> — requires a majority to be online (which P2P apps shouldn&#39;t assume)</li>
+</ul>
+<blockquote class="callout-insight">
+<p><strong>Key Insight:</strong> The multi-writer problem isn&#39;t about resolving conflicts — it&#39;s about <em>ordering</em>. Once you have a deterministic total order over all events from all writers, conflict resolution becomes application logic. The hard part is getting every peer to agree on the same order, despite seeing events arrive in different sequences.</p>
+</blockquote>
+
+<hr>
+<h2 id="the-mental-model-many-streams-one-river">The Mental Model: Many Streams, One River</h2>
+
+<p>Imagine three tributaries flowing into a single river. Each tributary carries water (events) from a different mountain (writer). Where two tributaries meet, the water merges. Downstream, a single river flows — and everyone standing at the river sees the same water in the same order.</p>
+<p>The tributaries are independent Hypercores. The merge points are the places where one writer references another&#39;s work. The river is the linearized view — a single ordered sequence that every peer computes identically.</p>
+<blockquote class="callout-feynman">
+<p><strong>Feynman Moment:</strong> The analogy hides the hardest part: in a real river, physics determines the merge. In a distributed system, <em>consensus</em> determines it. Two peers who have seen different subsets of the tributaries might temporarily disagree about the river&#39;s ordering. Autobase solves this with a quorum mechanism — once a majority of designated writers have acknowledged a merge point, the ordering at that point becomes permanent. Before the quorum confirms it, the ordering is provisional and may change as new information arrives.</p>
+</blockquote>
+
+<hr>
+<h2 id="autobase-architecture-overview">Autobase: Architecture Overview</h2>
+
+<p><a href="https://github.com/holepunchto/autobase" target="_blank">Autobase</a> is the Holepunch stack&#39;s answer to multi-writer collaboration. It takes multiple independent Hypercores — each written by a different peer — and produces a single, deterministic, linearized view.</p>
+<p>The core components:</p>
+<pre><code>┌──────────────────────────────────────────────────────────┐
+│                      Autobase                             │
+│                                                           │
+│  Writer Hypercores (inputs)         Linearized View       │
+│  ┌──────────┐                      ┌─────────────────┐   │
+│  │ Alice's   │──┐                  │ View Hypercore   │   │
+│  │ core      │  │   ┌──────────┐   │ (output)         │   │
+│  └──────────┘  ├──▶│ Causal   │──▶│                  │   │
+│  ┌──────────┐  │   │ DAG +    │   │ Deterministic    │   │
+│  │ Bob's     │──┤   │ Quorum   │   │ total ordering   │   │
+│  │ core      │  │   │ Consensus│   │ of all events    │   │
+│  └──────────┘  │   └──────────┘   │                  │   │
+│  ┌──────────┐  │                   │ apply() builds   │   │
+│  │ Carol's   │──┘                  │ state from this  │   │
+│  │ core      │                     └─────────────────┘   │
+│  └──────────┘                                            │
+│                                                           │
+│  All managed by a single Corestore                       │
+└──────────────────────────────────────────────────────────┘</code></pre>
+
+<p>Each writer appends to their own Hypercore — they never write to anyone else&#39;s. Autobase reads all writer cores, arranges their entries into a causal DAG, linearizes the DAG into a total order, and feeds the ordered entries through a user-defined <code>apply</code> function that builds the view.</p>
+<hr>
+<h2 id="the-causal-dag-tracking-what-happened-before-what">The Causal DAG: Tracking What Happened Before What</h2>
+
+<p>When Alice appends an entry to her Hypercore, she doesn&#39;t just write her data — she also records which entries from other writers she has seen. These references create a <strong>directed acyclic graph</strong> where edges represent the &quot;happens-before&quot; relationship.</p>
+<h3 id="how-it-works">How It Works</h3>
+
+<p>Every entry (node) in the DAG carries:</p>
+<figure class="wp-block-table"><table>
+<thead>
+<tr><th>Field</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>value</strong></td><td>The user&#39;s data (encoded via <code>valueEncoding</code>)</td></tr>
+<tr><td><strong>heads</strong></td><td>References to the current DAG heads at the time of writing</td></tr>
+<tr><td><strong>clock</strong></td><td>A vector clock computed from the node&#39;s dependencies</td></tr>
+<tr><td><strong>writer</strong></td><td>Which writer produced this node</td></tr>
+<tr><td><strong>length</strong></td><td>Sequence number within that writer&#39;s core</td></tr>
+</tbody>
+</table></figure>
+
+<p>The <code>heads</code> field is the causal link. When Alice writes her third entry, she records whatever DAG heads she currently knows about — perhaps Bob&#39;s second entry and her own previous entry. This means Alice&#39;s third entry <em>causally depends on</em> (happens after) Bob&#39;s second entry.</p>
+<pre><code>Alice:   [A1] ─────────── [A2] ─────────── [A3]
+              \                             /
+Bob:           └─── [B1] ─── [B2] ────────┘
+                             /
+Carol:              [C1] ───┘</code></pre>
+
+<p>In this DAG, <code>A3</code> references <code>B2</code> as a head, so <code>A3</code> happens-after <code>B2</code>. And <code>B2</code> references <code>C1</code>, so <code>B2</code> happens-after <code>C1</code>. The transitive chain gives us: <code>C1 → B2 → A3</code>.</p>
+<p>But <code>A2</code> and <code>B1</code> might not reference each other at all — they were written concurrently by peers who hadn&#39;t yet seen each other&#39;s work. These are <strong>causally concurrent</strong> events, and ordering them is where linearization comes in.</p>
+<h3 id="vector-clocks">Vector Clocks</h3>
+
+<p>Each node carries a <strong>vector clock</strong> — a map from writer public keys to sequence numbers. The clock is computed by merging the clocks of all referenced heads:</p>
+<pre><code>Node A3's clock:
+  Alice:  3  (A3 is Alice's 3rd entry)
+  Bob:    2  (A3 has transitively seen up to Bob's 2nd entry)
+  Carol:  1  (A3 has transitively seen up to Carol's 1st entry)</code></pre>
+
+<p>The clock answers a key question: <code>clock.includes(writerKey, seq)</code> — &quot;has this node (directly or transitively) seen the given writer&#39;s entry at sequence <code>seq</code>?&quot; This is how Autobase determines causal ordering without synchronized timestamps.</p>
+<blockquote class="callout-term">
+<p><strong>Terminology:</strong> The <strong>happens-before</strong> relationship (written <code>a → b</code>) means event <code>a</code> is in event <code>b</code>&#39;s causal history. If <code>a → b</code>, then <code>b</code> has seen <code>a</code> (directly or transitively). If neither <code>a → b</code> nor <code>b → a</code>, the events are <strong>concurrent</strong> — they were produced independently without knowledge of each other.</p>
+</blockquote>
+
+<hr>
+<h2 id="linearization-from-dag-to-total-order">Linearization: From DAG to Total Order</h2>
+
+<p>A causal DAG gives you a <em>partial</em> order — you know that <code>C1</code> comes before <code>B2</code>, and <code>B2</code> comes before <code>A3</code>. But concurrent events like <code>A2</code> and <code>B1</code> have no causal ordering. To build a useful view (like a Hyperbee key-value store), you need a <strong>total order</strong> — every event has a definite position.</p>
+<p>Autobase linearizes the DAG using two rules:</p>
+<ol>
+<li><p><strong>Causal ordering is preserved.</strong> If <code>a → b</code>, then <code>a</code> appears before <code>b</code> in the linearized output. This is non-negotiable — the laws of causality are respected.</p>
+</li>
+<li><p><strong>Concurrent events are ordered by writer key.</strong> When two events are causally concurrent, Autobase breaks the tie with a deterministic comparison: <code>Buffer.compare(writerA.key, writerB.key)</code>. Lexicographically smaller keys go first.</p>
+</li>
+</ol>
+<p>The result is a single ordered sequence that every peer computes identically — regardless of the order in which they received the events. Two peers who have seen the same set of events will always produce the same linearization.</p>
+<pre><code>DAG:                     Linearized:
+  A1 ─── A2              1. A1
+  B1 ─── B2              2. B1  (concurrent with A2, key tiebreak)
+  C1                      3. C1  (concurrent with A2/B1, key tiebreak)
+                          4. A2  (depends on A1)
+A3 ─┐ depends on         5. B2  (depends on B1, C1)
+    │ B2 and A2           6. A3  (depends on A2, B2)</code></pre>
+
+<blockquote class="callout-insight">
+<p><strong>Key Insight:</strong> The tiebreaker being the public key means the ordering is deterministic and verifiable — no randomness, no timestamps, no coordination. Any peer who knows the same set of events will produce the exact same sequence. The choice of lexicographic key comparison is arbitrary but consistent, which is all that matters.</p>
+</blockquote>
+
+<hr>
+<h2 id="the-apply-function-building-state-from-history">The Apply Function: Building State from History</h2>
+
+<p>Autobase doesn&#39;t just order events — it builds a <em>view</em> from them. The view is typically a Hyperbee (from <a href="part-4-hyperbee-hyperdrive.md">Part 4</a>) that represents the current application state.</p>
+<p>Two user-defined functions control this:</p>
+<h3 id="open-store-host">open(store, host)</h3>
+
+<p>Creates the view data structure. Called once during initialization.</p>
+<pre><code class="language-js">function open (store, host) {
+  // Return a view backed by a named Hypercore
+  return store.get('my-view', { valueEncoding: 'json' })
+}</code></pre>
+
+<p>The <code>store</code> is an <code>AutoStore</code> that provides <code>store.get(name)</code> to create named Hypercores for the view. The <code>host</code> argument provides access to the Autobase instance. The returned object becomes <code>base.view</code>.</p>
+<h3 id="apply-nodes-view-host">apply(nodes, view, host)</h3>
+
+<p>Processes linearized events and updates the view. Called repeatedly as new events are linearized.</p>
+<pre><code class="language-js">async function apply (nodes, view, host) {
+  for (const node of nodes) {
+    if (node.value === null) continue  // Skip ack-only nodes
+
+    const { value } = node
+
+    // Handle writer management
+    if (value.addWriter) {
+      await host.addWriter(Buffer.from(value.addWriter, 'hex'), { indexer: true })
+      continue
+    }
+
+    // Handle application data
+    await view.append(value)
+  }
+}</code></pre>
+
+<p>The <code>host</code> argument provides side-effect methods:</p>
+<ul>
+<li><code>host.addWriter(key, { indexer })</code> — add a new writer</li>
+<li><code>host.removeWriter(key)</code> — remove a writer</li>
+</ul>
+<blockquote class="callout-gotcha">
+<p><strong>Gotcha:</strong> The <code>apply</code> function must be <strong>pure and deterministic</strong>. It must only modify the <code>view</code> argument — no external state, no network calls, no <code>Date.now()</code>, no <code>Math.random()</code>. Why? Because Autobase may <em>undo and replay</em> the apply function during reordering. If apply wrote to an external database, the undo wouldn&#39;t roll back that write. If apply used <code>Date.now()</code>, two replays would produce different results. Purity is a design contract, not runtime-enforced — Autobase won&#39;t throw if you break it, but your application state will silently diverge between peers.</p>
+</blockquote>
+
+<hr>
+<h2 id="writer-roles-not-everyone-votes">Writer Roles: Not Everyone Votes</h2>
+
+<p>Autobase defines three roles for writers, each with different consensus participation:</p>
+<h3 id="indexing-writers-indexers">Indexing Writers (Indexers)</h3>
+
+<p>Their references count toward quorum. Only indexers can advance the consensus frontier. When an indexer appends a node that references other nodes, that reference is a <strong>vote</strong> — it signals &quot;I have seen these events.&quot;</p>
+<p>Indexers are the consensus participants. Use odd numbers (3, 5, 7) to prevent quorum ties.</p>
+<h3 id="non-indexing-writers">Non-Indexing Writers</h3>
+
+<p>Submit entries that are included in the DAG and the linearized view, but don&#39;t count toward quorum. Their references don&#39;t advance consensus.</p>
+<p>Use this for client-server patterns: servers are indexers (they determine ordering), clients are non-indexing writers (they submit data but don&#39;t vote). This keeps the quorum small and fast while allowing many contributors.</p>
+<h3 id="relayed-writers">Relayed Writers</h3>
+
+<p>Entries appear only when referenced by a confirmed node from another writer. Relayed writers can never be the &quot;head&quot; of the DAG — their entries are only visible after an indexer or non-indexer includes them.</p>
+<p>Use this for untrusted submitters: their data enters the system only if a trusted writer vouches for it.</p>
+<div class="code-filename">writer-roles.js</div>
+<pre><code class="language-js">async function apply (nodes, view, host) {
+  for (const { value } of nodes) {
+    if (value.type === 'add-indexer') {
+      // Full consensus participant
+      await host.addWriter(Buffer.from(value.key, 'hex'), { indexer: true })
+    }
+    if (value.type === 'add-contributor') {
+      // Writes data but doesn't vote
+      await host.addWriter(Buffer.from(value.key, 'hex'), { indexer: false })
+    }
+    // ... handle application data ...
+  }
+}</code></pre>
+
+<blockquote class="callout-insight">
+<p><strong>Key Insight:</strong> Writer roles separate <em>write access</em> from <em>consensus participation</em>. A chat app might have hundreds of users (non-indexing writers) but only 3-5 server nodes as indexers. The ordering converges quickly because the quorum is small, while all users can still contribute messages.</p>
+</blockquote>
+
+<hr>
+<h2 id="quorum-consensus-when-does-ordering-become-permanent">Quorum Consensus: When Does Ordering Become Permanent?</h2>
+
+<p>This is the hardest part of Autobase — and the part that makes it fundamentally different from simpler multi-writer systems like CRDTs.</p>
+<h3 id="the-problem">The Problem</h3>
+
+<p>The linearized order of concurrent events depends on which events you&#39;ve seen. If Alice has seen events <code>{A1, B1}</code> and Bob has seen events <code>{A1, B1, C1}</code>, they might compute different orderings for the concurrent events. As more information arrives, the ordering can change — events that were in position 3 might shift to position 5.</p>
+<p>This is fine for unconfirmed data. But at some point, the ordering needs to become permanent — otherwise applications can never safely act on it.</p>
+<h3 id="votes-and-quorum">Votes and Quorum</h3>
+
+<p>A <strong>vote</strong> is a reference from an indexer to a node. When indexer Alice appends an entry that references Bob&#39;s entry, Alice has voted for Bob&#39;s entry — she&#39;s saying &quot;I&#39;ve seen this.&quot;</p>
+<p><strong>Single quorum:</strong> A node achieves single quorum when a majority of indexers have (directly or transitively) referenced it. With 3 indexers, that&#39;s 2 out of 3.</p>
+<p><strong>Double quorum:</strong> A node achieves double quorum when a majority of indexers are aware of the single quorum — meaning a majority have seen that a majority has voted.</p>
+<p><strong>Why double?</strong> A single quorum isn&#39;t enough. Consider 3 indexers: Alice, Bob, Carol. Alice and Bob might form a quorum around one ordering, while Bob and Carol form a quorum around a different ordering. Bob is in both quorums — a single quorum doesn&#39;t guarantee consistency.</p>
+<p>Double quorum solves this: if a majority know that a majority has voted, then any future majority must include someone who knows about the earlier quorum. This creates a chain of awareness that forces convergence.</p>
+<blockquote class="callout-feynman">
+<p><strong>Feynman Moment:</strong> Think of it like a jury. Single quorum is &quot;7 out of 12 jurors agree.&quot; But what if there was a communication breakdown and two groups of 7 formed with only 2 overlapping members? Double quorum is &quot;7 jurors agree, and 7 jurors know that 7 jurors agree.&quot; Now any future group of 7 must include someone who knows the earlier verdict. The information can&#39;t be lost.</p>
+</blockquote>
+
+<h3 id="the-confirmation-rule">The Confirmation Rule</h3>
+
+<p>A node&#39;s ordering becomes immutable once it achieves a quorum degree <strong>2 higher</strong> than any competing quorum. In the common case with no competing quorums, this means double quorum is sufficient. But if two concurrent branches both achieve single quorum independently, each needs to reach triple quorum (degree 3) to resolve the race.</p>
+<p>In practice, with 3 indexers actively acknowledging each other, confirmation happens within a few round-trips after all indexers have seen the events.</p>
+<h3 id="ack-the-consensus-engine">ack() — The Consensus Engine</h3>
+
+<p>If indexers only write when they have application data, consensus stalls — there&#39;s no mechanism for indexers to signal &quot;I&#39;ve seen your work.&quot; The <code>ack()</code> method solves this by appending a null entry that carries only causal references:</p>
+<pre><code class="language-js">const base = new Autobase(store, bootstrap, {
+  open,
+  apply,
+  ackInterval: 1000  // Auto-ack every 1 second
+})</code></pre>
+
+<p>Each <code>ack()</code> call:</p>
+<ol>
+<li>Appends a <code>null</code> value to the local writer&#39;s core</li>
+<li>The null node records the current DAG heads as dependencies</li>
+<li>This reference serves as a vote, advancing the quorum</li>
+</ol>
+<p>The <code>ackInterval</code> option (default: 10 seconds) configures automatic periodic acks. Without acks, the quorum never advances and ordering never stabilizes.</p>
+<blockquote class="callout-gotcha">
+<p><strong>Gotcha:</strong> Your <code>apply</code> function will receive nodes with <code>null</code> values — these are ack-only nodes. Always check for null: <code>if (node.value === null) continue</code>. They carry no application data, but their causal references are critical for consensus.</p>
+</blockquote>
+
+<hr>
+<h2 id="reordering-the-price-of-decentralization">Reordering: The Price of Decentralization</h2>
+
+<p>Here&#39;s the uncomfortable truth about multi-writer P2P: ordering can change. Before quorum confirmation, the linearized order of events is provisional. When new causal information arrives — a previously unseen writer&#39;s entries, or a new reference chain — Autobase may need to reorder events.</p>
+<h3 id="what-happens-during-a-reorder">What Happens During a Reorder</h3>
+
+<ol>
+<li>New events arrive (via replication) that reveal a previously unknown causal dependency</li>
+<li>Autobase computes the new correct linearization</li>
+<li>Events that were already applied may need to move to different positions</li>
+<li>Autobase <strong>truncates</strong> the view back to the divergence point</li>
+<li>Autobase <strong>re-applies</strong> events in the new correct order through the <code>apply</code> function</li>
+</ol>
+<p>This is why <code>apply</code> must be pure and deterministic — it might be called multiple times with different orderings of the same events. And this is why <code>open</code> must return a view derived solely from its <code>store</code> argument — the view must be reconstructable from the apply history alone.</p>
+<h3 id="signedlength-vs-length">signedLength vs. length</h3>
+
+<p>Autobase exposes two length markers on the view:</p>
+<figure class="wp-block-table"><table>
+<thead>
+<tr><th>Property</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>base.view.length</code></td><td>Total entries including unconfirmed tip</td></tr>
+<tr><td><code>base.signedLength</code></td><td>Confirmed entries (quorum-locked, will never reorder)</td></tr>
+</tbody>
+</table></figure>
+
+<p>Everything between <code>signedLength</code> and <code>length</code> is provisional — it represents the best current guess at the ordering, but it may change. Everything before <code>signedLength</code> is permanent.</p>
+<div class="code-filename">ordering-awareness.js</div>
+<pre><code class="language-js">await base.update()
+
+const confirmed = base.signedLength
+const total = base.view.length
+const provisional = total - confirmed
+
+console.log(`${confirmed} confirmed, ${provisional} provisional entries`)
+
+// Safe to act on confirmed data
+for (let i = 0; i &lt; confirmed; i++) {
+  const entry = await base.view.get(i)
+  // This entry's position will never change
+}
+
+// Provisional data may reorder
+for (let i = confirmed; i &lt; total; i++) {
+  const entry = await base.view.get(i)
+  // This entry's position is tentative
+}</code></pre>
+
+<h3 id="ux-implications">UX Implications</h3>
+
+<p>Reordering is invisible at the data layer — Autobase handles it automatically. But the <em>application</em> must be reordering-aware:</p>
+<ul>
+<li><strong>Don&#39;t show sequence numbers to users.</strong> Position 42 today might be position 44 tomorrow. Use content-derived identifiers instead.</li>
+<li><strong>Show provisional data differently.</strong> Entries before <code>signedLength</code> are settled. Entries after are tentative. A subtle visual indicator (like a &quot;pending&quot; badge) prevents user confusion when entries shuffle.</li>
+<li><strong>Never send external side effects from provisional data.</strong> Don&#39;t send emails, trigger webhooks, or update external systems based on unconfirmed ordering. Wait for <code>signedLength</code> to advance.</li>
+</ul>
+<hr>
+<h2 id="in-practice-building-a-multi-writer-app">In Practice: Building a Multi-Writer App</h2>
+
+<p>Here&#39;s a complete example of a collaborative key-value store using Autobase with Hyperbee:</p>
+<div class="code-filename">multi-writer-kv.js</div>
+<pre><code class="language-js">const Corestore = require('corestore')
+const Autobase = require('autobase')
+const Hyperbee = require('hyperbee')
+const Hyperswarm = require('hyperswarm')
+
+// --- Handlers ---
+
+function open (store, host) {
+  // The view is a Hyperbee for sorted key-value access
+  return new Hyperbee(store.get('view'), {
+    keyEncoding: 'utf-8',
+    valueEncoding: 'json'
+  })
+}
+
+async function apply (nodes, view, host) {
+  // Process linearized nodes in order
+  const batch = view.batch()
+
+  for (const node of nodes) {
+    if (node.value === null) continue  // Ack-only node
+
+    const { type, key, value } = node.value
+
+    if (type === 'add-writer') {
+      await host.addWriter(Buffer.from(key, 'hex'), { indexer: value.indexer })
+      continue
+    }
+
+    if (type === 'put') await batch.put(key, value)
+    if (type === 'del') await batch.del(key)
+  }
+
+  await batch.flush()
+}
+
+// --- Setup ---
+
+const store = new Corestore('./my-storage')
+const base = new Autobase(store, null, {
+  open,
+  apply,
+  valueEncoding: 'json',
+  ackInterval: 1000
+})
+await base.ready()
+
+// Join the network
+const swarm = new Hyperswarm()
+swarm.on('connection', (socket) =&gt; base.replicate(socket))
+swarm.join(base.discoveryKey, { server: true, client: true })
+await swarm.flush()
+
+// --- Write data ---
+
+await base.append({ type: 'put', key: 'alice', value: { role: 'admin' } })
+await base.append({ type: 'put', key: 'bob', value: { role: 'editor' } })
+
+// --- Read from the linearized view ---
+
+await base.update()
+const entry = await base.view.get('alice')
+console.log(entry.value)  // { role: 'admin' }</code></pre>
+
+<p>A second peer joins by passing the first peer&#39;s key as the bootstrap:</p>
+<div class="code-filename">multi-writer-peer-b.js</div>
+<pre><code class="language-js">const base = new Autobase(store, peerAKey, {
+  open,
+  apply,
+  valueEncoding: 'json',
+  ackInterval: 1000
+})
+await base.ready()
+
+// Peer A must add Peer B as a writer (via apply)
+// Peer A appends: { type: 'add-writer', key: base.local.key.toString('hex'), value: { indexer: true } }</code></pre>
+
+<p>Writer addition happens <em>through</em> the <code>apply</code> function — the first writer appends a message that the <code>apply</code> handler interprets as an <code>addWriter</code> call. This makes writer management itself part of the causal history, which means it&#39;s ordered and consistent with everything else.</p>
+<hr>
+<h2 id="fast-forward-catching-up-efficiently">Fast-Forward: Catching Up Efficiently</h2>
+
+<p>When a peer has been offline for a long time, replaying the entire DAG history through <code>apply</code> would be expensive. Autobase supports <strong>fast-forward</strong>: if the confirmed checkpoint has advanced significantly, a behind peer can jump directly to the checkpoint state without replaying intermediate history.</p>
+<p>This works because confirmed data (before <code>signedLength</code>) is immutable — the view at that point has been signed by a quorum of indexers. A behind peer can trust the signed view state and start processing only from the checkpoint forward.</p>
+<p>Fast-forward is enabled by default (<code>fastForward: true</code> in the constructor). It triggers automatically when the gap between the local state and the remote checkpoint is large enough.</p>
+<hr>
+<h2 id="the-tradeoffs">The Tradeoffs</h2>
+
+<figure class="wp-block-table"><table>
+<thead>
+<tr><th>What You Gain</th><th>What You Pay</th></tr>
+</thead>
+<tbody>
+<tr><td>Multiple independent writers — no single bottleneck</td><td>Ordering is provisional until quorum confirms it</td></tr>
+<tr><td>Deterministic linearization — every peer computes the same order</td><td>Concurrent events are ordered by key comparison (arbitrary but consistent)</td></tr>
+<tr><td>Causal ordering preserved — events never precede their dependencies</td><td>Vector clocks add metadata overhead to every entry</td></tr>
+<tr><td>Quorum-confirmed checkpoints — ordering becomes permanent</td><td>Requires a majority of indexers to be active for progress</td></tr>
+<tr><td>Apply function builds rich views (Hyperbee, custom stores)</td><td>Apply must be pure — no side effects, no non-determinism</td></tr>
+<tr><td>Fast-forward for catching up after long offline periods</td><td>Behind peers must trust the quorum-signed checkpoint</td></tr>
+<tr><td>Writer roles separate contributions from consensus</td><td>More indexers = more reliable consensus but slower confirmation</td></tr>
+</tbody>
+</table></figure>
+
+<hr>
+<h2 id="key-takeaways">Key Takeaways</h2>
+
+<ul>
+<li><p><strong>Autobase linearizes multiple independent Hypercores into a single deterministic view.</strong> Each writer appends to their own core. Autobase arranges all entries into a causal DAG, respects happens-before relationships, and breaks ties between concurrent events using lexicographic key comparison.</p>
+</li>
+<li><p><strong>The causal DAG tracks &quot;happens-before&quot; via head references.</strong> Every entry records the current DAG heads at the time of writing. Vector clocks computed from these references tell you exactly what each entry has seen.</p>
+</li>
+<li><p><strong>Quorum consensus makes ordering permanent.</strong> A vote = an indexer referencing a node. Single quorum = a majority have voted. Double quorum = a majority know about the single quorum. Once achieved, the ordering at that point will never change.</p>
+</li>
+<li><p><strong>Three writer roles: indexer, non-indexer, relayed.</strong> Indexers vote and advance consensus. Non-indexers contribute data without voting. Relayed writers&#39; entries only appear if referenced by a confirmed writer. Use odd numbers of indexers (3, 5, 7) to avoid ties.</p>
+</li>
+<li><p><strong>The apply function must be pure and deterministic.</strong> It may be called multiple times during reordering. Only modify the view argument. No external state, no <code>Date.now()</code>, no network calls. This is a design contract, not runtime-enforced.</p>
+</li>
+<li><p><strong>Design for reordering.</strong> Everything before <code>signedLength</code> is confirmed and permanent. Everything after is provisional. Don&#39;t trigger external side effects from provisional data. Show tentative entries differently in the UI.</p>
+</li>
+</ul>
+<hr>
+<h2 id="what-s-next">What's Next</h2>
+
+<p>We&#39;ve built the full collaboration stack: encrypted connections, verified data, peer discovery, and multi-writer consensus. But we&#39;ve been trusting the <em>people</em> at each end. What if a peer is malicious? What if they flood the DHT with fake nodes? What if they try to impersonate someone else?</p>
+<p>In <a href="part-7-security-trust.md">Part 7</a>, we&#39;ll examine the security model of the entire Holepunch stack — from Sybil resistance in the DHT, to Eclipse attack prevention, to the complete Merkle verification chain that makes data poisoning detectable. We&#39;ll also look at how identity works without a central authority, including blind pairing for safe peer introduction.</p>
+<hr>
+<h2 id="references-further-reading">References & Further Reading</h2>
+
+<ol>
+<li><a href="https://github.com/holepunchto/autobase" target="_blank">holepunchto/autobase — Multi-writer DAG linearization with quorum consensus</a></li>
+<li><a href="https://github.com/holepunchto/autobase/blob/main/DESIGN.md" target="_blank">Autobase DESIGN.md — Authoritative design rationale for the quorum mechanism</a></li>
+<li><a href="https://github.com/holepunchto/hypercore" target="_blank">holepunchto/hypercore — Append-only log (from Part 3)</a></li>
+<li><a href="https://github.com/holepunchto/hyperbee" target="_blank">holepunchto/hyperbee — Sorted key-value store (from Part 4)</a></li>
+<li><a href="https://github.com/holepunchto/corestore" target="_blank">holepunchto/corestore — Multi-Hypercore management (from Part 4)</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Vector_clock" target="_blank">Wikipedia — Vector clock</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Happened-before" target="_blank">Wikipedia — Happened-before relation</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Directed_acyclic_graph" target="_blank">Wikipedia — Directed acyclic graph</a></li>
+<li><a href="https://docs.pears.com/" target="_blank">Pear Runtime Documentation</a></li>
+</ol>
+<hr>
+<blockquote class="series-nav">
+<p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
+<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <strong>Part 6: Many Writers, One Truth (You are here)</strong> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
+</blockquote>
+

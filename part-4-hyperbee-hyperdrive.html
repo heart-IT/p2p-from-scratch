@@ -1,0 +1,614 @@
+<!--
+  WORDPRESS IMPORT INSTRUCTIONS
+  ==============================
+  1. Create a new Post in WordPress
+  2. Switch to the Code Editor (⋮ menu > Code editor)
+  3. Select ALL text below this comment block and paste
+  4. Switch back to Visual Editor to verify
+
+  Plugins required:
+  - Prismatic (syntax highlighting)
+
+  Mermaid diagrams are loaded via CDN (no plugin needed).
+  The <script> tag at the bottom handles rendering.
+-->
+
+<h1 id="p2p-from-scratch-part-4-from-logs-to-databases">P2P from Scratch — Part 4: From Logs to Databases</h1>
+
+<blockquote>
+<p>&quot;Simple things should be simple, complex things should be possible.&quot;
+— Alan Kay</p>
+</blockquote>
+
+<p><strong>Excerpt:</strong> A Hypercore is an append-only log — you can append blocks and read them by index. That&#39;s it. But most applications need sorted key-value lookups, file systems, and range queries. This post explains how Hyperbee maps a B-tree onto Hypercore&#39;s sequential blocks, how Hyperdrive combines a Hyperbee with Hyperblobs to build a distributed file system, and how Corestore manages multiple Hypercores from a single master seed.</p>
+
+<blockquote class="series-nav">
+<p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
+<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <strong>Part 4: From Logs to Databases (You are here)</strong> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
+</blockquote>
+
+<hr>
+<h2 id="the-problem-access-patterns">The Problem: Access Patterns</h2>
+
+<p>A Hypercore gives you <code>append(data)</code> and <code>get(index)</code>. For a chat log, that&#39;s fine — messages arrive in order and you read them sequentially. But consider a contacts app: you need to look up &quot;Alice&quot; without scanning every block. Or a file system: you need to read <code>/photos/vacation.jpg</code> without downloading every file in the drive.</p>
+<p>You need data structures on top of the log. The challenge is building them in a way that preserves Hypercore&#39;s two superpowers: <strong>cryptographic verification</strong> (every read is provably correct) and <strong>sparse replication</strong> (download only what you need, not the whole dataset).</p>
+<hr>
+<h2 id="hyperbee-a-b-tree-on-an-append-only-log">Hyperbee: A B-Tree on an Append-Only Log</h2>
+
+<p><a href="https://github.com/holepunchto/hyperbee" target="_blank">Hyperbee</a> is a sorted key-value store built on a single Hypercore. It maps a <a href="https://en.wikipedia.org/wiki/B-tree" target="_blank">B-tree</a> onto sequential log blocks, giving you <code>O(log n)</code> lookups, range queries, and ordered iteration — all sparse-friendly.</p>
+<h3 id="why-a-b-tree">Why a B-Tree?</h3>
+
+<p>A B-tree is a self-balancing search tree where each node can hold multiple keys and has multiple children. Compared to a binary search tree, a B-tree is <em>wider</em> and <em>shorter</em> — fewer levels means fewer blocks to download for a lookup.</p>
+<p>Hyperbee uses a B-tree (not a B+ tree — values are stored at every level, not just the leaves). The tree parameters are:</p>
+<ul>
+<li><strong>Maximum children per node:</strong> 9</li>
+<li><strong>Maximum keys per node:</strong> 8</li>
+<li><strong>Minimum keys per non-root node:</strong> 4</li>
+</ul>
+<p>When a node exceeds 8 keys, it splits. When it drops below 4, it rebalances.</p>
+<blockquote class="callout-feynman">
+<p><strong>Feynman Moment:</strong> Why does wider-and-shorter matter for P2P? Because every level in the tree is a potential network round-trip. In a binary tree with a million entries, a lookup traverses ~20 levels. In Hyperbee&#39;s B-tree with max 9 children, the same million entries fit in ~7 levels. Fewer levels = fewer blocks to download = faster sparse queries over the network.</p>
+</blockquote>
+
+<h3 id="how-it-maps-to-hypercore">How It Maps to Hypercore</h3>
+
+<p>Here&#39;s the key insight: Hypercore is append-only, so you can&#39;t update a tree node in place. Instead, every mutation (put or delete) <strong>appends a new block</strong> to the Hypercore containing:</p>
+<ol>
+<li><strong>The key</strong> being inserted or deleted</li>
+<li><strong>The value</strong> (or null for deletions)</li>
+<li><strong>A tree index</strong> — a snapshot of the modified path from root to the affected leaf</li>
+</ol>
+<p>The tree index (called a <code>YoloIndex</code> internally) encodes multiple levels, where each level contains:</p>
+<ul>
+<li><strong>Key pointers</strong>: Hypercore sequence numbers referencing blocks that hold other keys</li>
+<li><strong>Child pointers</strong>: <code>(seq, offset)</code> pairs pointing to child tree nodes in other blocks</li>
+</ul>
+<p>Unchanged subtrees are referenced by their existing Hypercore sequence numbers. This means each block contains a complete root-to-leaf snapshot of just the modified path — everything else is referenced by pointer.</p>
+<pre><code>Hypercore blocks:
+┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐
+│ Block 0  │ │ Block 1  │ │ Block 2  │ │ Block 3  │ │ Block 4  │
+│ (header) │ │ key: &quot;a&quot; │ │ key: &quot;c&quot; │ │ key: &quot;b&quot; │ │ key: &quot;d&quot; │
+│          │ │ val: ... │ │ val: ... │ │ val: ... │ │ val: ... │
+│          │ │ index:   │ │ index:   │ │ index:   │ │ index:   │
+│          │ │  [root]  │ │ [root→…]│ │ [root→…]│ │ [root→…]│
+└─────────┘ └─────────┘ └─────────┘ └─────────┘ └─────────┘</code></pre>
+
+<p>Block 0 is always the header (protocol: <code>&quot;hyperbee&quot;</code>). Each subsequent block carries the inserted key-value pair plus the tree index snapshot. The <em>latest</em> block&#39;s tree index always points to the current root — reading the tree starts from the end of the log.</p>
+<blockquote class="callout-insight">
+<p><strong>Key Insight:</strong> This append-only B-tree has an unusual property: every past state of the tree is still accessible. Block 3&#39;s index represents the tree as it was after 3 insertions. This gives you free versioning — <code>db.checkout(version)</code> returns a read-only snapshot at any historical state, with zero extra storage cost.</p>
+</blockquote>
+
+<h3 id="sparse-lookups">Sparse Lookups</h3>
+
+<p>When a remote peer queries <code>db.get(&quot;alice&quot;)</code>, Hyperbee only downloads the blocks along the B-tree path from the current root to the leaf containing &quot;alice&quot;. For a database with a million entries, that&#39;s roughly 7 blocks — not a million.</p>
+<p>Each downloaded block is a Hypercore block, which means it comes with a Merkle proof (from <a href="part-3-hypercore-merkle.md">Part 3</a>). The lookup is not only sparse but <strong>cryptographically verified</strong> — you know each block is authentic without trusting the peer who sent it.</p>
+<hr>
+<h2 id="hyperbee-api-what-you-can-do">Hyperbee API: What You Can Do</h2>
+
+<div class="code-filename">hyperbee-basics.js</div>
+<pre><code class="language-js">const Hyperbee = require('hyperbee')
+const Hypercore = require('hypercore')
+const Corestore = require('corestore')
+
+const store = new Corestore('./my-storage')
+const core = store.get({ name: 'my-db' })
+const db = new Hyperbee(core, {
+  keyEncoding: 'utf-8',
+  valueEncoding: 'json'
+})
+await db.ready()
+
+// Basic CRUD
+await db.put('alice', { age: 30, city: 'Berlin' })
+await db.put('bob', { age: 25, city: 'Tokyo' })
+await db.put('carol', { age: 35, city: 'Berlin' })
+
+const entry = await db.get('alice')
+// { seq: 1, key: 'alice', value: { age: 30, city: 'Berlin' } }
+
+await db.del('bob')</code></pre>
+
+<h3 id="range-queries">Range Queries</h3>
+
+<div class="code-filename">hyperbee-ranges.js</div>
+<pre><code class="language-js">// All entries from 'a' to 'c' (inclusive start, exclusive end)
+for await (const entry of db.createReadStream({ gte: 'a', lt: 'd' })) {
+  console.log(entry.key, entry.value)
+}
+
+// First entry in a range (without streaming all of them)
+const first = await db.peek({ gte: 'a' })</code></pre>
+
+<h3 id="atomic-batches">Atomic Batches</h3>
+
+<p>Multiple operations can be committed atomically — either all succeed or none do.</p>
+<div class="code-filename">hyperbee-batch.js</div>
+<pre><code class="language-js">const batch = db.batch()
+
+await batch.put('alice', { age: 31, city: 'Berlin' })
+await batch.put('dave', { age: 28, city: 'London' })
+await batch.del('carol')
+
+// All three operations are appended to the Hypercore in a single atomic call
+await batch.flush()
+
+// Or abort without writing anything:
+// await batch.close()</code></pre>
+
+<p>Under the hood, <code>batch.flush()</code> serializes all pending changes into an array of blocks and calls <code>core.append(blocks)</code> once — a single Hypercore append of multiple blocks, which is atomic.</p>
+<h3 id="compare-and-swap">Compare-and-Swap</h3>
+
+<p>For optimistic concurrency control, both <code>put</code> and <code>del</code> accept a <code>cas</code> function:</p>
+<div class="code-filename">hyperbee-cas.js</div>
+<pre><code class="language-js">// Only update if the previous value matches a condition
+await db.put('alice', { age: 31, city: 'Berlin' }, {
+  cas (prev, next) {
+    // prev is the current entry (or null if key doesn't exist)
+    // Return true to proceed with the write
+    return prev !== null &amp;&amp; prev.value.age &lt; next.value.age
+  }
+})</code></pre>
+
+<h3 id="snapshots-and-versioning">Snapshots and Versioning</h3>
+
+<div class="code-filename">hyperbee-versions.js</div>
+<pre><code class="language-js">// Snapshot at the current version (read-only)
+const snapshot = db.snapshot()
+
+// Snapshot at a specific version
+const v2 = db.checkout(2)
+const oldEntry = await v2.get('alice') // State as of version 2
+
+// Diff between versions
+for await (const diff of db.createDiffStream(2)) {
+  // diff.left = entry in current version (or null)
+  // diff.right = entry in version 2 (or null)
+  console.log(diff)
+}</code></pre>
+
+<h3 id="sub-databases">Sub-Databases</h3>
+
+<p>Hyperbee supports logical namespaces within a single Hypercore:</p>
+<div class="code-filename">hyperbee-subs.js</div>
+<pre><code class="language-js">const users = db.sub('users')
+const settings = db.sub('settings')
+
+await users.put('alice', { role: 'admin' })
+await settings.put('theme', 'dark')
+
+// Each sub has its own keyspace — no collisions
+const user = await users.get('alice')       // Found
+const nope = await settings.get('alice')    // null</code></pre>
+
+<p>Sub-databases work via <strong>key prefixing</strong> — <code>users.put(&#39;alice&#39;, ...)</code> actually stores the key as <code>users\x00alice</code> in the underlying B-tree, where <code>\x00</code> is the separator byte. Range queries on a sub are automatically scoped to its prefix. Subs can be nested: <code>db.sub(&#39;a&#39;).sub(&#39;b&#39;)</code> produces prefix <code>a\x00b\x00</code>.</p>
+<blockquote class="callout-gotcha">
+<p><strong>Gotcha:</strong> Subs are not separate Hypercores. They share the same B-tree, the same Hypercore, and the same replication stream. They&#39;re a logical namespace, not a physical boundary.</p>
+</blockquote>
+
+<h3 id="watching-for-changes">Watching for Changes</h3>
+
+<div class="code-filename">hyperbee-watch.js</div>
+<pre><code class="language-js">// Watch a range for changes
+const watcher = db.watch({ gte: 'a', lt: 'z' })
+
+for await (const [current, previous] of watcher) {
+  // current and previous are Hyperbee snapshots
+  // Diff them to find what changed
+  for await (const diff of current.createDiffStream(previous)) {
+    console.log('Changed:', diff.left?.key || diff.right?.key)
+  }
+}
+
+// Or watch a single key
+const entry = await db.getAndWatch('alice')
+console.log(entry.node) // Current value
+
+entry.on('update', () =&gt; {
+  console.log('Alice changed:', entry.node)
+})</code></pre>
+
+<hr>
+<h2 id="hyperdrive-a-distributed-file-system">Hyperdrive: A Distributed File System</h2>
+
+<p><a href="https://github.com/holepunchto/hyperdrive" target="_blank">Hyperdrive</a> is a POSIX-like file system built on top of Hyperbee and a companion module called <a href="https://github.com/holepunchto/hyperblobs" target="_blank">Hyperblobs</a>. It uses a <strong>two-core architecture</strong>:</p>
+<pre><code>┌──────────────────────────────────────────────────────┐
+│                    Hyperdrive                         │
+│                                                       │
+│  ┌─────────────────────┐   ┌──────────────────────┐  │
+│  │   Hyperbee (db)     │   │  Hyperblobs (blobs)  │  │
+│  │   ═══════════       │   │  ════════════════     │  │
+│  │   File metadata:    │   │  Raw file content:   │  │
+│  │   path → {          │   │  64 KB chunks        │  │
+│  │     executable,     │   │  appended to a       │  │
+│  │     linkname,       │   │  separate Hypercore   │  │
+│  │     blob: {         │   │                       │  │
+│  │       blockOffset,  │──▶│  [chunk][chunk][...]  │  │
+│  │       blockLength,  │   │                       │  │
+│  │       byteOffset,   │   │                       │  │
+│  │       byteLength    │   │                       │  │
+│  │     },              │   │                       │  │
+│  │     metadata        │   │                       │  │
+│  │   }                 │   │                       │  │
+│  │                     │   │                       │  │
+│  │  (Hypercore #1)     │   │  (Hypercore #2)       │  │
+│  └─────────────────────┘   └──────────────────────┘  │
+│                                                       │
+│  Both cores managed by a single Corestore             │
+└──────────────────────────────────────────────────────┘</code></pre>
+
+<h3 id="why-two-cores">Why Two Cores?</h3>
+
+<p>Separating metadata from content has a practical payoff:</p>
+<ol>
+<li><p><strong>Listing is cheap.</strong> A <code>readdir()</code> or <code>list()</code> only touches the Hyperbee — no file content is downloaded. You can browse a drive with millions of files and only download the B-tree path nodes.</p>
+</li>
+<li><p><strong>Selective download.</strong> You can download a single file&#39;s content without downloading every other file. The Hyperbee entry tells you exactly which blocks in the Hyperblobs core to fetch (<code>blockOffset</code> and <code>blockLength</code>).</p>
+</li>
+<li><p><strong>Independent replication.</strong> Both cores have independent discovery keys and can be replicated at different rates. A peer might replicate all metadata eagerly (for fast directory listings) but fetch content lazily (only when a file is actually opened).</p>
+</li>
+</ol>
+<h3 id="how-hyperblobs-works">How Hyperblobs Works</h3>
+
+<p><a href="https://github.com/holepunchto/hyperblobs" target="_blank">Hyperblobs</a> is a thin wrapper around a Hypercore that handles binary large objects. When you write a file:</p>
+<ol>
+<li>The file content is split into <strong>64 KB chunks</strong> (the default block size)</li>
+<li>Each chunk is appended to the Hyperblobs&#39; Hypercore</li>
+<li>Hyperblobs returns a <strong>blob ID</strong>: <code>{ blockOffset, blockLength, byteOffset, byteLength }</code></li>
+<li>This blob ID is stored in the Hyperbee entry alongside the file metadata</li>
+</ol>
+<p>When you read a file, the blob ID tells Hyperblobs exactly which Hypercore blocks to fetch and concatenate.</p>
+<h3 id="the-file-entry-format">The File Entry Format</h3>
+
+<p>When you call <code>drive.entry(path)</code>, the returned object looks like:</p>
+<pre><code class="language-js">{
+  seq: 5,                    // Hyperbee sequence number
+  key: '/photos/vacation.jpg',
+  value: {
+    executable: false,       // Is the file executable?
+    linkname: null,          // Symlink target (or null)
+    blob: {                  // Pointer into the Hyperblobs core
+      blockOffset: 12,       // Starting block index
+      blockLength: 3,        // Number of 64KB blocks
+      byteOffset: 786432,   // Starting byte offset
+      byteLength: 195841    // Total file size in bytes
+    },
+    metadata: null           // Arbitrary application-defined metadata
+  }
+}</code></pre>
+
+<p>For symlinks, <code>blob</code> is null and <code>linkname</code> contains the target path. File size is derived from <code>blob.byteLength</code> — there&#39;s no separate size field.</p>
+<h3 id="hyperdrive-api">Hyperdrive API</h3>
+
+<div class="code-filename">hyperdrive-basics.js</div>
+<pre><code class="language-js">const Hyperdrive = require('hyperdrive')
+const Corestore = require('corestore')
+
+const store = new Corestore('./my-storage')
+const drive = new Hyperdrive(store)
+await drive.ready()
+
+// Write a file
+await drive.put('/hello.txt', Buffer.from('Hello, World!'))
+
+// Read a file
+const content = await drive.get('/hello.txt')  // Buffer
+
+// Check existence
+const exists = await drive.exists('/hello.txt')  // true
+
+// File metadata (without reading content)
+const entry = await drive.entry('/hello.txt')
+
+// Delete
+await drive.del('/hello.txt')
+
+// Symlinks
+await drive.symlink('/link.txt', '/hello.txt')
+
+// Streaming read/write
+const rs = drive.createReadStream('/large-file.bin')
+const ws = drive.createWriteStream('/output.bin')
+rs.pipe(ws)</code></pre>
+
+<h3 id="directory-operations">Directory Operations</h3>
+
+<div class="code-filename">hyperdrive-dirs.js</div>
+<pre><code class="language-js">await drive.put('/docs/readme.md', Buffer.from('# Hello'))
+await drive.put('/docs/guide.md', Buffer.from('# Guide'))
+await drive.put('/docs/api/ref.md', Buffer.from('# API'))
+
+// List entry names (shallow, one level)
+for await (const name of drive.readdir('/docs')) {
+  console.log(name)  // 'readme.md', 'guide.md', 'api'
+}
+
+// List full entries (recursive by default)
+for await (const entry of drive.list('/docs')) {
+  console.log(entry.key, entry.value.blob?.byteLength)
+}</code></pre>
+
+<h3 id="versioning-and-diffing">Versioning and Diffing</h3>
+
+<div class="code-filename">hyperdrive-versions.js</div>
+<pre><code class="language-js">// Snapshot at a specific version
+const old = drive.checkout(5)
+const content = await old.get('/config.json')
+
+// Diff against a previous version
+for await (const diff of drive.diff(5, '/docs')) {
+  console.log(diff)
+  // { left: currentEntry, right: oldEntry }  — left is current, right is old
+}
+
+// Watch for changes in a folder
+const watcher = drive.watch('/docs')</code></pre>
+
+<h3 id="mirroring">Mirroring</h3>
+
+<p>Hyperdrive can mirror to or from any drive-compatible target — another Hyperdrive, a local directory (via <a href="https://github.com/holepunchto/localdrive" target="_blank">Localdrive</a>), or anything implementing the same interface:</p>
+<div class="code-filename">hyperdrive-mirror.js</div>
+<pre><code class="language-js">const Localdrive = require('localdrive')
+const local = new Localdrive('./my-folder')
+
+// Mirror a remote Hyperdrive to a local folder
+const mirror = drive.mirror(local)
+await mirror.done()
+
+console.log(mirror.count)
+// { files: 12, add: 10, remove: 0, change: 2 }</code></pre>
+
+<h3 id="accessing-internal-cores">Accessing Internal Cores</h3>
+
+<p>You can access both underlying cores directly when needed:</p>
+<div class="code-filename">hyperdrive-internals.js</div>
+<pre><code class="language-js">drive.db           // The Hyperbee instance (metadata)
+drive.core         // The Hypercore backing the Hyperbee
+drive.blobs        // The Hyperblobs instance (may be null until loaded)
+await drive.getBlobs()  // Ensures blobs core is loaded, returns the Hyperblobs instance
+drive.contentKey   // Public key of the blobs core</code></pre>
+
+<blockquote class="callout-gotcha">
+<p><strong>Gotcha:</strong> <code>drive.blobs</code> can be <code>null</code> initially — the blobs core is loaded lazily. For writable drives it&#39;s available after <code>ready()</code>, but for read-only drives you may need <code>await drive.getBlobs()</code> to force loading.</p>
+</blockquote>
+
+<hr>
+<h2 id="corestore-managing-multiple-hypercores">Corestore: Managing Multiple Hypercores</h2>
+
+<p>A Hyperdrive needs two Hypercores. An Autobase application (Part 6) might need dozens — one per writer. Managing all those keypairs manually would be a nightmare.</p>
+<p><a href="https://github.com/holepunchto/corestore" target="_blank">Corestore</a> solves this with <strong>deterministic key derivation</strong> from a single master seed. You create Hypercores by name, and Corestore derives the keypair automatically.</p>
+<h3 id="the-derivation-chain">The Derivation Chain</h3>
+
+<pre><code>primaryKey (32-byte master seed)
+     │
+     ▼
+ BLAKE2b keyed hash ──── inputs: NS + namespace + name
+     │                           │         │         │
+     │                    ┌──────┘    ┌────┘    ┌───┘
+     │                    │           │         │
+     │              &quot;corestore&quot;    32 bytes   UTF-8
+     │              namespace      (default:  encoded
+     │              constant       all zeros) string
+     │
+     ▼
+  32-byte seed
+     │
+     ▼
+  Ed25519 keypair (crypto_sign_seed_keypair)
+     │
+     ├── publicKey (32 bytes) ── identifies the Hypercore
+     └── secretKey (64 bytes) ── signs new appends</code></pre>
+
+<p>The derivation uses <code>crypto_generichash_batch</code> (BLAKE2b keyed hashing) with the <code>primaryKey</code> as the hash key, and three data inputs concatenated in order:</p>
+<ol>
+<li><strong>NS</strong> — a constant derived from <code>crypto.namespace(&#39;corestore&#39;, 1)</code> (a two-step BLAKE2b derivation: hash <code>&quot;corestore&quot;</code>, append a counter byte, hash again)</li>
+<li><strong>namespace</strong> — a 32-byte namespace (defaults to all zeros for the root store)</li>
+<li><strong>name</strong> — the UTF-8 encoded name string you passed to <code>store.get()</code></li>
+</ol>
+<p>The resulting 32-byte seed is fed into <code>crypto_sign_seed_keypair</code> to produce a deterministic Ed25519 keypair.</p>
+<blockquote class="callout-insight">
+<p><strong>Key Insight:</strong> The same <code>primaryKey</code> + <code>namespace</code> + <code>name</code> always produces the same keypair. This means a user can reconstruct every Hypercore they&#39;ve ever created from their master seed alone — no need to store individual keypairs. It&#39;s the same principle as hierarchical deterministic wallets in cryptocurrency, applied to P2P data structures.</p>
+</blockquote>
+
+<h3 id="using-corestore">Using Corestore</h3>
+
+<div class="code-filename">corestore-basics.js</div>
+<pre><code class="language-js">const Corestore = require('corestore')
+
+const store = new Corestore('./my-storage')
+
+// Create or open a Hypercore by name
+const core1 = store.get({ name: 'chat-log' })
+const core2 = store.get({ name: 'profile' })
+await core1.ready()
+await core2.ready()
+
+// Deterministic: same name always produces the same keypair
+const again = store.get({ name: 'chat-log' })
+await again.ready()
+console.log(again.key.equals(core1.key))  // true
+
+// Open a remote core by public key (read-only, no keypair derived)
+const remote = store.get({ key: somePublicKey })</code></pre>
+
+<h3 id="namespaces">Namespaces</h3>
+
+<p>Namespaces create isolated derivation paths. Two modules using the same name in different namespaces get different Hypercores:</p>
+<div class="code-filename">corestore-namespaces.js</div>
+<pre><code class="language-js">const chatStore = store.namespace('chat')
+const docsStore = store.namespace('docs')
+
+const chatLog = chatStore.get({ name: 'messages' })
+const docsLog = docsStore.get({ name: 'messages' })
+
+await chatLog.ready()
+await docsLog.ready()
+
+// Different keys — the namespace changes the derivation
+console.log(chatLog.key.equals(docsLog.key))  // false</code></pre>
+
+<p>Namespaces are computed as <code>BLAKE2b(parentNamespace, name)</code> — they can be nested (<code>store.namespace(&#39;a&#39;).namespace(&#39;b&#39;)</code>) and each level produces a completely different derivation path.</p>
+<h3 id="the-primary-key">The Primary Key</h3>
+
+<p>The <code>primaryKey</code> is the root of the entire key hierarchy. Whoever holds it can derive every Hypercore keypair in the store.</p>
+<div class="code-filename">corestore-primary-key.js</div>
+<pre><code class="language-js">// First run: Corestore generates and persists a random primaryKey
+const store1 = new Corestore('./my-storage')
+await store1.ready()
+
+// The primaryKey is stored in the storage backend
+// On subsequent runs, it's loaded automatically
+
+// You CAN provide your own primaryKey (requires unsafe: true)
+const store2 = new Corestore('./other-storage', {
+  primaryKey: myMasterSeed,
+  unsafe: true
+})</code></pre>
+
+<blockquote class="callout-gotcha">
+<p><strong>Gotcha:</strong> The <code>primaryKey</code> is the root of trust for a user&#39;s entire identity. Compromising it compromises every Hypercore in the store. It should never be logged, transmitted, or stored in plaintext outside the Corestore&#39;s own encrypted storage.</p>
+</blockquote>
+
+<h3 id="sessions-and-resource-management">Sessions and Resource Management</h3>
+
+<p>Corestore uses a garbage collection model for Hypercores. When a core becomes idle (no active sessions referencing it), it enters a GC cycle. A core must survive 3 GC cycles (~6 seconds of idle time) before being closed:</p>
+<div class="code-filename">corestore-sessions.js</div>
+<pre><code class="language-js">// Sessions share the same underlying storage and cores
+const session = store.session()
+
+const core = session.get({ name: 'temp' })
+// ... use core ...
+
+// Closing the session releases its references
+// If no other sessions reference the core, it enters GC
+await session.close()
+
+// For mobile/embedded: suspend and resume storage
+await store.suspend()
+// ... app backgrounded ...
+store.resume()</code></pre>
+
+<h3 id="replication">Replication</h3>
+
+<p>Corestore handles replication for all its Hypercores through a single protocol stream:</p>
+<div class="code-filename">corestore-replication.js</div>
+<pre><code class="language-js">const stream = store.replicate(isInitiator)
+
+// All active Hypercores are automatically attached to the stream
+// When either side discovers a new Hypercore during replication
+// (via discovery key exchange), Corestore loads it automatically</code></pre>
+
+<p>When a remote peer opens a Protomux channel for a discovery key that the local store knows about, Corestore automatically loads the corresponding Hypercore and joins the replication. This is what makes Hyperdrive&#39;s two-core replication seamless — you replicate the Corestore, and both the Hyperbee and Hyperblobs cores are handled automatically.</p>
+<hr>
+<h2 id="how-it-all-fits-together">How It All Fits Together</h2>
+
+<p>Here&#39;s how the layers compose for a typical file operation — reading <code>/photos/vacation.jpg</code> from a remote Hyperdrive:</p>
+
+<div class="mermaid-container"><pre class="mermaid">
+graph TD
+    APP["Application<br/>drive.get('/photos/vacation.jpg')"] --> HD["Hyperdrive<br/>Coordinates metadata + content"]
+    HD --> HB["Hyperbee<br/>B-tree lookup: '/photos/vacation.jpg'"]
+    HB --> HC1["Hypercore #1 (metadata)<br/>Download B-tree path blocks"]
+    HC1 --> MP1["Merkle Proof<br/>Verify each block"]
+    HB -->|"blob: { blockOffset: 12, blockLength: 3 }"| BLOBS["Hyperblobs<br/>Fetch blocks 12, 13, 14"]
+    BLOBS --> HC2["Hypercore #2 (content)<br/>Download content blocks"]
+    HC2 --> MP2["Merkle Proof<br/>Verify each block"]
+    HC2 --> DATA["✓ Verified file content"]
+
+    style APP fill:#22272e,stroke:#539bf5,color:#e6edf3
+    style DATA fill:#22272e,stroke:#57ab5a,color:#e6edf3
+    style MP1 fill:#22272e,stroke:#986ee2,color:#e6edf3
+    style MP2 fill:#22272e,stroke:#986ee2,color:#e6edf3
+</pre></div>
+
+<p><em>Figure 1: Reading a file from a remote Hyperdrive. The B-tree lookup in Hyperbee requires only path nodes (sparse). The blob fetch in Hyperblobs downloads only the file&#39;s content blocks. Every block is Merkle-verified.</em></p>
+<p>The total data downloaded:</p>
+<ul>
+<li><strong>~7 Hyperbee blocks</strong> (B-tree path for a million-file drive)</li>
+<li><strong>3 Hyperblobs blocks</strong> (the actual file content — 3 x 64 KB)</li>
+<li><strong>Merkle proofs</strong> for each block (a handful of 32-byte hashes)</li>
+</ul>
+<p>Everything else in the drive stays undownloaded. And every byte is cryptographically verified.</p>
+<hr>
+<h2 id="the-tradeoffs">The Tradeoffs</h2>
+
+<figure class="wp-block-table"><table>
+<thead>
+<tr><th>What You Gain</th><th>What You Pay</th></tr>
+</thead>
+<tbody>
+<tr><td>Sorted key-value lookups with `O(log n)` sparse access</td><td>Append-only B-tree duplicates path nodes on every mutation — storage grows faster than a mutable B-tree</td></tr>
+<tr><td>Free versioning — every past state is accessible via `checkout()`</td><td>Old versions accumulate unless explicitly garbage-collected</td></tr>
+<tr><td>Two-core architecture separates metadata from content</td><td>Two discovery keys to manage, blobs core loaded lazily</td></tr>
+<tr><td>Deterministic key derivation from a single seed</td><td>The `primaryKey` is a single point of compromise — losing it means losing every keypair</td></tr>
+<tr><td>Automatic GC for idle Hypercores</td><td>~6-second idle threshold may cause unnecessary re-opens in bursty access patterns</td></tr>
+<tr><td>Atomic batches via `batch.flush()`</td><td>Batch serialization happens in memory before the single append</td></tr>
+</tbody>
+</table></figure>
+
+<hr>
+<h2 id="key-takeaways">Key Takeaways</h2>
+
+<ul>
+<li><p><strong>Hyperbee maps a B-tree onto Hypercore&#39;s sequential blocks.</strong> Each mutation appends a new block with the key, value, and a snapshot of the modified path. With max 9 children per node, a million-entry database requires ~7 levels — 7 blocks to download for any lookup.</p>
+</li>
+<li><p><strong>Hyperdrive separates metadata from content.</strong> A Hyperbee stores file entries (path, executable flag, blob pointer, metadata). A Hyperblobs core stores raw content in 64 KB chunks. Both are independent Hypercores managed by a single Corestore.</p>
+</li>
+<li><p><strong>Corestore derives all keypairs from a single master seed.</strong> The derivation chain is <code>primaryKey</code> → BLAKE2b keyed hash (with namespace and name) → Ed25519 keypair. Namespaces isolate derivation paths for different modules. The primaryKey is the root of trust.</p>
+</li>
+<li><p><strong>Everything remains sparse and verified.</strong> A Hyperbee lookup downloads only the B-tree path. A Hyperdrive file read downloads only the file&#39;s content blocks. Every downloaded block carries a Merkle proof from the underlying Hypercore.</p>
+</li>
+<li><p><strong>Append-only means free versioning.</strong> <code>db.checkout(version)</code> and <code>drive.checkout(version)</code> give you read-only snapshots at any historical state. <code>createDiffStream</code> computes the delta between two versions.</p>
+</li>
+</ul>
+<hr>
+<h2 id="what-s-next">What's Next</h2>
+
+<p>We have data structures: key-value stores, file systems, deterministic key management. But we&#39;re still missing a fundamental piece — how do peers <em>find each other</em>?</p>
+<p>In <a href="part-5-dht-discovery.md">Part 5</a>, we&#39;ll explore Hyperswarm&#39;s DHT-based discovery: how peers announce themselves on topics, how the Kademlia DHT routes queries without a central server, and how <code>joinPeer()</code> maintains persistent connections through the chaos of peer churn.</p>
+<hr>
+<h2 id="references-further-reading">References & Further Reading</h2>
+
+<ol>
+<li><a href="https://github.com/holepunchto/hyperbee" target="_blank">holepunchto/hyperbee — Sorted key-value store built on Hypercore</a></li>
+<li><a href="https://github.com/holepunchto/hyperdrive" target="_blank">holepunchto/hyperdrive — P2P file system with POSIX-like API</a></li>
+<li><a href="https://github.com/holepunchto/hyperblobs" target="_blank">holepunchto/hyperblobs — Binary large object storage on Hypercore</a></li>
+<li><a href="https://github.com/holepunchto/corestore" target="_blank">holepunchto/corestore — Multi-Hypercore management with deterministic key derivation</a></li>
+<li><a href="https://github.com/holepunchto/hypercore" target="_blank">holepunchto/hypercore — Append-only log (from Part 3)</a></li>
+<li><a href="https://github.com/holepunchto/localdrive" target="_blank">holepunchto/localdrive — Local file system with drive-compatible API</a></li>
+<li><a href="https://github.com/holepunchto/mirror-drive" target="_blank">holepunchto/mirror-drive — Mirror between any two drives</a></li>
+<li><a href="https://en.wikipedia.org/wiki/B-tree" target="_blank">Wikipedia — B-tree</a></li>
+<li><a href="https://docs.pears.com/" target="_blank">Pear Runtime Documentation</a></li>
+</ol>
+<hr>
+<blockquote class="series-nav">
+<p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
+<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <strong>Part 4: From Logs to Databases (You are here)</strong> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
+</blockquote>
+
+
+<!-- Mermaid.js — renders <pre class="mermaid"> blocks -->
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'dark',
+  themeVariables: {
+    primaryColor: '#2d333b',
+    primaryTextColor: '#8b949e',
+    primaryBorderColor: '#373e47',
+    lineColor: '#539bf5',
+    secondaryColor: '#22272e',
+    tertiaryColor: '#1b1f24',
+    noteBkgColor: '#2d333b',
+    noteTextColor: '#8b949e',
+    noteBorderColor: '#986ee2',
+    actorBkg: '#2d333b',
+    actorBorder: '#373e47',
+    actorTextColor: '#cdd9e5',
+    actorLineColor: '#373e47',
+    signalColor: '#539bf5',
+    signalTextColor: '#8b949e',
+    sequenceNumberColor: '#1b1f24'
+  }
+});
+</script>

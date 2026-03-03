@@ -1,0 +1,396 @@
+<!--
+  WORDPRESS IMPORT INSTRUCTIONS
+  ==============================
+  1. Create a new Post in WordPress
+  2. Switch to the Code Editor (⋮ menu > Code editor)
+  3. Select ALL text below this comment block and paste
+  4. Switch back to Visual Editor to verify
+
+  Plugins required:
+  - Prismatic (syntax highlighting)
+
+  Mermaid diagrams are loaded via CDN (no plugin needed).
+  The <script> tag at the bottom handles rendering.
+-->
+
+<h1 id="p2p-from-scratch-part-5-finding-peers">P2P from Scratch — Part 5: Finding Peers</h1>
+
+<blockquote>
+<p>&quot;In a truly decentralized system, nobody needs to know everything — but everybody needs to know how to find someone who knows.&quot;
+— Petar Maymounkov &amp; David Mazières, <em>Kademlia: A Peer-to-Peer Information System Based on the XOR Metric</em></p>
+</blockquote>
+
+<p><strong>Excerpt:</strong> You have append-only logs, B-tree databases, encrypted pipes, and Merkle proofs. But none of it works if peers can&#39;t find each other. This post explains how HyperDHT uses a Kademlia routing table to locate peers across the Internet without a central server, how Hyperswarm manages the full lifecycle from discovery to connection, and why a single connection can serve dozens of Hypercores simultaneously.</p>
+
+<blockquote class="series-nav">
+<p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
+<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <strong>Part 5: Finding Peers (You are here)</strong> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
+</blockquote>
+
+<hr>
+<h2 id="the-problem-no-server-no-directory">The Problem: No Server, No Directory</h2>
+
+<p>In the client-server world, finding a service is trivial. You type <code>api.example.com</code>, DNS resolves it to <code>93.184.216.34</code>, and you connect. The entire Internet is a giant phone book backed by a hierarchical authority.</p>
+<p>In a peer-to-peer system, there is no phone book. Alice has a Hypercore she wants to share. Bob wants to replicate it. Neither knows the other&#39;s IP address. Neither is running a server with a domain name. Both are behind NATs (from <a href="part-1-nat-holepunching.md">Part 1</a>) and can&#39;t receive unsolicited connections.</p>
+<p>They need a way to announce &quot;I have this data&quot; and discover &quot;who else has this data&quot; — without any single entity controlling the directory.</p>
+<p>This is the peer discovery problem, and it&#39;s solved by a <strong>distributed hash table</strong> — a database spread across thousands of nodes where no single node holds the complete picture, but any node can find any record by asking the right neighbors.</p>
+<hr>
+<h2 id="the-mental-model-a-city-without-street-signs">The Mental Model: A City Without Street Signs</h2>
+
+<p>Imagine a city with no street signs, no addresses, and no map. You need to find a specific house. But every resident knows their immediate neighbors, and every resident can tell you which of their neighbors lives <em>closest</em> to the area you&#39;re looking for.</p>
+<p>You start by asking a random person. They point you to someone closer. That person points you to someone even closer. Within 5-6 hops, you&#39;re standing at the right door — even though no one in the chain knew the exact location, and no one had a complete map of the city.</p>
+<p>This is how Kademlia works. &quot;Closeness&quot; isn&#39;t geographic — it&#39;s a mathematical function (XOR distance) over 256-bit identifiers. The routing is deterministic, logarithmic, and doesn&#39;t require any node to know the whole network.</p>
+<blockquote class="callout-feynman">
+<p><strong>Feynman Moment:</strong> The analogy suggests a sequential chain of hops, but that undersells the engineering. In practice, HyperDHT queries up to 10 nodes <em>in parallel</em> from its routing table, then briefly narrows to 3 concurrent requests when chasing down closer nodes discovered from responses — giving the nearest nodes time to reply before flooding the network. Once enough responses arrive, concurrency opens back up. It&#39;s less like asking for directions one person at a time and more like shouting into a crowd, then focusing on the most promising leads. This parallelism is why lookups converge in seconds, not minutes.</p>
+</blockquote>
+
+<hr>
+<h2 id="kademlia-the-algorithm-behind-the-dht">Kademlia: The Algorithm Behind the DHT</h2>
+
+<p><a href="https://github.com/holepunchto/hyperdht" target="_blank">HyperDHT</a> implements a Kademlia-based distributed hash table, built on top of <a href="https://github.com/holepunchto/dht-rpc" target="_blank">dht-rpc</a>. Let&#39;s break down the core ideas.</p>
+<h3 id="node-ids-and-xor-distance">Node IDs and XOR Distance</h3>
+
+<p>Every node in the DHT has a 32-byte (256-bit) identifier. As we covered in <a href="part-1-nat-holepunching.md">Part 1</a>, node IDs are derived from network identity: <code>nodeID = BLAKE2b(publicIP + publicPort)</code>. You can&#39;t choose your position in the keyspace.</p>
+<p>The &quot;distance&quot; between two IDs is their <strong>XOR</strong> — a bitwise operation that produces a new 256-bit value. Closer IDs share more leading bits. The distance between <code>1001...</code> and <code>1000...</code> (differing at bit 4) is smaller than between <code>1001...</code> and <code>1100...</code> (differing at bit 2).</p>
+<blockquote class="callout-insight">
+<p><strong>Key Insight:</strong> XOR distance is symmetric (<code>distance(A, B) = distance(B, A)</code>) and satisfies the triangle inequality. This means if A is close to B and B is close to C, then A and C aren&#39;t too far apart. This property is what makes Kademlia&#39;s routing work — each hop gets you genuinely closer to the target.</p>
+</blockquote>
+
+<h3 id="k-buckets-the-routing-table">K-Buckets: The Routing Table</h3>
+
+<p>Each node maintains a routing table organized into <strong>buckets</strong> indexed by distance. Bucket <code>i</code> holds nodes that share exactly <code>i</code> leading bits with your own ID. Since IDs are 256 bits, there are up to 256 possible buckets — though most stay empty in practice.</p>
+<p>Each bucket holds up to <strong>k = 20</strong> nodes (the &quot;k&quot; in k-bucket). When a bucket is full and a new node wants to join, the DHT pings the oldest node — if it&#39;s still alive, the new node is discarded. This biases toward long-lived nodes, which are more likely to stay online.</p>
+<pre><code>Your node ID: 1010 0011 ...
+
+Bucket 0: Nodes differing at bit 1 (0xxx xxxx ...) — far away, up to 20 nodes
+Bucket 1: Nodes differing at bit 2 (11xx xxxx ...) — closer, up to 20 nodes
+Bucket 2: Nodes differing at bit 3 (100x xxxx ...) — closer still
+...
+Bucket 7: Nodes differing at bit 8 (1010 0010 ...) — very close, up to 20 nodes</code></pre>
+
+<p>The key property: every node knows <em>more</em> about its neighborhood than about distant parts of the network. Bucket 0 covers half the keyspace but holds just 20 nodes. Bucket 7 covers 1/256th of the keyspace but also holds up to 20 nodes. This logarithmic compression is what makes Kademlia scale — a node with 20 entries per bucket can navigate a network of millions.</p>
+<h3 id="how-lookups-work">How Lookups Work</h3>
+
+<p>When Alice wants to find peers on a topic, HyperDHT performs an <strong>iterative lookup</strong>:</p>
+<ol>
+<li>Alice picks the <code>k = 20</code> closest nodes from her routing table to the topic</li>
+<li>She sends parallel <code>FIND_NODE</code> requests to 10 of them simultaneously</li>
+<li>Each responding node returns its own closest nodes to the topic (from its routing table)</li>
+<li>Alice merges these results, discovering nodes even closer to the target</li>
+<li>After initial responses arrive, concurrency drops to 3 — giving closer nodes priority</li>
+<li>Repeat until no closer nodes are being discovered</li>
+<li>The query converges on the 20 nodes in the entire network that are closest to the topic</li>
+</ol>
+
+<div class="mermaid-container"><pre class="mermaid">
+graph TD
+    A["Alice's Node"] -->|"Query 10 in parallel"| N1["Node A<br/>distance: 42"]
+    A --> N2["Node B<br/>distance: 38"]
+    A --> N3["Node C<br/>distance: 51"]
+
+    N1 -->|"Returns closer nodes"| N4["Node D<br/>distance: 12"]
+    N2 -->|"Returns closer nodes"| N5["Node E<br/>distance: 8"]
+    N3 -->|"Returns closer nodes"| N4
+
+    N4 -->|"Returns closest"| N6["Node F<br/>distance: 3"]
+    N5 -->|"Returns closest"| N6
+    N6 -->|"Has announcements!"| RESULT["Peer records for topic"]
+
+    style A fill:#22272e,stroke:#539bf5,color:#e6edf3
+    style RESULT fill:#22272e,stroke:#57ab5a,color:#e6edf3
+    style N6 fill:#22272e,stroke:#986ee2,color:#e6edf3
+</pre></div>
+
+<p><em>Figure 1: Iterative Kademlia lookup. Each round discovers closer nodes. Parallel queries accelerate convergence.</em></p>
+<p>For a network of 10,000 nodes, this converges in roughly <code>log₂(10,000) ≈ 13</code> hops — but with parallelism and the routing table&#39;s logarithmic structure, the real-world latency is just a few round-trips.</p>
+<hr>
+<h2 id="topics-the-dht-s-addressing-scheme">Topics: The DHT's Addressing Scheme</h2>
+
+<p>A <strong>topic</strong> is a 32-byte buffer — any 256-bit value. The DHT stores records at the 20 nodes closest to a given topic. Peers who want to find each other choose a shared topic and rendezvous there.</p>
+<p>For Hypercore replication, the topic is the <strong>discovery key</strong> — a keyed BLAKE2b hash of the Hypercore&#39;s public key (from <a href="part-3-hypercore-merkle.md">Part 3</a>):</p>
+<pre><code>discoveryKey = BLAKE2b-256(key = publicKey, data = &quot;hypercore&quot;)</code></pre>
+
+<p>The public key is the BLAKE2b <strong>key</strong> (the keyed-hash parameter), and the string <code>&quot;hypercore&quot;</code> is the <strong>data</strong> being hashed. This means only someone who already knows the public key can compute the discovery key — the hash is keyed to the identity.</p>
+<p>This one-way derivation is critical for privacy. When you join a topic on the DHT, every routing node along the path sees the topic hash. If the topic were the raw public key, observers could learn which Hypercores you&#39;re interested in — and since the public key lets you verify the Ed25519 signatures that authenticate the Hypercore, your traffic patterns would reveal your data interests. With the discovery key, observers see only an opaque hash. You must already know the public key to compute the discovery key and find peers.</p>
+<blockquote class="callout-insight">
+<p><strong>Key Insight:</strong> Discovery keys separate <em>findability</em> from <em>access</em>. The DHT enables finding peers, but doesn&#39;t grant read access to the data. A node routing your lookup query learns <em>that</em> you&#39;re looking for something, but not <em>what</em> that something is. This is a meaningful privacy win over systems where the content hash is the lookup key.</p>
+</blockquote>
+
+<h3 id="announce-and-lookup">Announce and Lookup</h3>
+
+<p>Two operations make the DHT useful for peer discovery:</p>
+<p><strong>Announce</strong> — &quot;I have this data, and here&#39;s how to reach me.&quot;</p>
+<pre><code class="language-js">const stream = node.announce(topic, keyPair, relayAddresses)</code></pre>
+
+<p>The node performs a lookup to find the 20 closest nodes to the topic, then stores a signed announcement at each of them. The announcement includes:</p>
+<ul>
+<li>The announcer&#39;s <strong>public key</strong> (for the Noise handshake)</li>
+<li>Up to <strong>3 relay node addresses</strong> (for holepunching coordination)</li>
+<li>A <strong>cryptographic signature</strong> proving keypair ownership (prevents impersonation)</li>
+</ul>
+<p>Announcements have a two-phase structure: first find the closest nodes (with round-trip token collection), then commit the announcement with tokens proving you actually own that IP address.</p>
+<p><strong>Lookup</strong> — &quot;Who has this data?&quot;</p>
+<pre><code class="language-js">const stream = node.lookup(topic)
+for await (const result of stream) {
+  // result.peers = [{ publicKey, relayAddresses }]
+}</code></pre>
+
+<p>The query walks the routing table toward the topic, collecting announcement records from nodes along the way. Each result yields the announcing peer&#39;s public key and relay addresses — everything needed to initiate a connection.</p>
+<hr>
+<h2 id="hyperswarm-from-dht-to-connections">Hyperswarm: From DHT to Connections</h2>
+
+<p><a href="https://github.com/holepunchto/hyperswarm" target="_blank">Hyperswarm</a> wraps HyperDHT with connection lifecycle management. While HyperDHT handles the raw DHT operations, Hyperswarm handles the orchestration: when to search, when to connect, how to deduplicate, and when to retry.</p>
+<h3 id="joining-a-topic">Joining a Topic</h3>
+
+<div class="code-filename">hyperswarm-join.js</div>
+<pre><code class="language-js">const Hyperswarm = require('hyperswarm')
+const crypto = require('hypercore-crypto')
+
+const swarm = new Hyperswarm()
+
+// Derive a topic from a Hypercore's public key
+const topic = crypto.discoveryKey(somePublicKey)
+
+// Join as both server and client
+const discovery = swarm.join(topic, { server: true, client: true })
+await discovery.flushed() // Wait for initial announce + lookup to complete</code></pre>
+
+<p>The <code>server</code> and <code>client</code> flags control two independent behaviors:</p>
+<figure class="wp-block-table"><table>
+<thead>
+<tr><th>Mode</th><th>What It Does</th><th>DHT Operation</th><th>Who Connects</th></tr>
+</thead>
+<tbody>
+<tr><td>**Server**</td><td>Announces your keypair on the topic</td><td>`dht.announce()`</td><td>Others find and connect *to you*</td></tr>
+<tr><td>**Client**</td><td>Searches the DHT for peers on the topic</td><td>`dht.lookup()`</td><td>You find and connect *to others*</td></tr>
+<tr><td>**Both** (default)</td><td>Announces and searches simultaneously</td><td>Both</td><td>Bidirectional discovery</td></tr>
+</tbody>
+</table></figure>
+
+<p>Server mode creates a persistent presence on the DHT — periodic re-announcements (roughly every 10 minutes with jitter) keep your record fresh as DHT nodes churn. Client mode performs a one-time sweep (plus periodic refreshes) and queues discovered peers for connection.</p>
+<blockquote class="callout-gotcha">
+<p><strong>Gotcha:</strong> Server-side connections don&#39;t carry topic information. When Bob accepts an incoming connection, he doesn&#39;t know <em>which</em> topic Alice used to find him. Only client-side connections have the <code>peerInfo.topics</code> array. If your application needs to know the topic context, design the application-level handshake to exchange it (via a Protomux channel&#39;s handshake data, for example).</p>
+</blockquote>
+
+<h3 id="connection-deduplication">Connection Deduplication</h3>
+
+<p>If you join 5 topics and discover the same peer on 3 of them, you don&#39;t get 3 connections. Hyperswarm enforces <strong>single-connection-per-peer</strong> semantics.</p>
+<p>When a duplicate connection is detected:</p>
+<ol>
+<li>The swarm compares <code>rawBytesRead</code> and <code>rawBytesWritten</code> to determine if the existing connection is established</li>
+<li>It uses a deterministic tiebreaker — comparing public keys with <code>Buffer.compare()</code> — to decide which side keeps the connection</li>
+<li>The loser is destroyed with an <code>ERR_DUPLICATE</code> error</li>
+<li>The winning connection&#39;s <code>peerInfo.topics</code> accumulates all relevant topics</li>
+</ol>
+<p>This is why Protomux (from <a href="part-2-encrypted-pipes.md">Part 2</a>) is essential. One encrypted connection carries all protocol channels for all shared topics. Without multiplexing, deduplication would be impossible.</p>
+<h3 id="the-connection-event">The Connection Event</h3>
+
+<div class="code-filename">hyperswarm-connection.js</div>
+<pre><code class="language-js">swarm.on('connection', (socket, peerInfo) =&gt; {
+  // socket: encrypted NoiseSecretStream (Duplex)
+  // Already authenticated — Noise XX handshake completed
+
+  console.log('Peer:', peerInfo.publicKey.toString('hex').slice(0, 8))
+  console.log('Topics:', peerInfo.topics.length)   // Client-side only
+  console.log('Client?', peerInfo.client)           // true = we initiated
+
+  // Replicate a Corestore over this connection
+  store.replicate(socket)
+})</code></pre>
+
+<p>By the time the <code>connection</code> event fires, the full pipeline from <a href="part-1-nat-holepunching.md">Part 1</a> and <a href="part-2-encrypted-pipes.md">Part 2</a> has already executed: NAT traversal, Noise XX handshake, and session key derivation. The socket is an encrypted Duplex stream ready for application data.</p>
+<hr>
+<h2 id="persistent-peers-joinpeer">Persistent Peers: joinPeer</h2>
+
+<p>Topic-based discovery is great when you don&#39;t know who has the data. But sometimes you <em>do</em> know — you want to stay connected to a specific peer regardless of topics.</p>
+<div class="code-filename">hyperswarm-joinpeer.js</div>
+<pre><code class="language-js">// Connect to a specific peer by their Noise public key
+swarm.joinPeer(bobPublicKey)
+
+// Stop pursuing this peer
+swarm.leavePeer(bobPublicKey)</code></pre>
+
+<p><code>joinPeer()</code> marks a peer as <strong>explicit</strong> — Hyperswarm will connect immediately and reconnect automatically if the connection drops. No topic required. This is how applications maintain stable connections to known collaborators (like co-authors in a shared document) even through network disruptions.</p>
+<p>Explicit peers are retried with increasing backoff delays on failure, and the swarm continues attempting to connect until <code>leavePeer()</code> is called.</p>
+<hr>
+<h2 id="the-full-peer-lifecycle">The Full Peer Lifecycle</h2>
+
+<p>Here&#39;s the complete journey from &quot;I want that data&quot; to &quot;I&#39;m replicating it&quot;:</p>
+
+<div class="mermaid-container"><pre class="mermaid">
+sequenceDiagram
+    participant App as Application
+    participant SW as Hyperswarm
+    participant DHT as HyperDHT
+    participant Net as Network (NAT)
+    participant Peer as Remote Peer
+
+    App->>SW: swarm.join(topic, { server: true, client: true })
+    SW->>DHT: announce(topic, keyPair)
+    SW->>DHT: lookup(topic)
+    DHT-->>SW: Peer records (publicKey + relays)
+    SW->>SW: Dedup check + firewall check
+    SW->>DHT: connect(remotePublicKey)
+    DHT->>Net: Holepunch / direct / relay
+    Net-->>DHT: UDP path established
+    DHT->>Peer: Noise XX handshake
+    Peer-->>DHT: Encrypted stream
+    DHT-->>SW: NoiseSecretStream
+    SW-->>App: 'connection' event (socket, peerInfo)
+    App->>Peer: store.replicate(socket)
+    Note over App,Peer: Protomux channels open per Hypercore
+</pre></div>
+
+<p><em>Figure 2: The full peer lifecycle — from topic join to Hypercore replication.</em></p>
+<p>Each stage can fail independently — the DHT lookup might find no peers, holepunching might fail and fall back to relay, the firewall callback might reject the peer. Hyperswarm handles these failures with retries and fallbacks so the application only sees the final result: a working connection or a timeout.</p>
+<h3 id="configuration-knobs">Configuration Knobs</h3>
+
+<pre><code class="language-js">const swarm = new Hyperswarm({
+  maxPeers: 64,         // Total connection limit (default)
+  maxParallel: 3,       // Concurrent connection attempts (default)
+  maxClientConnections: Infinity,
+  maxServerConnections: Infinity,
+  firewall (remotePublicKey, payload) {
+    // Return true to reject, false to accept
+    // payload contains the remote handshake data (null for client-side checks)
+    return bannedKeys.has(remotePublicKey.toString('hex'))
+  }
+})</code></pre>
+
+<p>The <code>firewall</code> callback executes synchronously during connection negotiation — before resources are allocated. It receives the remote peer&#39;s Noise public key and handshake payload, letting you implement allowlists, blocklists, or any custom access control logic.</p>
+<hr>
+<h2 id="how-discovery-connects-to-replication">How Discovery Connects to Replication</h2>
+
+<p>Discovery and replication are deliberately separate layers. Discovery answers &quot;who&#39;s out there?&quot; Replication answers &quot;what data do we exchange?&quot; The connection between them is the Corestore replication call:</p>
+<div class="code-filename">discovery-to-replication.js</div>
+<pre><code class="language-js">const Corestore = require('corestore')
+const Hyperswarm = require('hyperswarm')
+
+const store = new Corestore('./my-storage')
+const swarm = new Hyperswarm()
+
+// Open a Hypercore (from Part 4's Corestore)
+const core = store.get({ name: 'my-data' })
+await core.ready()
+
+// Join its discovery key as a topic
+swarm.join(core.discoveryKey, { server: true, client: true })
+
+swarm.on('connection', (socket) =&gt; {
+  // Replicate ALL cores in the store over this single connection
+  store.replicate(socket)
+})
+
+// Wait for the topic to be fully announced
+await swarm.flush()</code></pre>
+
+<p>When <code>store.replicate(socket)</code> is called, Corestore wraps the encrypted socket in a Protomux instance. For each Hypercore the local store knows about, it opens a Protomux channel with protocol <code>hypercore/alpha</code> and the Hypercore&#39;s discovery key as the channel ID. The remote side&#39;s Corestore does the same. Channels pair automatically when both sides know the same Hypercore.</p>
+<p>This is why a single connection can serve dozens of Hypercores — each gets its own Protomux channel with independent replication state, all multiplexed over the one encrypted stream from <a href="part-2-encrypted-pipes.md">Part 2</a>.</p>
+<blockquote class="callout-feynman">
+<p><strong>Feynman Moment:</strong> There&#39;s a subtlety in how existing Hypercores propagate across connections. When Alice replicates a Corestore with Bob, and Bob starts replicating a Hypercore that Alice has in her local storage but hasn&#39;t opened yet, Bob opens a Protomux channel for it. Alice&#39;s Corestore sees the discovery key, finds the matching core in storage, loads it, and joins the channel. The replication is reactive — neither side needs to coordinate &quot;let&#39;s sync core X now.&quot; The Protomux channel pairing handles it automatically. Note: Corestore only auto-loads cores it already knows about — it won&#39;t create a brand new core just because a peer announced an unknown discovery key. This is what makes multi-core systems like Hyperdrive (Part 4) and Autobase (Part 6) work seamlessly.</p>
+</blockquote>
+
+<hr>
+<h2 id="bootstrap-and-network-entry">Bootstrap and Network Entry</h2>
+
+<p>A new node joining the DHT needs at least one known address to start. HyperDHT ships with three public bootstrap nodes:</p>
+<pre><code>node1.hyperdht.org:49737
+node2.hyperdht.org:49737
+node3.hyperdht.org:49737</code></pre>
+
+<p>The bootstrap process:</p>
+<ol>
+<li><strong>Connect</strong> to bootstrap nodes and exchange routing information</li>
+<li><strong>Discover</strong> your own public IP and port (bootstrap nodes report how they see you)</li>
+<li><strong>Compute</strong> your node ID: <code>BLAKE2b(publicIP + publicPort)</code></li>
+<li><strong>Populate</strong> your routing table from bootstrap responses</li>
+<li><strong>Transition</strong> from ephemeral to persistent mode (~20 minutes of stable uptime)</li>
+</ol>
+<p>For private networks (testing, corporate deployments), you can run your own bootstrap nodes by starting a DHT node with <code>bootstrap: []</code> and pointing other nodes to it.</p>
+<hr>
+<h2 id="the-tradeoffs">The Tradeoffs</h2>
+
+<figure class="wp-block-table"><table>
+<thead>
+<tr><th>What You Gain</th><th>What You Pay</th></tr>
+</thead>
+<tbody>
+<tr><td>Fully decentralized peer discovery — no single point of failure</td><td>DHT lookups take seconds, not milliseconds (multiple network round-trips)</td></tr>
+<tr><td>Topic-based rendezvous without central coordination</td><td>32-byte topic must be shared out-of-band (or derived from a known key)</td></tr>
+<tr><td>Connection deduplication across topics</td><td>Server-side connections lack topic context</td></tr>
+<tr><td>Automatic reconnection via `joinPeer()`</td><td>Reconnection backoff adds latency after disconnection</td></tr>
+<tr><td>Privacy via discovery keys (observers can't infer content)</td><td>DHT routing nodes see *that* you're searching, just not *what* for</td></tr>
+<tr><td>Single encrypted connection serves all Hypercores</td><td>Connection setup cost is amortized — but the first connection is slow</td></tr>
+<tr><td>20-minute ephemeral period resists Sybil attacks</td><td>New nodes can't serve DHT queries immediately</td></tr>
+</tbody>
+</table></figure>
+
+<hr>
+<h2 id="key-takeaways">Key Takeaways</h2>
+
+<ul>
+<li><p><strong>HyperDHT implements Kademlia with k=20 buckets, XOR distance, and iterative parallel lookups.</strong> Queries start with 10 concurrent requests and narrow to 3 as closer nodes respond. A lookup converges in a few round-trips, even in networks of thousands of nodes.</p>
+</li>
+<li><p><strong>Topics are 32-byte buffers — typically Hypercore discovery keys.</strong> <code>announce(topic)</code> stores a signed record at the 20 closest nodes. <code>lookup(topic)</code> retrieves those records. The discovery key&#39;s one-way derivation hides which Hypercore you&#39;re interested in.</p>
+</li>
+<li><p><strong>Hyperswarm wraps HyperDHT with connection lifecycle management.</strong> <code>join(topic)</code> handles announcement, lookup, connection, deduplication, and retry. A single connection per peer serves all shared topics via Protomux channels.</p>
+</li>
+<li><p><strong>Server mode announces; client mode searches.</strong> Server-side connections don&#39;t carry topic information. Client-side connections include the topics array. Most applications use both modes simultaneously.</p>
+</li>
+<li><p><strong><code>joinPeer()</code> provides persistent, topic-independent connections.</strong> Hyperswarm reconnects automatically with exponential backoff. Use this for known collaborators who should always be connected.</p>
+</li>
+<li><p><strong>Discovery feeds into replication through Corestore.</strong> <code>store.replicate(socket)</code> opens Protomux channels for every known Hypercore. New Hypercores discovered during replication are loaded and joined automatically.</p>
+</li>
+</ul>
+<hr>
+<h2 id="what-s-next">What's Next</h2>
+
+<p>We can find peers, connect securely, and replicate data. But everything so far has been <strong>single-writer</strong> — one keypair signs one Hypercore, and everyone else is a reader.</p>
+<p>In <a href="part-6-autobase-consensus.md">Part 6</a>, we&#39;ll tackle the hardest problem in distributed systems: multiple writers. Autobase takes multiple independent Hypercores — each written by a different peer — and linearizes them into a single, consistent view using causal ordering and quorum consensus. This is where P2P applications go from &quot;read-only mirrors&quot; to &quot;collaborative systems.&quot;</p>
+<hr>
+<h2 id="references-further-reading">References & Further Reading</h2>
+
+<ol>
+<li><a href="https://github.com/holepunchto/hyperdht" target="_blank">holepunchto/hyperdht — DHT with keypair-authenticated connections and NAT traversal</a></li>
+<li><a href="https://github.com/holepunchto/hyperswarm" target="_blank">holepunchto/hyperswarm — High-level peer discovery and connection management</a></li>
+<li><a href="https://github.com/holepunchto/dht-rpc" target="_blank">holepunchto/dht-rpc — Low-level Kademlia DHT with Sybil-resistant node IDs</a></li>
+<li><a href="https://pdos.csail.mit.edu/~petar/papers/maymounkov-kademlia-lncs.pdf" target="_blank">Kademlia: A Peer-to-Peer Information System Based on the XOR Metric (2002)</a></li>
+<li><a href="https://github.com/holepunchto/hypercore-crypto" target="_blank">holepunchto/hypercore-crypto — Discovery key generation (BLAKE2b)</a></li>
+<li><a href="https://github.com/holepunchto/corestore" target="_blank">holepunchto/corestore — Multi-Hypercore management (from Part 4)</a></li>
+<li><a href="https://github.com/holepunchto/protomux" target="_blank">holepunchto/protomux — Protocol multiplexing (from Part 2)</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Kademlia" target="_blank">Wikipedia — Kademlia</a></li>
+<li><a href="https://docs.pears.com/" target="_blank">Pear Runtime Documentation</a></li>
+</ol>
+<hr>
+<blockquote class="series-nav">
+<p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
+<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <strong>Part 5: Finding Peers (You are here)</strong> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
+</blockquote>
+
+
+<!-- Mermaid.js — renders <pre class="mermaid"> blocks -->
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'dark',
+  themeVariables: {
+    primaryColor: '#2d333b',
+    primaryTextColor: '#8b949e',
+    primaryBorderColor: '#373e47',
+    lineColor: '#539bf5',
+    secondaryColor: '#22272e',
+    tertiaryColor: '#1b1f24',
+    noteBkgColor: '#2d333b',
+    noteTextColor: '#8b949e',
+    noteBorderColor: '#986ee2',
+    actorBkg: '#2d333b',
+    actorBorder: '#373e47',
+    actorTextColor: '#cdd9e5',
+    actorLineColor: '#373e47',
+    signalColor: '#539bf5',
+    signalTextColor: '#8b949e',
+    sequenceNumberColor: '#1b1f24'
+  }
+});
+</script>

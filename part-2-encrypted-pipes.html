@@ -1,0 +1,509 @@
+<!--
+  WORDPRESS IMPORT INSTRUCTIONS
+  ==============================
+  1. Create a new Post in WordPress
+  2. Switch to the Code Editor (⋮ menu > Code editor)
+  3. Select ALL text below this comment block and paste
+  4. Switch back to Visual Editor to verify
+
+  Plugins required:
+  - Prismatic (syntax highlighting)
+
+  Mermaid diagrams are loaded via CDN (no plugin needed).
+  The <script> tag at the bottom handles rendering.
+-->
+
+<h1 id="p2p-from-scratch-part-2-encrypted-pipes">P2P from Scratch — Part 2: Encrypted Pipes</h1>
+
+<blockquote>
+<p>&quot;Privacy is necessary for an open society in the electronic age.&quot;
+— Eric Hughes, A Cypherpunk&#39;s Manifesto</p>
+</blockquote>
+
+<p><strong>Excerpt:</strong> In Part 1, we punched a hole through two NATs and established a raw UDP path between peers. But raw UDP is the network equivalent of shouting across an open field — anyone standing between you can listen, modify, or impersonate. This post shows how Hyperswarm turns that raw path into an encrypted, multiplexed communication channel — and why a single connection can carry dozens of independent protocols simultaneously.</p>
+
+<blockquote class="series-nav">
+<p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
+<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <strong>Part 2: Encrypted Pipes (You are here)</strong> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
+</blockquote>
+
+<hr>
+<h2 id="the-problem-an-open-pipe-is-a-dangerous-pipe">The Problem: An Open Pipe Is a Dangerous Pipe</h2>
+
+<p>At the end of Part 1, Alice and Bob had a working UDP path. Packets flow in both directions. The NAT doors are open.</p>
+<p>But here&#39;s the thing about UDP: it&#39;s just raw bytes on a wire. There&#39;s no encryption, no authentication, and no ordering guarantee. Three problems follow immediately.</p>
+<p><strong>Anyone on the network path can read the data.</strong> Your ISP, the coffee shop Wi-Fi operator, any router between you and your peer — they can all see every byte. For a file-sharing app, that means someone can read your files. For a chat app, your messages.</p>
+<p><strong>Anyone can modify the data in transit.</strong> A malicious router could rewrite the contents of your packets before forwarding them. You&#39;d receive corrupted data and have no way to detect the tampering.</p>
+<p><strong>Anyone can impersonate your peer.</strong> Without authentication, you have no way to verify that the packets you&#39;re receiving actually come from the person you intended to talk to. A third party could intercept the connection and pretend to be Bob.</p>
+<p>This is the classic <a href="https://en.wikipedia.org/wiki/Man-in-the-middle_attack" target="_blank">man-in-the-middle</a> problem. And solving it in peer-to-peer is harder than in client-server, because there&#39;s no certificate authority, no TLS handshake backed by a central trust hierarchy, and no domain name to verify.</p>
+<blockquote class="callout-insight">
+<p><strong>Key Insight:</strong> In client-server HTTPS, trust flows from certificate authorities: your browser trusts DigiCert, DigiCert vouches for <code>example.com</code>, so you trust the connection. In P2P, there&#39;s no certificate authority. Trust must be bootstrapped from the keypairs themselves — you trust a connection because you already know the peer&#39;s public key, not because a third party vouched for them.</p>
+</blockquote>
+
+<hr>
+<h2 id="secret-stream-from-raw-bytes-to-encrypted-channel">Secret Stream: From Raw Bytes to Encrypted Channel</h2>
+
+<p><a href="https://github.com/holepunchto/hyperswarm-secret-stream" target="_blank">Secret Stream</a> is the component that transforms a raw Duplex stream (like our holepunched UDP path) into an encrypted, authenticated channel. It uses two cryptographic layers:</p>
+<ol>
+<li><strong>Noise XX handshake</strong> — for mutual authentication and session key derivation</li>
+<li><strong>libsodium&#39;s secretstream</strong> — for ongoing AEAD encryption of all payload data</li>
+</ol>
+<p>The result is a standard Node.js Duplex stream that happens to encrypt everything transparently. Application code writes plaintext; the wire carries ciphertext.</p>
+<h3 id="the-noise-protocol-framework">The Noise Protocol Framework</h3>
+
+<p>The <a href="https://noiseprotocol.org/noise.html" target="_blank">Noise Protocol Framework</a> isn&#39;t a single protocol — it&#39;s a framework for building authenticated key-agreement protocols. You compose a Noise protocol by choosing:</p>
+<ul>
+<li>A <strong>handshake pattern</strong> — which messages carry which keys</li>
+<li>A <strong>DH function</strong> — how keys are exchanged (Ed25519 in Hyperswarm, via <a href="https://github.com/holepunchto/noise-curve-ed" target="_blank">noise-curve-ed</a>)</li>
+<li>A <strong>cipher</strong> — for encrypting handshake payloads (ChaCha20-Poly1305)</li>
+<li>A <strong>hash function</strong> — for key derivation (BLAKE2b)</li>
+</ul>
+<p>Hyperswarm uses the <strong>XX</strong> pattern. The letters describe what each side does: X means &quot;transmit static key.&quot; Since both sides do X, both sides share their long-term public key during the handshake.</p>
+<blockquote class="callout-term">
+<p><strong>Terminology:</strong> A <strong>handshake pattern</strong> in Noise defines the sequence of messages and which cryptographic keys are exchanged at each step. The letters encode the behavior: N = no static key sent, K = static key Known in advance, X = static key Transmitted. XX means both sides transmit their static key — mutual authentication with no prior knowledge required.</p>
+</blockquote>
+
+<h3 id="why-xx-and-not-ik-or-nk">Why XX? (And Not IK or NK)</h3>
+
+<p>The choice of handshake pattern has real consequences:</p>
+<figure class="wp-block-table"><table>
+<thead>
+<tr><th>Pattern</th><th>What It Means</th><th>Requires Prior Knowledge?</th><th>Used When</th></tr>
+</thead>
+<tbody>
+<tr><td>**NK**</td><td>Initiator sends no static key</td><td>Responder's key must be known in advance</td><td>Connecting to a known server</td></tr>
+<tr><td>**IK**</td><td>Initiator's static key sent Immediately</td><td>Responder's key must be known in advance</td><td>Both keys known beforehand</td></tr>
+<tr><td>**XX**</td><td>Both sides Transmit static key</td><td>No prior knowledge needed</td><td>General-purpose peer discovery</td></tr>
+</tbody>
+</table></figure>
+
+<p>In a DHT-based peer discovery system, Alice often doesn&#39;t know Bob&#39;s public key in advance — she discovered him via a topic announcement. And Bob doesn&#39;t know Alice&#39;s key either. The XX pattern handles this gracefully: both peers learn each other&#39;s identity <em>during</em> the handshake.</p>
+<p>The tradeoff is that XX requires three messages (one more round-trip than IK), but for Hyperswarm&#39;s use case — where peers are strangers meeting via a DHT — this is the right choice.</p>
+<hr>
+<h2 id="the-three-message-dance">The Three-Message Dance</h2>
+
+<p>The Noise XX handshake has three messages. Each message mixes ephemeral and static keys to progressively build a shared secret.</p>
+<blockquote class="callout-term">
+<p><strong>Terminology:</strong> In Noise, an <strong>ephemeral key</strong> is a fresh keypair generated for this specific handshake. It provides forward secrecy — even if someone later steals your static key, they can&#39;t decrypt past sessions. A <strong>static key</strong> is your long-term Ed25519 identity key. Hyperswarm uses <a href="https://github.com/holepunchto/noise-curve-ed" target="_blank">noise-curve-ed</a>, which performs Diffie-Hellman directly on Ed25519 points (<code>crypto_scalarmult_ed25519_noclamp</code>) — no conversion to Curve25519 needed.</p>
+</blockquote>
+
+<p>Here&#39;s what flows over the wire:</p>
+
+<div class="mermaid-container"><pre class="mermaid">
+sequenceDiagram
+    participant A as Alice (Initiator)
+    participant B as Bob (Responder)
+
+    Note over A: Generate ephemeral keypair (eA)
+
+    A->>B: Message 1: eA (Alice's ephemeral public key)
+    Note over B: Generate ephemeral keypair (eB)
+    Note over B: DH(eB, eA) → shared secret
+    Note over B: Encrypt Bob's static key with shared secret
+
+    B->>A: Message 2: eB + encrypted(sB)
+    Note over A: DH(eA, eB) → shared secret
+    Note over A: Decrypt Bob's static key
+    Note over A: DH(sA, eB) → additional shared secret
+    Note over A: Encrypt Alice's static key
+
+    A->>B: Message 3: encrypted(sA)
+    Note over B: DH(eB, sA) → additional shared secret
+    Note over B: Derive final session keys
+
+    Note over A,B: Both sides now have: session key, handshakeHash, remotePublicKey
+</pre></div>
+
+<p><em>Figure 1: The Noise XX three-message handshake. Ephemeral keys go first; static keys are encrypted.</em></p>
+<p>Let&#39;s unpack each step:</p>
+<p><strong>Message 1 — Alice introduces herself (ephemerally).</strong> Alice generates a fresh ephemeral keypair and sends the public half. This is unencrypted — an eavesdropper can see it. But that&#39;s fine: ephemeral keys are disposable and reveal nothing about Alice&#39;s identity.</p>
+<p><strong>Message 2 — Bob responds with his identity.</strong> Bob generates his own ephemeral keypair, performs a Diffie-Hellman with Alice&#39;s ephemeral key to derive a shared secret, and uses that secret to <em>encrypt</em> his static public key. An eavesdropper sees Bob&#39;s ephemeral key (plaintext) and a blob of ciphertext. They can&#39;t decrypt it without performing the DH themselves.</p>
+<p><strong>Message 3 — Alice reveals her identity.</strong> Alice decrypts Bob&#39;s static key, performs additional DH operations mixing static and ephemeral keys, and sends her own static public key — encrypted. After this message, both sides have performed all the DH operations needed to derive the final session keys.</p>
+<blockquote class="callout-insight">
+<p><strong>Key Insight:</strong> The ephemeral keys serve two purposes. First, they provide <strong>forward secrecy</strong> — if an attacker records the handshake and later compromises a static key, they still can&#39;t derive the session keys because the ephemeral keys are gone. Second, they protect <strong>identity hiding</strong> — static keys are encrypted, so a passive eavesdropper can&#39;t determine who is talking to whom.</p>
+</blockquote>
+
+<h3 id="what-comes-out-of-the-handshake">What Comes Out of the Handshake</h3>
+
+<p>After the three messages, both peers have:</p>
+<ul>
+<li>A <strong>session key</strong> — derived from the combined DH operations, used for all subsequent encryption</li>
+<li>The <strong>handshakeHash</strong> — a cryptographic binding of the entire handshake transcript, useful for channel binding</li>
+<li>The <strong>remotePublicKey</strong> — the peer&#39;s verified Ed25519 public key</li>
+</ul>
+<p>The <code>handshakeHash</code> is particularly important. It cryptographically binds everything that happened during the handshake — which keys were exchanged, in what order, with what randomness. If a man-in-the-middle had tampered with any message, the hashes wouldn&#39;t match and the handshake would fail.</p>
+<hr>
+<h2 id="post-handshake-the-encrypted-stream">Post-Handshake: The Encrypted Stream</h2>
+
+<p>Once the handshake completes, Secret Stream switches to <a href="https://doc.libsodium.org/secret-key_cryptography/secretstream" target="_blank">libsodium&#39;s secretstream</a> for all subsequent data. This uses <strong>XChaCha20-Poly1305</strong> — an AEAD cipher that provides both encryption (confidentiality) and authentication (tamper detection) for every chunk of data.</p>
+<blockquote class="callout-term">
+<p><strong>Terminology:</strong> <strong>AEAD</strong> (Authenticated Encryption with Associated Data) means each encrypted message includes a cryptographic tag that proves the data hasn&#39;t been modified. If even a single bit changes in transit, the authentication tag verification fails and the recipient knows the data was tampered with.</p>
+</blockquote>
+
+<p>Why XChaCha20-Poly1305 and not AES-GCM?</p>
+<figure class="wp-block-table"><table>
+<thead>
+<tr><th>Property</th><th>XChaCha20-Poly1305</th><th>AES-GCM</th></tr>
+</thead>
+<tbody>
+<tr><td>Nonce size</td><td>24 bytes (safe to generate randomly)</td><td>12 bytes (nonce reuse = catastrophic)</td></tr>
+<tr><td>Hardware dependency</td><td>Pure software — fast everywhere</td><td>Fast only with AES-NI instructions</td></tr>
+<tr><td>Nonce management</td><td>Automatic (libsodium secretstream handles it)</td><td>Manual (application must track nonces)</td></tr>
+<tr><td>Implementation safety</td><td>Constant-time by design</td><td>Timing side-channels in software implementations</td></tr>
+</tbody>
+</table></figure>
+
+<p>The 24-byte nonce is the key advantage. With a 12-byte nonce (AES-GCM), you risk catastrophic failure if two messages accidentally use the same nonce. With 24 bytes, random nonce generation is safe for trillions of messages. And libsodium&#39;s secretstream manages the nonce internally — the application never touches it.</p>
+<p>The result: application code just reads and writes from a standard Node.js Duplex stream. The encryption is invisible.</p>
+<div class="code-filename">secret-stream-example.js</div>
+<pre><code class="language-js">const SecretStream = require('@hyperswarm/secret-stream')
+
+// Wrap any raw Duplex stream (e.g., the holepunched UDP path)
+const encrypted = new SecretStream(isInitiator, rawStream, {
+  keypair: { publicKey, secretKey }  // Your Ed25519 identity keypair
+})
+
+// Wait for the handshake to complete
+await encrypted.opened
+
+// Now you have:
+console.log(encrypted.remotePublicKey)  // Peer's verified Ed25519 key
+console.log(encrypted.handshakeHash)    // Cryptographic binding of handshake
+
+// Read and write just like any stream — encryption is transparent
+encrypted.write('Hello, authenticated peer!')
+encrypted.on('data', data =&gt; console.log('Received:', data.toString()))</code></pre>
+
+<blockquote class="callout-gotcha">
+<p><strong>Gotcha:</strong> Secret Stream wraps the <em>entire</em> connection — not individual messages. You don&#39;t choose what to encrypt and what to leave plain. Everything is encrypted, always. This is by design: selective encryption is an anti-pattern that inevitably leaks metadata.</p>
+</blockquote>
+
+<hr>
+<h2 id="protomux-one-pipe-many-protocols">Protomux: One Pipe, Many Protocols</h2>
+
+<p>We now have an encrypted Duplex stream. One encrypted pipe between two peers. But a real P2P application needs to do many things simultaneously over that connection:</p>
+<ul>
+<li>Replicate a Hypercore (the append-only log from Part 3)</li>
+<li>Sync an Autobase (the multi-writer system from Part 6)</li>
+<li>Send custom application messages (chat, commands, metadata)</li>
+</ul>
+<p>You <em>could</em> design a single protocol that handles all of these in one stream. But that creates a monolithic protocol where changes to one concern affect everything else.</p>
+<p><a href="https://github.com/holepunchto/protomux" target="_blank">Protomux</a> solves this by multiplexing multiple independent protocol <strong>channels</strong> over the single encrypted stream. Each channel has its own message types, its own state machine, and its own lifecycle — but they all share the same underlying connection.</p>
+<blockquote class="callout-feynman">
+<p><strong>Feynman Moment:</strong> Think of Protomux like USB. A single USB cable carries power, data, and video — but each protocol runs independently. Your mouse doesn&#39;t need to know about your monitor. Similarly, Hypercore replication doesn&#39;t need to know about your chat protocol. They share a wire but live in separate channels.</p>
+</blockquote>
+
+<h3 id="how-channel-pairing-works">How Channel Pairing Works</h3>
+
+<p>When two peers want to communicate over a protocol, they each create a channel with the same <strong>protocol name</strong> and <strong>id</strong>. Protomux matches channels across peers by this pair.</p>
+<div class="code-filename">protomux-channels.js</div>
+<pre><code class="language-js">const Protomux = require('protomux')
+
+// Create a muxer over the encrypted stream
+const mux = Protomux.from(encryptedStream)
+
+// Open a channel for &quot;my-chat-protocol&quot;
+const channel = mux.createChannel({
+  protocol: 'my-chat-protocol',
+  id: Buffer.from('room-42'),    // Optional: distinguishes instances
+  handshake: chatHandshakeCodec, // Optional: codec for opening handshake
+
+  onopen (handshakeData) {
+    console.log('Channel opened! Peer sent:', handshakeData)
+  },
+  onclose () {
+    console.log('Channel closed by peer')
+  }
+})
+
+// Define message types on the channel
+const textMessage = channel.addMessage({
+  encoding: c.string,          // compact-encoding codec
+  onmessage (msg) {
+    console.log('Chat message:', msg)
+  }
+})
+
+// Open the channel (triggers pairing with the remote side)
+channel.open(myHandshakePayload)
+
+// Send a message
+textMessage.send('Hello from the other side')</code></pre>
+
+<p>The pairing is <strong>symmetric</strong>: both sides must create a channel with the same protocol name and id. If Alice creates <code>{ protocol: &#39;chat&#39;, id: roomId }</code> and Bob creates the same, Protomux pairs them. If only one side creates the channel, it stays open but idle until the other side matches.</p>
+<h3 id="the-three-lifecycles">The Three Lifecycles</h3>
+
+<p>Every Protomux channel has three phases:</p>
+<ol>
+<li><p><strong>Opening</strong> — The channel sends a handshake message to the remote peer. If both sides have opened, the <code>onopen</code> handler fires with the remote&#39;s handshake data. This is where you exchange initial state (capabilities, versions, discovery keys).</p>
+</li>
+<li><p><strong>Messages</strong> — While open, either side can send messages. Each message type is registered with <code>channel.addMessage()</code> and has its own encoding and handler. Messages within a channel are delivered in order.</p>
+</li>
+<li><p><strong>Closing</strong> — Either side can close the channel. The <code>onclose</code> handler fires on the remote. Closing one channel does <em>not</em> close the underlying connection or affect other channels.</p>
+</li>
+</ol>
+<blockquote class="callout-insight">
+<p><strong>Key Insight:</strong> Hyperswarm deduplicates connections — if you join multiple topics and discover the same peer through several of them, you still get a single connection. Protomux is what makes this work: each topic or Hypercore gets its own channel on the shared connection. Without multiplexing, connection deduplication would be impossible.</p>
+</blockquote>
+
+<h3 id="how-hypercore-uses-protomux">How Hypercore Uses Protomux</h3>
+
+<p>When you replicate a Hypercore, the replication protocol opens a Protomux channel with:</p>
+<ul>
+<li><strong>Protocol name:</strong> <code>&#39;hypercore/alpha&#39;</code></li>
+<li><strong>Channel id:</strong> The Hypercore&#39;s <strong>discoveryKey</strong> (a keyed BLAKE2b-256 hash: <code>BLAKE2b-256(key=publicKey, data=&quot;hypercore&quot;)</code> — not the public key itself, which would leak what data you&#39;re interested in)</li>
+</ul>
+<p>The Hypercore replication protocol defines 10 message types on this channel:</p>
+<figure class="wp-block-table"><table>
+<thead>
+<tr><th>Message</th><th>Direction</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td>`sync`</td><td>Both</td><td>Announce local length and fork ID</td></tr>
+<tr><td>`request`</td><td>Either</td><td>Ask for a specific block</td></tr>
+<tr><td>`cancel`</td><td>Either</td><td>Cancel a pending block request</td></tr>
+<tr><td>`data`</td><td>Either</td><td>Respond with block + Merkle proof</td></tr>
+<tr><td>`noData`</td><td>Either</td><td>Indicate requested data is unavailable</td></tr>
+<tr><td>`want`</td><td>Either</td><td>Express interest in a block range</td></tr>
+<tr><td>`unwant`</td><td>Either</td><td>Cancel interest in a range</td></tr>
+<tr><td>`bitfield`</td><td>Either</td><td>Full bitfield of available blocks</td></tr>
+<tr><td>`range`</td><td>Either</td><td>Download a contiguous range</td></tr>
+<tr><td>`extension`</td><td>Either</td><td>Custom extension messages</td></tr>
+</tbody>
+</table></figure>
+
+<p>When Alice replicates three different Hypercores with Bob, three Protomux channels open — one per discoveryKey — all sharing the same encrypted connection. Each channel independently tracks which blocks Alice has, which Bob has, and what needs to be exchanged.</p>
+<hr>
+<h2 id="cork-and-uncork-batching-for-performance">Cork and Uncork: Batching for Performance</h2>
+
+<p>When an application sends many small messages in quick succession — say, responding to multiple block requests during replication — each <code>send()</code> call would normally trigger a separate write to the underlying stream. That means separate encryption operations, separate system calls, and separate network packets.</p>
+<p>Protomux (and individual channels) support <strong>corking</strong>: a pattern that buffers messages and flushes them as a single batch.</p>
+<div class="code-filename">corking-example.js</div>
+<pre><code class="language-js">// Without corking: 100 separate writes
+for (const block of blocks) {
+  dataMessage.send(block)  // Each send = separate packet
+}
+
+// With corking: 1 batched write
+mux.cork()
+for (const block of blocks) {
+  dataMessage.send(block)  // Buffered, not sent yet
+}
+mux.uncork()  // All 100 messages flushed as one batch</code></pre>
+
+<blockquote class="callout-gotcha">
+<p><strong>Gotcha:</strong> Corking is about performance, not correctness. Messages are still delivered in order whether you cork or not. But for high-throughput scenarios like replicating a large Hypercore, the difference between 1,000 individual writes and 10 batched writes is significant. Hypercore replication uses corking internally.</p>
+</blockquote>
+
+<hr>
+<h2 id="compact-encoding-the-wire-format">Compact Encoding: The Wire Format</h2>
+
+<p>Every message on a Protomux channel needs to be serialized to bytes for transmission and deserialized on the other end. Hyperswarm uses <a href="https://github.com/holepunchto/compact-encoding" target="_blank">Compact Encoding</a> — a binary serialization library that&#39;s both space-efficient and fast.</p>
+<p>The pattern is always three steps:</p>
+<div class="code-filename">compact-encoding-example.js</div>
+<pre><code class="language-js">const c = require('compact-encoding')
+
+// Define a message schema
+const myMessage = {
+  preencode (state, msg) {
+    c.uint.preencode(state, msg.type)      // 1. Measure: how many bytes?
+    c.string.preencode(state, msg.payload)
+  },
+  encode (state, msg) {
+    c.uint.encode(state, msg.type)          // 2. Write: serialize into buffer
+    c.string.encode(state, msg.payload)
+  },
+  decode (state) {
+    return {                                // 3. Read: deserialize from buffer
+      type: c.uint.decode(state),
+      payload: c.string.decode(state)
+    }
+  }
+}</code></pre>
+
+<p><strong>Preencode</strong> calculates the exact byte length needed. <strong>Encode</strong> writes the data into a pre-allocated buffer. <strong>Decode</strong> reads it back.</p>
+<p>Why not just use JSON? Two reasons:</p>
+<figure class="wp-block-table"><table>
+<thead>
+<tr><th>Property</th><th>Compact Encoding</th><th>JSON</th></tr>
+</thead>
+<tbody>
+<tr><td>Overhead</td><td>Minimal (varint lengths, raw bytes)</td><td>High (key names repeated, quotes, escaping)</td></tr>
+<tr><td>Speed</td><td>Faster decode (binary, no parsing)</td><td>Slower parse (string processing)</td></tr>
+<tr><td>Types</td><td>Native buffers, uints, fixed arrays</td><td>Everything is a string</td></tr>
+<tr><td>Consistency</td><td>Matches the rest of the Holepunch stack</td><td>Foreign to the protocol layer</td></tr>
+</tbody>
+</table></figure>
+
+<p>For a wire protocol that might exchange thousands of messages per second during replication, this matters.</p>
+<hr>
+<h2 id="the-full-stack-from-udp-to-application">The Full Stack: From UDP to Application</h2>
+
+<p>Let&#39;s trace a single message through the entire transport stack to see how the pieces fit together:</p>
+
+<div class="mermaid-container"><pre class="mermaid">
+graph TD
+    A["Application writes: 'Hello'"] --> B["Protomux: Route to correct channel"]
+    B --> C["Compact Encoding: Serialize to bytes"]
+    C --> D["Protomux: Frame with channel ID + message type"]
+    D --> E["Secret Stream: Encrypt with XChaCha20-Poly1305"]
+    E --> F["UDX: Reliable delivery over UDP"]
+    F --> G["Wire: Encrypted bytes on the network"]
+
+    G --> H["UDX: Reassemble reliable stream"]
+    H --> I["Secret Stream: Decrypt + verify auth tag"]
+    I --> J["Protomux: Demux to correct channel"]
+    J --> K["Compact Encoding: Deserialize from bytes"]
+    K --> L["Application receives: 'Hello'"]
+
+    style A fill:#22272e,stroke:#539bf5,color:#e6edf3
+    style L fill:#22272e,stroke:#539bf5,color:#e6edf3
+    style E fill:#22272e,stroke:#a371f7,color:#e6edf3
+    style I fill:#22272e,stroke:#a371f7,color:#e6edf3
+</pre></div>
+
+<p><em>Figure 2: A message travels down the stack on one side and back up on the other. Encryption happens once at the stream level — individual channels don&#39;t re-encrypt.</em></p>
+<p>Notice that encryption happens at the Secret Stream level — <em>below</em> the multiplexing. This means:</p>
+<ul>
+<li>All channels share the same encryption session (one handshake, not one per channel)</li>
+<li>A new Protomux channel doesn&#39;t require a new Noise handshake</li>
+<li>The encrypted stream can&#39;t distinguish between channels (an eavesdropper doesn&#39;t even know how many protocols are active)</li>
+</ul>
+<blockquote class="callout-feynman">
+<p><strong>Feynman Moment:</strong> Why encrypt below the multiplexer, not above it? If you encrypted each channel separately, an eavesdropper could observe the number of channels, the timing of messages per channel, and the size distribution of each protocol&#39;s traffic. By encrypting the entire multiplexed stream, all of this metadata is hidden. The eavesdropper sees one opaque stream of bytes.</p>
+</blockquote>
+
+<hr>
+<h2 id="the-tradeoffs">The Tradeoffs</h2>
+
+<figure class="wp-block-table"><table>
+<thead>
+<tr><th>What You Gain</th><th>What You Pay</th></tr>
+</thead>
+<tbody>
+<tr><td>Forward secrecy via ephemeral keys</td><td>1 extra round-trip vs. IK pattern</td></tr>
+<tr><td>Identity hiding (static keys encrypted)</td><td>Cannot authenticate before the handshake completes</td></tr>
+<tr><td>Mutual authentication without certificate authority</td><td>Must distribute public keys out-of-band for trust</td></tr>
+<tr><td>Multiplexed protocols over single connection</td><td>Channel pairing complexity</td></tr>
+<tr><td>AEAD encryption on every byte</td><td>Modest CPU overhead for encryption</td></tr>
+<tr><td>Corked batch writes</td><td>Must remember to cork/uncork in hot paths</td></tr>
+</tbody>
+</table></figure>
+
+<p>The overhead is real but modest. The Noise handshake adds three messages to connection setup (typically &lt; 100ms combined). The XChaCha20-Poly1305 encryption runs at several GB/s on modern hardware. For a P2P application, the NAT traversal from Part 1 dominates the latency budget — the encryption is effectively free by comparison.</p>
+<hr>
+<h2 id="in-practice-building-a-multiplexed-chat">In Practice: Building a Multiplexed Chat</h2>
+
+<p>Here&#39;s a minimal example that combines everything — Secret Stream for encryption, Protomux for multiplexing, and Compact Encoding for wire serialization:</p>
+<div class="code-filename">multiplexed-chat.js</div>
+<pre><code class="language-js">const Hyperswarm = require('hyperswarm')
+const Protomux = require('protomux')
+const c = require('compact-encoding')
+const crypto = require('hypercore-crypto')
+
+const swarm = new Hyperswarm()
+const topic = crypto.discoveryKey(Buffer.from('heartit-chat-room'))
+
+swarm.on('connection', (encryptedStream, info) =&gt; {
+  // encryptedStream is already a Secret Stream (Hyperswarm wraps it)
+  const mux = Protomux.from(encryptedStream)
+
+  // Create a chat channel
+  const channel = mux.createChannel({
+    protocol: 'heartit-chat',
+    id: Buffer.from('general'),
+    onopen () { console.log('Chat channel opened with', info.publicKey.toString('hex').slice(0, 8)) },
+    onclose () { console.log('Chat channel closed') }
+  })
+
+  // Define a text message type
+  const chatMsg = channel.addMessage({
+    encoding: c.string,
+    onmessage (text) {
+      console.log(`[${info.publicKey.toString('hex').slice(0, 8)}] ${text}`)
+    }
+  })
+
+  channel.open()
+
+  // Read from stdin and send
+  process.stdin.on('data', data =&gt; {
+    chatMsg.send(data.toString().trim())
+  })
+})
+
+// Join the topic as both server and client
+const discovery = swarm.join(topic, { server: true, client: true })
+await discovery.flushed()
+console.log('Waiting for peers...')</code></pre>
+
+<p>This is ~30 lines of code for an encrypted, authenticated, peer-to-peer chat over a multiplexed connection with NAT traversal. No server, no certificate authority, no monthly bill.</p>
+<hr>
+<h2 id="key-takeaways">Key Takeaways</h2>
+
+<ul>
+<li><p><strong>Secret Stream wraps any Duplex stream in Noise XX + XChaCha20-Poly1305 encryption.</strong> Three handshake messages establish mutual authentication and session keys. After that, libsodium&#39;s secretstream encrypts every byte with AEAD.</p>
+</li>
+<li><p><strong>Noise XX is the right pattern for peer discovery.</strong> Neither side needs to know the other&#39;s public key in advance. Both static keys are transmitted during the handshake, encrypted under ephemeral keys for identity hiding.</p>
+</li>
+<li><p><strong>Forward secrecy means compromised keys don&#39;t expose past sessions.</strong> Ephemeral keypairs are generated per handshake and discarded afterward. Recording traffic today is useless if keys leak tomorrow.</p>
+</li>
+<li><p><strong>Protomux multiplexes independent protocols over a single encrypted connection.</strong> Channels pair by protocol name + id. Each channel has its own message types, lifecycle, and state. Hypercore replication uses <code>hypercore/alpha</code> channels keyed by discoveryKey.</p>
+</li>
+<li><p><strong>Encrypt below the multiplexer, not above it.</strong> This hides the number of active channels, per-channel message timing, and protocol-specific traffic patterns from eavesdroppers.</p>
+</li>
+<li><p><strong>Cork your writes in hot paths.</strong> Batching messages with <code>mux.cork()</code> / <code>mux.uncork()</code> reduces system calls and encryption operations for high-throughput scenarios.</p>
+</li>
+</ul>
+<hr>
+<h2 id="what-s-next">What's Next</h2>
+
+<p>We have an encrypted pipe that can carry multiple protocols. Now we need something worth transmitting.</p>
+<p>In <a href="part-3-hypercore-merkle.md">Part 3</a>, we&#39;ll build an append-only log — Hypercore — that uses a flat in-order Merkle tree to make every byte cryptographically verifiable. We&#39;ll see how a peer can download a single block out of millions and prove it hasn&#39;t been tampered with, using only a handful of hashes and one Ed25519 signature. This is the data structure that everything else in the Holepunch stack is built on.</p>
+<hr>
+<h2 id="references-further-reading">References & Further Reading</h2>
+
+<ol>
+<li><a href="https://github.com/holepunchto/hyperswarm-secret-stream" target="_blank">holepunchto/hyperswarm-secret-stream — Noise XX + libsodium transport encryption</a></li>
+<li><a href="https://github.com/holepunchto/protomux" target="_blank">holepunchto/protomux — Protocol multiplexing over encrypted streams</a></li>
+<li><a href="https://github.com/holepunchto/compact-encoding" target="_blank">holepunchto/compact-encoding — Binary wire serialization</a></li>
+<li><a href="https://noiseprotocol.org/noise.html" target="_blank">Noise Protocol Framework — Specification</a></li>
+<li><a href="https://doc.libsodium.org/secret-key_cryptography/secretstream" target="_blank">libsodium secretstream — XChaCha20-Poly1305 AEAD streaming</a></li>
+<li><a href="https://github.com/holepunchto/noise-curve-ed" target="_blank">holepunchto/noise-curve-ed — Ed25519 Diffie-Hellman (direct, without Curve25519 conversion)</a></li>
+<li><a href="https://github.com/holepunchto/hypercore" target="_blank">holepunchto/hypercore — Append-only log (uses Protomux for replication)</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Man-in-the-middle_attack" target="_blank">Wikipedia — Man-in-the-middle attack</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Authenticated_encryption" target="_blank">Wikipedia — Authenticated Encryption</a></li>
+</ol>
+<hr>
+<blockquote class="series-nav">
+<p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
+<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <strong>Part 2: Encrypted Pipes (You are here)</strong> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
+</blockquote>
+
+
+<!-- Mermaid.js — renders <pre class="mermaid"> blocks -->
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'dark',
+  themeVariables: {
+    primaryColor: '#2d333b',
+    primaryTextColor: '#8b949e',
+    primaryBorderColor: '#373e47',
+    lineColor: '#539bf5',
+    secondaryColor: '#22272e',
+    tertiaryColor: '#1b1f24',
+    noteBkgColor: '#2d333b',
+    noteTextColor: '#8b949e',
+    noteBorderColor: '#986ee2',
+    actorBkg: '#2d333b',
+    actorBorder: '#373e47',
+    actorTextColor: '#cdd9e5',
+    actorLineColor: '#373e47',
+    signalColor: '#539bf5',
+    signalTextColor: '#8b949e',
+    sequenceNumberColor: '#1b1f24'
+  }
+});
+</script>

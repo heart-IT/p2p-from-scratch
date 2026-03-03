@@ -1,0 +1,367 @@
+<!--
+  WORDPRESS IMPORT INSTRUCTIONS
+  ==============================
+  1. Create a new Post in WordPress
+  2. Switch to the Code Editor (⋮ menu > Code editor)
+  3. Select ALL text below this comment block and paste
+  4. Switch back to Visual Editor to verify
+
+  Plugins required:
+  - Prismatic (syntax highlighting)
+
+  Mermaid diagrams are loaded via CDN (no plugin needed).
+  The <script> tag at the bottom handles rendering.
+-->
+
+<h1 id="p2p-from-scratch-part-7-trust-no-one-verify-everything">P2P from Scratch — Part 7: Trust No One, Verify Everything</h1>
+
+<blockquote>
+<p>&quot;Cryptography is typically bypassed, not penetrated.&quot;
+— Adi Shamir</p>
+</blockquote>
+
+<p><strong>Excerpt:</strong> The Holepunch stack is built on strong cryptography — Ed25519 signatures, BLAKE2b hashes, Noise XX handshakes. But cryptography alone doesn&#39;t make a system secure. Attackers don&#39;t break your ciphers — they poison your DHT, surround your node, or steal your keys. This post maps the full security model of the Holepunch stack: what&#39;s enforced in code, what&#39;s assumed by convention, and where the real attack surface lies.</p>
+
+<blockquote class="series-nav">
+<p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
+<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <strong>Part 7: Trust No One (You are here)</strong> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
+</blockquote>
+
+<hr>
+<h2 id="the-problem-no-gatekeeper-no-safety-net">The Problem: No Gatekeeper, No Safety Net</h2>
+
+<p>In a client-server world, security has a natural chokepoint. The server validates inputs, authenticates users, and controls access. If someone misbehaves, the server revokes their account. Problem solved.</p>
+<p>P2P has no server. No bouncer at the door. Every peer is simultaneously a client and a server — and any of them might be malicious. An attacker doesn&#39;t need to find a vulnerability in your code. They just need to join the network and start lying.</p>
+<p>The attack surface for a P2P system is fundamentally different from a centralized one:</p>
+<ul>
+<li><strong>DHT Sybil attacks</strong> — flood the routing table with fake nodes to control discovery</li>
+<li><strong>Eclipse attacks</strong> — surround a target node so every peer it talks to is attacker-controlled</li>
+<li><strong>DHT poisoning</strong> — announce fake records for a topic so lookups return attacker-controlled addresses</li>
+<li><strong>Data poisoning</strong> — serve corrupted blocks to peers requesting Hypercore data</li>
+<li><strong>Identity theft</strong> — steal a keypair and impersonate a legitimate user</li>
+<li><strong>Key loss</strong> — no &quot;reset password&quot; in P2P; lose your key, lose your identity forever</li>
+</ul>
+<p>The Holepunch stack addresses each of these — some with hard cryptographic guarantees, others with probabilistic defenses, and a few with conventions that application developers must uphold themselves.</p>
+<blockquote class="callout-insight">
+<p><strong>Key Insight:</strong> P2P security is layered, not binary. The cryptographic layer (signatures, handshakes, Merkle proofs) provides mathematical guarantees. The network layer (Sybil resistance, peer diversity) provides probabilistic protection. The application layer (key backup, access control) provides operational safety. A secure P2P application needs all three.</p>
+</blockquote>
+
+<hr>
+<h2 id="the-mental-model-a-city-of-strangers">The Mental Model: A City of Strangers</h2>
+
+<p>Imagine a city with no police, no ID cards, and no central records office. Anyone can walk in, claim any name, and start talking to residents. How do you build trust?</p>
+<p>You don&#39;t trust identities — you trust <em>cryptographic proof</em>. Instead of asking &quot;who are you?&quot; you ask &quot;prove you know this secret.&quot; Instead of checking a database, you verify a mathematical relationship. And instead of trusting one gatekeeper, you insist on hearing from multiple independent sources before believing anything.</p>
+<blockquote class="callout-feynman">
+<p><strong>Feynman Moment:</strong> The analogy suggests that individual interactions are untrustworthy — but that&#39;s not quite right. Each <em>individual</em> cryptographic verification is absolute. The Ed25519 signature either matches or it doesn&#39;t. The Merkle proof either checks out or it doesn&#39;t. What&#39;s probabilistic is the <em>network-level</em> protection: no single mechanism prevents a well-resourced attacker from controlling your view of the network. The defense is redundancy, diversity, and layering — making the cost of attack prohibitively high rather than mathematically impossible.</p>
+</blockquote>
+
+<hr>
+<h2 id="layer-1-sybil-resistance-in-the-dht">Layer 1: Sybil Resistance in the DHT</h2>
+
+<p>A <strong>Sybil attack</strong> is when an adversary creates many fake identities to gain disproportionate influence. In a DHT, this means generating thousands of nodes to dominate the routing table — so that when a victim looks up any topic, the query routes through attacker-controlled nodes.</p>
+<p>HyperDHT defends against Sybil attacks with three interlocking mechanisms.</p>
+<h3 id="mechanism-1-node-ids-are-tied-to-network-address">Mechanism 1: Node IDs Are Tied to Network Address</h3>
+
+<p>As we covered in <a href="part-5-dht-discovery.md">Part 5</a>, every DHT node&#39;s ID is derived from its observed IP and port:</p>
+<div class="code-filename">dht-rpc/lib/peer.js</div>
+<pre><code class="language-js">function id (host, port, out = b4a.allocUnsafeSlow(32)) {
+  const addr = out.subarray(0, 6)
+  ipv4.encode({ start: 0, end: 6, buffer: addr }, { host, port })
+  sodium.crypto_generichash(out, addr)  // BLAKE2b
+  return out
+}</code></pre>
+
+<p>You can&#39;t choose your position in the keyspace. To place a node near a specific target key, you&#39;d need to find an IP:port combination whose BLAKE2b hash is close to that key — essentially brute-forcing a hash function. And the ID is derived from the <em>observed</em> address (what the network sees), not what the node claims, so NAT doesn&#39;t help the attacker.</p>
+<h3 id="mechanism-2-round-trip-tokens-prove-address-ownership">Mechanism 2: Round-Trip Tokens Prove Address Ownership</h3>
+
+<p>Before a node can write to the DHT (announce a topic, store a record), it must present a <strong>token</strong> received from the target node in a previous request. The token is a keyed BLAKE2b hash of the requester&#39;s IP address:</p>
+<div class="code-filename">dht-rpc/lib/io.js</div>
+<pre><code class="language-js">token (addr, i) {
+  const token = b4a.allocUnsafe(32)
+  sodium.crypto_generichash(token, b4a.from(addr.host), this._secrets[i])
+  return token
+}</code></pre>
+
+<p>Two secrets are maintained, rotating periodically. Tokens are checked against both the current and previous secret, giving them an effective lifetime of about 15 seconds. This prevents IP spoofing — an attacker can&#39;t write to the DHT from a forged address because they&#39;d never receive the token.</p>
+<h3 id="mechanism-3-the-20-minute-proving-period">Mechanism 3: The 20-Minute Proving Period</h3>
+
+<p>New nodes start in <strong>ephemeral</strong> mode — they can query the DHT but don&#39;t store routing information for others. After roughly 20 minutes of stable uptime (240 ticks × 5 seconds), the node undergoes a reachability test: it asks 5 peers to ping it back, requiring at least 3 responses from distinct hosts. Only then does it transition to <strong>persistent</strong> mode.</p>
+<p>This 20-minute cold start means a Sybil attacker can&#39;t rapidly spin up and tear down thousands of nodes — each one needs to survive for 20 minutes before it participates in routing. After a sleep/wake cycle, the node resets to ephemeral and must re-prove stability (taking roughly 60 minutes in that case).</p>
+<blockquote class="callout-insight">
+<p><strong>Key Insight:</strong> None of these mechanisms makes Sybil attacks impossible — a well-funded attacker with thousands of distinct IP addresses and patience could still position nodes near a target. The defense is <em>economic</em>: it makes the attack expensive enough that the vast majority of adversaries can&#39;t afford it. This is the fundamental security model of open DHTs.</p>
+</blockquote>
+
+<hr>
+<h2 id="layer-2-eclipse-prevention">Layer 2: Eclipse Prevention</h2>
+
+<p>An <strong>Eclipse attack</strong> is more targeted than a Sybil attack. Instead of dominating the whole DHT, the attacker surrounds a specific victim — controlling every peer the victim communicates with. If successful, the attacker controls the victim&#39;s entire view of the network.</p>
+<p>HyperDHT&#39;s routing table design provides structural resistance:</p>
+<ul>
+<li><strong>K-bucket eviction favors incumbents.</strong> When a bucket is full and a new node appears, the DHT pings the oldest existing node. Only if it&#39;s dead does the new node get in. This means long-running honest nodes are hard to displace.</li>
+<li><strong>Down hints are rate-limited.</strong> Attackers can&#39;t rapidly claim that honest nodes are offline to trigger eviction. The default limit is 50 down-hint events before throttling kicks in.</li>
+<li><strong>Multiple independent lookup paths.</strong> A Kademlia lookup queries up to 10 nodes in parallel from different parts of the routing table. An attacker would need to control nodes across multiple buckets to intercept all paths.</li>
+</ul>
+<p>But the most important Eclipse defense is <strong>peer diversity at the application level</strong>. If your application relies on a single DHT path for critical data, one compromised route can blind you. Maintaining connections to peers discovered through different topics, at different times, from different network paths makes Eclipse attacks exponentially harder.</p>
+<blockquote class="callout-gotcha">
+<p><strong>Gotcha:</strong> Eclipse resistance is a shared responsibility. The DHT provides structural resistance, but the application must maintain peer diversity. If your application connects to only 2-3 peers for important data, you&#39;re vulnerable regardless of the DHT&#39;s defenses.</p>
+</blockquote>
+
+<hr>
+<h2 id="layer-3-dht-poisoning-and-the-noise-handshake">Layer 3: DHT Poisoning and the Noise Handshake</h2>
+
+<p><strong>DHT poisoning</strong> is when an attacker announces fake records on a topic — so that when you look up &quot;who has this data?&quot;, the DHT returns attacker-controlled addresses instead of real peers.</p>
+<p>The defense is elegant: <strong>the DHT provides candidates, not trusted peers.</strong> Every connection goes through a Noise XX handshake (from <a href="part-2-encrypted-pipes.md">Part 2</a>) that cryptographically proves the remote peer holds the private key matching the announced public key.</p>
+<pre><code>Lookup result:  { publicKey: 0xABCD..., relayAddresses: [...] }
+                          ↓
+               HyperDHT connect(publicKey)
+                          ↓
+               Noise XX handshake (3 messages)
+                          ↓
+     Handshake proves:  remote holds private key for 0xABCD...
+                          ↓
+               Connection established — or rejected</code></pre>
+
+<p>The handshake is non-negotiable. If the remote party can&#39;t prove key ownership, the connection fails. An attacker who poisons the DHT with fake addresses will successfully intercept lookup results — but the victim&#39;s connection attempt will fail at the Noise handshake because the attacker doesn&#39;t hold the legitimate private key.</p>
+<p>The HyperDHT server firewall adds another layer. It runs <em>after</em> the remote identity is cryptographically verified but <em>before</em> the connection is fully established:</p>
+<div class="code-filename">hyperdht-firewall.js</div>
+<pre><code class="language-js">const server = dht.createServer({
+  async firewall (remotePublicKey, remotePayload, clientAddress) {
+    // remotePublicKey is already verified by Noise handshake
+    // Return true to reject, false to accept
+    return !allowedKeys.has(remotePublicKey.toString('hex'))
+  }
+})</code></pre>
+
+<p>The firewall receives three arguments: the verified public key, handshake payload data, and the client&#39;s network address. Because it runs post-authentication, you can implement access control based on cryptographic identity — not just IP addresses.</p>
+<blockquote class="callout-term">
+<p><strong>Terminology:</strong> The HyperDHT server firewall (<code>async firewall(remotePublicKey, remotePayload, clientAddress)</code> — 3 args, can be async) is distinct from the Hyperswarm firewall (<code>firewall(remotePublicKey, payload)</code> — 2 args, synchronous). The HyperDHT firewall runs at the connection level; the Hyperswarm firewall runs at the swarm orchestration level.</p>
+</blockquote>
+
+<hr>
+<h2 id="layer-4-the-merkle-verification-chain">Layer 4: The Merkle Verification Chain</h2>
+
+<p>Even after you&#39;ve connected to a legitimate peer, you don&#39;t trust their data. Every block received from a remote Hypercore is verified through a <strong>complete cryptographic chain</strong> before your application sees it.</p>
+<p>Here&#39;s the full chain, from raw bytes to trusted data:</p>
+<pre><code>┌─────────────────────────────────────────────────────────────┐
+│                 The Verification Chain                        │
+│                                                              │
+│  1. Raw block data arrives from peer                        │
+│     ↓                                                        │
+│  2. BLAKE2b(0x00 ‖ uint64(data.length) ‖ data) → leaf hash │
+│     ↓                                                        │
+│  3. Merkle uncle path: leaf + siblings → root peaks          │
+│     ↓                                                        │
+│  4. BLAKE2b(0x02 ‖ for each root: hash ‖ index ‖ size)     │
+│     → bagged tree hash                                       │
+│     ↓                                                        │
+│  5. 112-byte signable:                                       │
+│     [TREE namespace (32)] [manifest hash (32)]               │
+│     [tree hash (32)] [length (8)] [fork (8)]                 │
+│     ↓                                                        │
+│  6. Ed25519 signature verification against core's public key │
+│     ↓                                                        │
+│  7. Data is trusted ✓                                        │
+└─────────────────────────────────────────────────────────────┘</code></pre>
+
+<p>Each step has a specific security property:</p>
+<figure class="wp-block-table"><table>
+<thead>
+<tr><th>Step</th><th>What It Prevents</th></tr>
+</thead>
+<tbody>
+<tr><td>Leaf hash with <code>0x00</code> type prefix</td><td>Second-preimage attacks (leaf hashes can't collide with parent hashes)</td></tr>
+<tr><td>Parent hash with <code>0x01</code> type prefix</td><td>Domain separation between tree levels</td></tr>
+<tr><td>Root bagging with <code>0x02</code> type prefix</td><td>Prevents root hash collisions across different tree structures</td></tr>
+<tr><td>Manifest hash in signable</td><td>Prevents cross-core signature reuse (each core has a unique manifest)</td></tr>
+<tr><td>Length in signable</td><td>Prevents truncation attacks (signature commits to exact tree size)</td></tr>
+<tr><td>Fork counter in signable</td><td>Detects unauthorized tree rewrites (fork increments on truncate)</td></tr>
+<tr><td>Ed25519 signature</td><td>Proves the core owner authorized this exact tree state</td></tr>
+</tbody>
+</table></figure>
+
+<p>Hypercore performs this verification automatically on every block received during replication. You can&#39;t skip it, bypass it, or weaken it through configuration. It&#39;s not a &quot;security option&quot; — it&#39;s the data layer itself.</p>
+<blockquote class="callout-feynman">
+<p><strong>Feynman Moment:</strong> The three type prefixes (0x00 for leaves, 0x01 for parents, 0x02 for roots) seem like a minor detail, but they solve a subtle attack called a <strong>second-preimage attack</strong>. Without domain separation, an attacker could craft data whose leaf hash happens to equal a valid parent hash — potentially making a corrupted tree look valid. The type prefix makes this impossible: no matter what data you feed in, a leaf hash always starts with a different internal state than a parent hash. It&#39;s one byte that closes an entire class of attacks.</p>
+</blockquote>
+
+<hr>
+<h2 id="layer-5-sovereign-identity-and-key-management">Layer 5: Sovereign Identity and Key Management</h2>
+
+<p>In a centralized system, your identity lives on a server. Lose your password? Reset it via email. Account compromised? The admin revokes it. P2P has no admin. Your identity <em>is</em> your keypair, and the rules are simple and unforgiving:</p>
+<ul>
+<li><strong>Lose your private key → lose your identity forever.</strong> No recovery, no appeal, no reset.</li>
+<li><strong>Compromise your primary key → compromise everything.</strong> All Hypercore keypairs derive deterministically from the Corestore primary key (as we covered in <a href="part-4-hyperbee-hyperdrive.md">Part 4</a>). One key rules them all.</li>
+</ul>
+<p>The derivation chain from <a href="part-4-hyperbee-hyperdrive.md">Part 4</a>:</p>
+<pre><code>Primary Key (32 bytes — the root of trust)
+    ↓ keyed BLAKE2b with namespace + name
+Deterministic Seed (32 bytes)
+    ↓ crypto_sign_seed_keypair
+Ed25519 Keypair (for a specific Hypercore)</code></pre>
+
+<p>The primary key is the BLAKE2b key parameter in <code>crypto_generichash_batch</code> — it&#39;s a proper keyed hash, not a simple concatenation. Same primary key plus same namespace plus same name always produces the same Hypercore keypair.</p>
+<p>This determinism is both a strength and a vulnerability. It means you can regenerate all your cores from a single backup of the primary key. But it also means a single compromise exposes every core in the store.</p>
+<h3 id="key-backup-strategies">Key Backup Strategies</h3>
+
+<p>Since there&#39;s no &quot;forgot password&quot; flow, applications <em>must</em> provide key backup:</p>
+<figure class="wp-block-table"><table>
+<thead>
+<tr><th>Strategy</th><th>How It Works</th><th>Tradeoff</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Mnemonic seed</strong></td><td>Encode the 32-byte primary key as 24 words (BIP39-style)</td><td>Simple but requires secure physical storage</td></tr>
+<tr><td><strong>Social recovery</strong></td><td>Split the key into N shares, require M to reconstruct (Shamir's Secret Sharing)</td><td>Resilient to individual loss, but requires trusted social graph</td></tr>
+<tr><td><strong>Multi-device sync</strong></td><td>Replicate the primary key across user's devices</td><td>Convenient, but each device is an attack surface</td></tr>
+<tr><td><strong>Hardware key</strong></td><td>Store the primary key in a hardware security module</td><td>Strongest protection, but adds cost and complexity</td></tr>
+</tbody>
+</table></figure>
+
+<blockquote class="callout-gotcha">
+<p><strong>Gotcha:</strong> Corestore does not encrypt the primary key at rest. It&#39;s stored as raw bytes in whatever storage backend is configured — typically a file on disk. Protection depends entirely on the OS-level file permissions and disk encryption. If your application handles sensitive data, encrypting the primary key before storage is your responsibility, not Corestore&#39;s.</p>
+</blockquote>
+
+<hr>
+<h2 id="layer-6-blind-pairing-safe-introductions">Layer 6: Blind Pairing — Safe Introductions</h2>
+
+<p>How do you invite someone to a private group without a central server? You can&#39;t just share a Hypercore key on a public channel — anyone who intercepts it gets access. You need a protocol that lets two strangers establish a trusted connection through an out-of-band invitation.</p>
+<p><a href="https://github.com/holepunchto/blind-pairing-core" target="_blank">blind-pairing-core</a> implements a 5-step cryptographic handshake:</p>
+<p><strong>Step 1 — Create the invite.</strong> The member generates a random 32-byte seed, derives an Ed25519 keypair from it, and packages the seed with a discovery key into an invite token. This token is shared out-of-band (QR code, secure message, in person).</p>
+<p><strong>Step 2 — Candidate requests access.</strong> The candidate decodes the invite, re-derives the same keypair from the seed, and encrypts a request using XChaCha20-Poly1305. The encryption key is derived from the invitation&#39;s public key, so only someone with the invite can produce a valid request.</p>
+<p><strong>Step 3 — Member validates.</strong> The member decrypts the candidate&#39;s request using the same derived key and verifies the cryptographic receipt signature.</p>
+<p><strong>Step 4 — Member responds.</strong> If accepted, the member encrypts a response containing the group&#39;s core key and encryption key under a session-derived key, and sends it back.</p>
+<p><strong>Step 5 — Candidate verifies and joins.</strong> The candidate decrypts the response, verifies that the discovery key matches the original invite, and joins the group.</p>
+<pre><code>Member                              Candidate
+  │                                      │
+  │──── Invite (seed + discoveryKey) ───▶│  (out-of-band)
+  │                                      │
+  │◀─── Encrypted request ──────────────│  (via DHT)
+  │     (XChaCha20-Poly1305)            │
+  │                                      │
+  │──── Encrypted response ─────────────▶│  (via DHT)
+  │     (key + encryptionKey)            │
+  │                                      │
+  │         ✓ Paired                     │</code></pre>
+
+<p>The security of the scheme rests on the <strong>confidentiality of the invite</strong>. The 32-byte seed is essentially a bearer credential — anyone who possesses it can impersonate a legitimate candidate. This is why the invite must be shared through a trusted channel.</p>
+<blockquote class="callout-insight">
+<p><strong>Key Insight:</strong> Blind pairing separates <em>discovery</em> from <em>authorization</em>. The DHT is used for rendezvous (finding each other), but the invite seed provides the cryptographic basis for trust. An attacker who monitors the DHT sees encrypted blobs at ephemeral keypair locations — without the invite seed, they can&#39;t decrypt, forge, or replay anything.</p>
+</blockquote>
+
+<hr>
+<h2 id="the-trust-boundary-map">The Trust Boundary Map</h2>
+
+<p>Not all security properties are enforced the same way. Here&#39;s an honest accounting of what the Holepunch stack guarantees in code versus what it assumes by convention:</p>
+<figure class="wp-block-table"><table>
+<thead>
+<tr><th>Property</th><th>Enforced in Code</th><th>Assumed by Convention</th></tr>
+</thead>
+<tbody>
+<tr><td>Node IDs tied to IP:port (Sybil resistance)</td><td>Yes</td><td>—</td></tr>
+<tr><td>Round-trip tokens for DHT writes</td><td>Yes</td><td>—</td></tr>
+<tr><td>20-min ephemeral proving period</td><td>Yes</td><td>—</td></tr>
+<tr><td>Noise XX mutual authentication</td><td>Yes</td><td>—</td></tr>
+<tr><td>Merkle proof + Ed25519 signature verification</td><td>Yes</td><td>—</td></tr>
+<tr><td>Discovery key hides public key</td><td>Yes</td><td>—</td></tr>
+<tr><td>Type-prefix domain separation (0x00/0x01/0x02)</td><td>Yes</td><td>—</td></tr>
+<tr><td>Primary key encryption at rest</td><td>—</td><td>Application must implement</td></tr>
+<tr><td>Peer diversity for Eclipse resistance</td><td>—</td><td>Application must maintain</td></tr>
+<tr><td>Invite confidentiality (Blind Pairing)</td><td>—</td><td>Out-of-band channel must be secure</td></tr>
+<tr><td>Apply function purity (Autobase)</td><td>—</td><td>Developer must uphold</td></tr>
+<tr><td>Post-handshake key ratcheting</td><td>—</td><td>Not provided (single key for connection lifetime)</td></tr>
+</tbody>
+</table></figure>
+
+<p>The left column is math. The right column is discipline. A secure application needs both.</p>
+<blockquote class="callout-gotcha">
+<p><strong>Gotcha:</strong> The Noise XX handshake provides forward secrecy against later compromise of static keys — past sessions can&#39;t be decrypted even if the long-term key leaks. But there&#39;s no post-handshake key ratcheting (unlike Signal&#39;s Double Ratchet). A single Hypercore connection uses the same symmetric keys for its entire lifetime. For most P2P applications this is fine — connections are relatively short-lived and data is already authenticated by Merkle proofs. But it&#39;s worth understanding the boundary.</p>
+</blockquote>
+
+<hr>
+<h2 id="the-tradeoffs">The Tradeoffs</h2>
+
+<figure class="wp-block-table"><table>
+<thead>
+<tr><th>What You Gain</th><th>What You Pay</th></tr>
+</thead>
+<tbody>
+<tr><td>No central authority to compromise</td><td>No central authority to revoke access or reset passwords</td></tr>
+<tr><td>Cryptographic identity (unforgeable)</td><td>Key loss is permanent — no recovery without backup</td></tr>
+<tr><td>Automatic Merkle verification on every block</td><td>Can't skip verification for performance — it's always on</td></tr>
+<tr><td>Sybil resistance via hash-based node IDs</td><td>Determined attacker with many IPs can still position nodes</td></tr>
+<tr><td>Noise XX proves identity before connection</td><td>3-message handshake adds latency to every connection</td></tr>
+<tr><td>DHT poisoning defeated by handshake verification</td><td>Poisoning still wastes time (failed connections before finding real peers)</td></tr>
+<tr><td>Blind pairing enables serverless invitations</td><td>Invite security depends on out-of-band channel</td></tr>
+<tr><td>Deterministic key derivation from one master key</td><td>Single point of failure — master key compromise exposes all cores</td></tr>
+</tbody>
+</table></figure>
+
+<hr>
+<h2 id="key-takeaways">Key Takeaways</h2>
+
+<ul>
+<li><p><strong>The Holepunch stack has six security layers: Sybil resistance, Eclipse prevention, DHT poisoning defense, Merkle verification, sovereign identity, and Blind Pairing.</strong> Each addresses a different attack vector. No single layer is sufficient alone.</p>
+</li>
+<li><p><strong>Sybil resistance is economic, not absolute.</strong> Hash-based node IDs, round-trip tokens, and the 20-minute proving period make Sybil attacks expensive but not impossible. The defense works because the cost exceeds the reward for most adversaries.</p>
+</li>
+<li><p><strong>DHT lookups return candidates, not trusted peers.</strong> The Noise XX handshake is the real authentication boundary. An attacker who poisons the DHT can redirect your lookups, but can&#39;t pass the handshake without the legitimate private key.</p>
+</li>
+<li><p><strong>Every block is verified through a complete cryptographic chain.</strong> Leaf hash → Merkle path → root peaks → bagged tree hash → 112-byte signable → Ed25519 signature. This is enforced in code, not optional. Data poisoning is cryptographically impossible.</p>
+</li>
+<li><p><strong>Your master key is your entire identity.</strong> All Hypercore keypairs derive from the Corestore primary key. Protect it like a root CA certificate — encrypted storage, no transmission, backup strategy in place. There is no password reset in P2P.</p>
+</li>
+<li><p><strong>Know what&#39;s enforced and what&#39;s assumed.</strong> Cryptographic verification is mathematical. Peer diversity, key protection, and invite confidentiality are operational. Build your application assuming both layers are necessary.</p>
+</li>
+</ul>
+<hr>
+<h2 id="whats-next">What's Next</h2>
+
+<p>We&#39;ve mapped every layer of the stack — from punching through NATs to securing against sophisticated attacks. The technology is sound. But technology alone doesn&#39;t make a product. Users don&#39;t care about Merkle proofs or Sybil resistance. They care about whether the app works when they&#39;re on the subway, whether their data appears instantly, and whether they can recover when things go wrong.</p>
+<p>In <a href="part-8-ux-production.md">Part 8</a>, we&#39;ll tackle the hardest challenge of all: making P2P feel reliable to real humans. We&#39;ll cover offline-first design, optimistic UX for eventually-consistent data, availability strategies (seeded mesh, personal relay nodes, hybrid architectures), mobile deployment with suspend/resume, and the observability tools that keep a serverless system debuggable.</p>
+<hr>
+<h2 id="references-further-reading">References &amp; Further Reading</h2>
+
+<ol>
+<li><a href="https://github.com/holepunchto/dht-rpc" target="_blank">holepunchto/dht-rpc — Kademlia DHT with Sybil-resistant node IDs and round-trip tokens</a></li>
+<li><a href="https://github.com/holepunchto/hyperdht" target="_blank">holepunchto/hyperdht — DHT with keypair-authenticated Noise XX connections</a></li>
+<li><a href="https://github.com/holepunchto/hypercore" target="_blank">holepunchto/hypercore — Append-only log with Merkle proof verification</a></li>
+<li><a href="https://github.com/holepunchto/hypercore-crypto" target="_blank">holepunchto/hypercore-crypto — BLAKE2b hashing, Ed25519 signatures, type-prefixed domain separation</a></li>
+<li><a href="https://github.com/holepunchto/blind-pairing-core" target="_blank">holepunchto/blind-pairing-core — Cryptographic invitation protocol for serverless group access</a></li>
+<li><a href="https://github.com/holepunchto/secret-stream" target="_blank">holepunchto/secret-stream — Noise XX handshake + XChaCha20-Poly1305 post-handshake encryption</a></li>
+<li><a href="https://github.com/holepunchto/corestore" target="_blank">holepunchto/corestore — Deterministic key derivation from a single primary key</a></li>
+<li><a href="https://noiseprotocol.org/noise.html" target="_blank">Noise Protocol Framework — Specification for the XX handshake pattern</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Sybil_attack" target="_blank">Wikipedia — Sybil attack</a></li>
+<li><a href="https://docs.pears.com/" target="_blank">Pear Runtime Documentation</a></li>
+</ol>
+<hr>
+<blockquote class="series-nav">
+<p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
+<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <strong>Part 7: Trust No One (You are here)</strong> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
+</blockquote>
+
+
+<!-- Mermaid.js — renders <pre class="mermaid"> blocks -->
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'dark',
+  themeVariables: {
+    primaryColor: '#2d333b',
+    primaryTextColor: '#8b949e',
+    primaryBorderColor: '#373e47',
+    lineColor: '#539bf5',
+    secondaryColor: '#22272e',
+    tertiaryColor: '#1b1f24',
+    noteBkgColor: '#2d333b',
+    noteTextColor: '#8b949e',
+    noteBorderColor: '#986ee2',
+    actorBkg: '#2d333b',
+    actorBorder: '#373e47',
+    actorTextColor: '#cdd9e5',
+    actorLineColor: '#373e47',
+    signalColor: '#539bf5',
+    signalTextColor: '#8b949e',
+    sequenceNumberColor: '#1b1f24'
+  }
+});
+</script>
