@@ -140,7 +140,7 @@ For optimistic concurrency control, both `put` and `del` accept a `cas` function
 // Only update if the previous value matches a condition
 await db.put('alice', { age: 31, city: 'Berlin' }, {
   cas (prev, next) {
-    // prev is the current entry (or null if key doesn't exist)
+    // prev is the current entry (CAS is only called when updating an existing key)
     // Return true to proceed with the write
     return prev !== null && prev.value.age < next.value.age
   }
@@ -492,7 +492,7 @@ const store2 = new Corestore('./other-storage', {
 
 ### Sessions and Resource Management
 
-Corestore uses a garbage collection model for Hypercores. When a core becomes idle (no active sessions referencing it), it enters a GC cycle. A core must survive 3 GC cycles (~6 seconds of idle time) before being closed:
+Corestore uses a garbage collection model for Hypercores. When a core becomes idle (no active sessions referencing it), it enters a GC cycle. A core is closed after 3 GC ticks (~6 seconds of idle time, at 2-second intervals):
 
 ```js title="corestore-sessions.js"
 // Sessions share the same underlying storage and cores

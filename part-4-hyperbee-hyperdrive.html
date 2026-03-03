@@ -143,7 +143,7 @@ await batch.flush()
 <pre><code class="language-js">// Only update if the previous value matches a condition
 await db.put('alice', { age: 31, city: 'Berlin' }, {
   cas (prev, next) {
-    // prev is the current entry (or null if key doesn't exist)
+    // prev is the current entry (CAS is only called when updating an existing key)
     // Return true to proceed with the write
     return prev !== null &amp;&amp; prev.value.age &lt; next.value.age
   }
@@ -470,7 +470,7 @@ const store2 = new Corestore('./other-storage', {
 
 <h3 id="sessions-and-resource-management">Sessions and Resource Management</h3>
 
-<p>Corestore uses a garbage collection model for Hypercores. When a core becomes idle (no active sessions referencing it), it enters a GC cycle. A core must survive 3 GC cycles (~6 seconds of idle time) before being closed:</p>
+<p>Corestore uses a garbage collection model for Hypercores. When a core becomes idle (no active sessions referencing it), it enters a GC cycle. A core is closed after 3 GC ticks (~6 seconds of idle time, at 2-second intervals):</p>
 <div class="code-filename">corestore-sessions.js</div>
 <pre><code class="language-js">// Sessions share the same underlying storage and cores
 const session = store.session()

@@ -31,7 +31,7 @@ But what if there's no server? What if two laptops, both behind NATs, want to ta
 
 Neither one has a public address. Neither router has a mapping entry for the other. Any packet sent to either router from an unknown source gets silently dropped.
 
-This is the fundamental problem of peer-to-peer networking. It's not a software bug. It's network physics.
+This is the fundamental problem of peer-to-peer networking. It's not a software bug — it's a consequence of address translation and stateful firewalling.
 
 ---
 
@@ -68,7 +68,7 @@ Not all NATs are created equal. The way your router creates and filters its mapp
 
 The first three types share a critical property: the external port stays the same regardless of destination. If your laptop sends a packet to server A and gets mapped to external port `41928`, it also uses port `41928` when talking to server B. This consistency is what makes holepunching possible — a coordinator can observe the port from one connection and tell a peer to aim at that same port.
 
-Symmetric NAT breaks this entirely. Every new destination gets a fresh, unpredictable external port. A coordinator can observe the port your router assigned when talking to the DHT, but that port is useless for connecting to another peer — the router will assign a completely different one.
+Symmetric NAT breaks this entirely. Every new destination gets a fresh, unpredictable external port, and symmetric NATs typically combine this with address-and-port-dependent filtering — making both mapping and filtering unpredictable. A coordinator can observe the port your router assigned when talking to the DHT, but that port is useless for connecting to another peer — the router will assign a completely different one.
 
 > **Key Insight:** Holepunching is fundamentally about *port prediction*. If the coordinator can predict what external port your router will use, peers can aim their packets at it. Symmetric NAT makes this prediction impossible.
 
@@ -125,6 +125,8 @@ sequenceDiagram
 *Figure 1: The holepunching dance. Both peers must send before either receives.*
 
 > **Implementation detail:** The diagram above shows the logical flow. In practice, HyperDHT sends multiple probe rounds with retries — the first packets sent to an unopened NAT mapping are expected to be dropped. The holepunch succeeds when at least one packet from each side arrives *after* the other side's outbound packet has created the necessary mapping. This is why timing coordination matters more than single-packet delivery.
+
+> **Note:** All of this refers to **UDP holepunching**. Hyperswarm uses UDP for the holepunch dance because UDP NAT mappings are simpler and more predictable. TCP holepunching is significantly harder — it requires simultaneous SYN packets and many NATs don't support it reliably. This is why Hyperswarm establishes the UDP path first and then upgrades it to a reliable, encrypted stream.
 
 ### Step 4: Encrypted Stream
 
