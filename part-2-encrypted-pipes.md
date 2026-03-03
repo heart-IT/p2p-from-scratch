@@ -49,7 +49,7 @@ The <a href="https://noiseprotocol.org/noise.html" target="_blank">Noise Protoco
 
 Hyperswarm uses the **XX** pattern. The letters describe what each side does: X means "transmit static key." Since both sides do X, both sides share their long-term public key during the handshake.
 
-> **Terminology:** A **handshake pattern** in Noise defines the sequence of messages and which cryptographic keys are exchanged at each step. The letters encode the behavior: N = no static key sent, K = static key Known in advance, X = static key Transmitted. XX means both sides transmit their static key — mutual authentication with no prior knowledge required.
+> **Terminology:** A **handshake pattern** in Noise defines the sequence of messages and which cryptographic keys are exchanged at each step. The letters encode the behavior: N = no static key for that party (anonymous), K = static key Known in advance, X = static key Transmitted. XX means both sides transmit their static key — mutual authentication with no prior knowledge required.
 
 ### Why XX? (And Not IK or NK)
 
@@ -57,13 +57,13 @@ The choice of handshake pattern has real consequences:
 
 | Pattern | What It Means | Requires Prior Knowledge? | Used When |
 |---|---|---|---|
-| **NK** | Initiator sends no static key | Responder's key must be known in advance | Connecting to a known server |
+| **NK** | Initiator has no static key (anonymous) | Responder's key must be known in advance | Connecting to a known server |
 | **IK** | Initiator's static key sent Immediately | Responder's key must be known in advance | Both keys known beforehand |
 | **XX** | Both sides Transmit static key | No prior knowledge needed | General-purpose peer discovery |
 
 In a DHT-based peer discovery system, Alice often doesn't know Bob's public key in advance — she discovered him via a topic announcement. And Bob doesn't know Alice's key either. The XX pattern handles this gracefully: both peers learn each other's identity *during* the handshake.
 
-The tradeoff is that XX requires three messages (one more round-trip than IK), but for Hyperswarm's use case — where peers are strangers meeting via a DHT — this is the right choice.
+The tradeoff is that XX requires three messages (one more message than IK), but for Hyperswarm's use case — where peers are strangers meeting via a DHT — this is the right choice.
 
 ---
 
@@ -109,7 +109,7 @@ Let's unpack each step:
 
 **Message 3 — Alice reveals her identity.** Alice decrypts Bob's static key, performs additional DH operations mixing static and ephemeral keys, and sends her own static public key — encrypted. After this message, both sides have performed all the DH operations needed to derive the final session keys.
 
-> **Key Insight:** The ephemeral keys serve two purposes. First, they provide **forward secrecy** — if an attacker records the handshake and later compromises a static key, they still can't derive the session keys because the ephemeral keys are gone. Second, they protect **identity hiding** — static keys are encrypted, so a passive eavesdropper can't determine who is talking to whom.
+> **Key Insight:** The ephemeral keys serve two purposes. First, they provide **forward secrecy** for all post-handshake traffic — if an attacker records the handshake and later compromises a static key, they still can't derive the session keys because the ephemeral keys are gone. Second, they protect **identity hiding** — static keys are encrypted, so a passive eavesdropper can't determine who is talking to whom (though the responder's identity can be probed by an active attacker who initiates a fake handshake — the initiator has stronger identity protection).
 
 ### What Comes Out of the Handshake
 
@@ -133,10 +133,10 @@ Why XChaCha20-Poly1305 and not AES-GCM?
 
 | Property | XChaCha20-Poly1305 | AES-GCM |
 |---|---|---|
-| Nonce size | 24 bytes (safe to generate randomly) | 12 bytes (nonce reuse = catastrophic) |
-| Hardware dependency | Pure software — fast everywhere | Fast only with AES-NI instructions |
+| Nonce size | 24 bytes (safe to generate randomly) | 12 bytes (nonce reuse = catastrophic for both; 24 bytes makes random collision negligible) |
+| Hardware dependency | No special instructions needed | Needs AES-NI or ARM Crypto Extensions for full speed |
 | Nonce management | Automatic (libsodium secretstream handles it) | Manual (application must track nonces) |
-| Implementation safety | Constant-time by design | Timing side-channels in software implementations |
+| Implementation safety | ARX operations are naturally constant-time | Cache-timing risks in table-based software implementations |
 
 The 24-byte nonce is the key advantage. With a 12-byte nonce (AES-GCM), you risk catastrophic failure if two messages accidentally use the same nonce. With 24 bytes, random nonce generation is safe for trillions of messages. And libsodium's secretstream manages the nonce internally — the application never touches it.
 
@@ -147,7 +147,7 @@ const SecretStream = require('@hyperswarm/secret-stream')
 
 // Wrap any raw Duplex stream (e.g., the holepunched UDP path)
 const encrypted = new SecretStream(isInitiator, rawStream, {
-  keypair: { publicKey, secretKey }  // Your Ed25519 identity keypair
+  keyPair: { publicKey, secretKey }  // Your Ed25519 identity keypair
 })
 
 // Wait for the handshake to complete
@@ -366,7 +366,7 @@ Notice that encryption happens at the Secret Stream level — *below* the multip
 
 | What You Gain | What You Pay |
 |---|---|
-| Forward secrecy via ephemeral keys | 1 extra round-trip vs. IK pattern |
+| Forward secrecy via ephemeral keys | 1 extra message vs. IK pattern |
 | Identity hiding (static keys encrypted) | Cannot authenticate before the handshake completes |
 | Mutual authentication without certificate authority | Must distribute public keys out-of-band for trust |
 | Multiplexed protocols over single connection | Channel pairing complexity |
@@ -388,7 +388,8 @@ const c = require('compact-encoding')
 const crypto = require('hypercore-crypto')
 
 const swarm = new Hyperswarm()
-const topic = crypto.discoveryKey(Buffer.from('heartit-chat-room'))
+// Hash the room name to get a 32-byte topic for discovery
+const topic = crypto.discoveryKey(Buffer.alloc(32).fill('heartit-chat-room'))
 
 swarm.on('connection', (encryptedStream, info) => {
   // encryptedStream is already a Secret Stream (Hyperswarm wraps it)

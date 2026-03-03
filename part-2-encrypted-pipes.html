@@ -60,7 +60,7 @@
 </ul>
 <p>Hyperswarm uses the <strong>XX</strong> pattern. The letters describe what each side does: X means &quot;transmit static key.&quot; Since both sides do X, both sides share their long-term public key during the handshake.</p>
 <blockquote class="callout-term">
-<p><strong>Terminology:</strong> A <strong>handshake pattern</strong> in Noise defines the sequence of messages and which cryptographic keys are exchanged at each step. The letters encode the behavior: N = no static key sent, K = static key Known in advance, X = static key Transmitted. XX means both sides transmit their static key — mutual authentication with no prior knowledge required.</p>
+<p><strong>Terminology:</strong> A <strong>handshake pattern</strong> in Noise defines the sequence of messages and which cryptographic keys are exchanged at each step. The letters encode the behavior: N = no static key for that party (anonymous), K = static key Known in advance, X = static key Transmitted. XX means both sides transmit their static key — mutual authentication with no prior knowledge required.</p>
 </blockquote>
 
 <h3 id="why-xx-and-not-ik-or-nk">Why XX? (And Not IK or NK)</h3>
@@ -71,14 +71,14 @@
 <tr><th>Pattern</th><th>What It Means</th><th>Requires Prior Knowledge?</th><th>Used When</th></tr>
 </thead>
 <tbody>
-<tr><td>**NK**</td><td>Initiator sends no static key</td><td>Responder's key must be known in advance</td><td>Connecting to a known server</td></tr>
+<tr><td>**NK**</td><td>Initiator has no static key (anonymous)</td><td>Responder's key must be known in advance</td><td>Connecting to a known server</td></tr>
 <tr><td>**IK**</td><td>Initiator's static key sent Immediately</td><td>Responder's key must be known in advance</td><td>Both keys known beforehand</td></tr>
 <tr><td>**XX**</td><td>Both sides Transmit static key</td><td>No prior knowledge needed</td><td>General-purpose peer discovery</td></tr>
 </tbody>
 </table></figure>
 
 <p>In a DHT-based peer discovery system, Alice often doesn&#39;t know Bob&#39;s public key in advance — she discovered him via a topic announcement. And Bob doesn&#39;t know Alice&#39;s key either. The XX pattern handles this gracefully: both peers learn each other&#39;s identity <em>during</em> the handshake.</p>
-<p>The tradeoff is that XX requires three messages (one more round-trip than IK), but for Hyperswarm&#39;s use case — where peers are strangers meeting via a DHT — this is the right choice.</p>
+<p>The tradeoff is that XX requires three messages (one more message than IK), but for Hyperswarm&#39;s use case — where peers are strangers meeting via a DHT — this is the right choice.</p>
 <hr>
 <h2 id="the-three-message-dance">The Three-Message Dance</h2>
 
@@ -120,7 +120,7 @@ sequenceDiagram
 <p><strong>Message 2 — Bob responds with his identity.</strong> Bob generates his own ephemeral keypair, performs a Diffie-Hellman with Alice&#39;s ephemeral key to derive a shared secret, and uses that secret to <em>encrypt</em> his static public key. An eavesdropper sees Bob&#39;s ephemeral key (plaintext) and a blob of ciphertext. They can&#39;t decrypt it without performing the DH themselves.</p>
 <p><strong>Message 3 — Alice reveals her identity.</strong> Alice decrypts Bob&#39;s static key, performs additional DH operations mixing static and ephemeral keys, and sends her own static public key — encrypted. After this message, both sides have performed all the DH operations needed to derive the final session keys.</p>
 <blockquote class="callout-insight">
-<p><strong>Key Insight:</strong> The ephemeral keys serve two purposes. First, they provide <strong>forward secrecy</strong> — if an attacker records the handshake and later compromises a static key, they still can&#39;t derive the session keys because the ephemeral keys are gone. Second, they protect <strong>identity hiding</strong> — static keys are encrypted, so a passive eavesdropper can&#39;t determine who is talking to whom.</p>
+<p><strong>Key Insight:</strong> The ephemeral keys serve two purposes. First, they provide <strong>forward secrecy</strong> for all post-handshake traffic — if an attacker records the handshake and later compromises a static key, they still can&#39;t derive the session keys because the ephemeral keys are gone. Second, they protect <strong>identity hiding</strong> — static keys are encrypted, so a passive eavesdropper can&#39;t determine who is talking to whom (though the responder&#39;s identity can be probed by an active attacker who initiates a fake handshake — the initiator has stronger identity protection).</p>
 </blockquote>
 
 <h3 id="what-comes-out-of-the-handshake">What Comes Out of the Handshake</h3>
@@ -146,10 +146,10 @@ sequenceDiagram
 <tr><th>Property</th><th>XChaCha20-Poly1305</th><th>AES-GCM</th></tr>
 </thead>
 <tbody>
-<tr><td>Nonce size</td><td>24 bytes (safe to generate randomly)</td><td>12 bytes (nonce reuse = catastrophic)</td></tr>
-<tr><td>Hardware dependency</td><td>Pure software — fast everywhere</td><td>Fast only with AES-NI instructions</td></tr>
+<tr><td>Nonce size</td><td>24 bytes (safe to generate randomly)</td><td>12 bytes (nonce reuse = catastrophic for both; 24 bytes makes random collision negligible)</td></tr>
+<tr><td>Hardware dependency</td><td>No special instructions needed</td><td>Needs AES-NI or ARM Crypto Extensions for full speed</td></tr>
 <tr><td>Nonce management</td><td>Automatic (libsodium secretstream handles it)</td><td>Manual (application must track nonces)</td></tr>
-<tr><td>Implementation safety</td><td>Constant-time by design</td><td>Timing side-channels in software implementations</td></tr>
+<tr><td>Implementation safety</td><td>ARX operations are naturally constant-time</td><td>Cache-timing risks in table-based software implementations</td></tr>
 </tbody>
 </table></figure>
 
@@ -160,7 +160,7 @@ sequenceDiagram
 
 // Wrap any raw Duplex stream (e.g., the holepunched UDP path)
 const encrypted = new SecretStream(isInitiator, rawStream, {
-  keypair: { publicKey, secretKey }  // Your Ed25519 identity keypair
+  keyPair: { publicKey, secretKey }  // Your Ed25519 identity keypair
 })
 
 // Wait for the handshake to complete
@@ -381,7 +381,7 @@ graph TD
 <tr><th>What You Gain</th><th>What You Pay</th></tr>
 </thead>
 <tbody>
-<tr><td>Forward secrecy via ephemeral keys</td><td>1 extra round-trip vs. IK pattern</td></tr>
+<tr><td>Forward secrecy via ephemeral keys</td><td>1 extra message vs. IK pattern</td></tr>
 <tr><td>Identity hiding (static keys encrypted)</td><td>Cannot authenticate before the handshake completes</td></tr>
 <tr><td>Mutual authentication without certificate authority</td><td>Must distribute public keys out-of-band for trust</td></tr>
 <tr><td>Multiplexed protocols over single connection</td><td>Channel pairing complexity</td></tr>
@@ -402,7 +402,8 @@ const c = require('compact-encoding')
 const crypto = require('hypercore-crypto')
 
 const swarm = new Hyperswarm()
-const topic = crypto.discoveryKey(Buffer.from('heartit-chat-room'))
+// Hash the room name to get a 32-byte topic for discovery
+const topic = crypto.discoveryKey(Buffer.alloc(32).fill('heartit-chat-room'))
 
 swarm.on('connection', (encryptedStream, info) =&gt; {
   // encryptedStream is already a Secret Stream (Hyperswarm wraps it)
