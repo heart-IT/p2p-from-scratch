@@ -331,7 +331,7 @@ In <a href="part-8-ux-production.md">Part 8</a>, we'll tackle the hardest challe
 3. <a href="https://github.com/holepunchto/hypercore" target="_blank">holepunchto/hypercore — Append-only log with Merkle proof verification</a>
 4. <a href="https://github.com/holepunchto/hypercore-crypto" target="_blank">holepunchto/hypercore-crypto — BLAKE2b hashing, Ed25519 signatures, type-prefixed domain separation</a>
 5. <a href="https://github.com/holepunchto/blind-pairing-core" target="_blank">holepunchto/blind-pairing-core — Cryptographic invitation protocol for serverless group access</a>
-6. <a href="https://github.com/holepunchto/secret-stream" target="_blank">holepunchto/secret-stream — Noise XX handshake + XChaCha20-Poly1305 post-handshake encryption</a>
+6. <a href="https://github.com/holepunchto/hyperswarm-secret-stream" target="_blank">holepunchto/hyperswarm-secret-stream — Noise XX handshake + XChaCha20-Poly1305 post-handshake encryption</a>
 7. <a href="https://github.com/holepunchto/corestore" target="_blank">holepunchto/corestore — Deterministic key derivation from a single primary key</a>
 8. <a href="https://noiseprotocol.org/noise.html" target="_blank">Noise Protocol Framework — Specification for the XX handshake pattern</a>
 9. <a href="https://en.wikipedia.org/wiki/Sybil_attack" target="_blank">Wikipedia — Sybil attack</a>

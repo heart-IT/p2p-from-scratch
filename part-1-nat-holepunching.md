@@ -62,7 +62,9 @@ Not all NATs are created equal. The way your router creates and filters its mapp
 | **Full Cone** | Same external port for all destinations | Any source allowed through | Yes — easiest |
 | **Restricted Cone** | Same external port for all destinations | Only IPs you've contacted | Yes — with coordination |
 | **Port Restricted** | Same external port for all destinations | Only IP:port pairs you've contacted | Yes — with precise timing |
-| **Symmetric** | Different external port per destination | Only the specific destination | No — port unpredictable |
+| **Symmetric** | Different external port per destination IP:port | Only the specific destination | No — port unpredictable |
+
+> **Note on terminology:** The four names above (Full Cone, Restricted Cone, Port Restricted, Symmetric) come from <a href="https://www.rfc-editor.org/rfc/rfc3489" target="_blank">RFC 3489</a> (2003). The later <a href="https://www.rfc-editor.org/rfc/rfc4787" target="_blank">RFC 4787</a> (2007) replaces this with a two-axis model — *mapping behavior* (Endpoint-Independent / Address-Dependent / Address-and-Port-Dependent) × *filtering behavior* — which better captures real-world NATs that don't fit neatly into one of four boxes. Internally, HyperDHT uses a three-level classification — **OPEN**, **CONSISTENT** (predictable port mapping), and **RANDOM** (unpredictable) — which maps to what matters for holepunching: can you predict the port or not?
 
 The first three types share a critical property: the external port stays the same regardless of destination. If your laptop sends a packet to server A and gets mapped to external port `41928`, it also uses port `41928` when talking to server B. This consistency is what makes holepunching possible — a coordinator can observe the port from one connection and tell a peer to aim at that same port.
 
@@ -84,7 +86,7 @@ Both Alice and Bob connect to <a href="https://github.com/holepunchto/hyperdht" 
 
 Alice wants to connect to Bob. She finds Bob's announcement in the DHT and sends a connection request. But she doesn't send it directly to Bob — she can't, because Bob's NAT would drop it. Instead, she sends it to one of Bob's designated *relay nodes* in the DHT.
 
-This is a key design choice: Hyperswarm doesn't use dedicated signaling servers like WebRTC's STUN/TURN. The DHT nodes *themselves* serve as the signaling and relay infrastructure. No single company controls them.
+This is a key design choice: Hyperswarm doesn't rely on external STUN/TURN servers like WebRTC does. Instead, the DHT nodes *themselves* perform the equivalent functions — NAT type detection (STUN's role) and connection relay when holepunching fails (TURN's role). The protocol is different, but the jobs are the same. No single company controls the infrastructure.
 
 ### Step 3: The Simultaneous Send
 
@@ -121,6 +123,8 @@ sequenceDiagram
     Note over A,B: Direct P2P connection established
 ```
 *Figure 1: The holepunching dance. Both peers must send before either receives.*
+
+> **Implementation detail:** The diagram above shows the logical flow. In practice, HyperDHT sends multiple probe rounds with retries — the first packets sent to an unopened NAT mapping are expected to be dropped. The holepunch succeeds when at least one packet from each side arrives *after* the other side's outbound packet has created the necessary mapping. This is why timing coordination matters more than single-packet delivery.
 
 ### Step 4: Encrypted Stream
 
@@ -167,7 +171,7 @@ This is one defense layer. Round-trip tokens prove IP ownership (preventing spoo
 
 New nodes don't immediately become permanent members of the DHT's routing tables. They start in **ephemeral mode** — participating in queries but not stored in other nodes' routing tables.
 
-After approximately 20 minutes of stable uptime (240 ticks × 5 seconds), and after the DHT has assessed the node's NAT configuration, the node transitions to **persistent mode** and takes a permanent position in the routing table. After a sleep/wake cycle, this timer resets to ~60 minutes.
+After approximately 20–30 minutes of stable uptime (the base threshold is 240 ticks × 5 seconds, but NAT assessment and network conditions add overhead), the node transitions to **persistent mode** and takes a permanent position in the routing table. After a sleep/wake cycle, this timer resets to ~60 minutes.
 
 This protects the DHT from short-lived nodes churning the routing tables and from attackers spinning up thousands of nodes to flood the network. If you're running a server on an open NAT, you can bypass this with `ephemeral: false`, but for consumer devices behind NATs, the transition period is a feature, not a limitation.
 
@@ -183,7 +187,7 @@ Holepunching and DHT-based discovery solve the fundamental connectivity problem,
 | No monthly infrastructure bill | ~5% of connections relay through intermediaries (only when both sides are on randomized NATs) |
 | Resistant to single-point-of-failure | First connection takes seconds, not milliseconds |
 | Works across ISPs and countries | Both-sides-symmetric connections get relay latency |
-| DHT nodes are the infrastructure | ~20 minute warmup for new DHT nodes (~60 min after wake) |
+| DHT nodes are the infrastructure | ~20–30 minute warmup for new DHT nodes (~60 min after wake) |
 
 The connection setup cost is a one-time tax. Once the hole is punched, the direct UDP path is as fast as any other Internet connection. But that initial negotiation — DHT lookup, signaling, simultaneous send, handshake — takes real time. Your UX needs to account for this (we'll cover P2P UX design in <a href="part-8-ux-production.md">Part 8</a>).
 
@@ -195,24 +199,26 @@ You can observe Hyperswarm's holepunching in action with a minimal script. Insta
 
 ```js title="holepunch-demo.js"
 const Hyperswarm = require('hyperswarm')
-const crypto = require('hypercore-crypto')
 
-// Both peers join the same topic (a 32-byte buffer)
-const topic = crypto.randomBytes(32)
+// Both peers must join the same topic — a 32-byte buffer.
+// Use a fixed value so both machines connect to the same swarm.
+const topic = Buffer.from(
+  'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6a7b8c9d0e1f2a3b4c5d6a7b8c9d0e1f2',
+  'hex'
+)
 
-// --- Peer A ---
-const swarmA = new Hyperswarm()
-swarmA.on('connection', (conn, info) => {
-  console.log('[A] Connected to peer!', info.publicKey.toString('hex').slice(0, 8))
-  conn.on('data', data => console.log('[A] Received:', data.toString()))
-  conn.write('Hello from A')
+const swarm = new Hyperswarm()
+swarm.on('connection', (conn, info) => {
+  console.log('Connected to peer!', info.publicKey.toString('hex').slice(0, 8))
+  conn.on('data', data => console.log('Received:', data.toString()))
+  conn.write('Hello from ' + (process.argv[2] || 'anonymous'))
 })
-const discoveryA = swarmA.join(topic, { server: true, client: true })
-await discoveryA.flushed()
-console.log('[A] Announced on topic, waiting for peers...')
+const discovery = swarm.join(topic, { server: true, client: true })
+await discovery.flushed()
+console.log('Announced on topic, waiting for peers...')
 ```
 
-Run this on two different machines (or two different networks) with the same topic. Watch the console. You'll see the DHT lookup, the connection event, and the data exchange. If both peers are behind randomized (symmetric) NATs, Hyperswarm silently falls back to relay — the `connection` event fires either way. If only one side is symmetric, holepunching still works directly.
+Run this same script on two different machines (or two different networks) — e.g., `node holepunch-demo.js Alice` on one and `node holepunch-demo.js Bob` on the other. Because the topic is hardcoded, both peers discover each other automatically. You'll see the connection event and the data exchange. If both peers are behind randomized (symmetric) NATs, Hyperswarm silently falls back to relay — the `connection` event fires either way. If only one side is symmetric, holepunching still works directly.
 
 > **Gotcha:** If you run both peers on the same machine or the same LAN, you're not testing holepunching at all — you're testing local discovery. Real holepunching only happens across NAT boundaries. To test properly, use two different networks or a cloud VM as the second peer.
 
