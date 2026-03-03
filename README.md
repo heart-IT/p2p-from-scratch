@@ -75,9 +75,9 @@ graph TD
 
 1. [Part 1: The Internet is Hostile](part-1-nat-holepunching.md)
 2. [Part 2: Encrypted Pipes](part-2-encrypted-pipes.md)
-3. Part 3: Append-Only Truth *(coming soon)*
-4. Part 4: From Logs to Databases *(coming soon)*
-5. Part 5: Finding Peers *(coming soon)*
-6. Part 6: Many Writers, One Truth *(coming soon)*
-7. Part 7: Trust No One *(coming soon)*
-8. Part 8: Building for Humans *(coming soon)*
+3. Part 3: Append-Only Truth
+4. Part 4: From Logs to Databases
+5. Part 5: Finding Peers
+6. Part 6: Many Writers, One Truth
+7. Part 7: Trust No One
+8. Part 8: Building for Humans
