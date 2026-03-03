@@ -76,7 +76,7 @@ That last rule is the elegant part. Let's see why:
 | 4 | `100` | 0 | 0 | Leaf (block 2) |
 | 5 | `101` | 1 | 1 | Parent of [4, 6] |
 | 6 | `110` | 0 | 0 | Leaf (block 3) |
-| 7 | `111` | 3 | 3 | Root of a full 8-leaf tree |
+| 7 | `111` | 3 | 3 | Root of a full 8-leaf tree (indices 0–14) |
 
 > **Feynman Moment:** Why use trailing 1-bits for depth? Because it makes tree navigation pure bit arithmetic. To find a node's parent: increment the depth by 1 and halve the offset. To find children: decrement the depth and double the offset. No pointers, no linked lists, no memory allocation. The entire tree structure is implicit in the indices — O(1) navigation with no storage overhead.
 
@@ -335,7 +335,7 @@ await core.append(Buffer.from('World'))
 await core.append(Buffer.from('!'))
 
 console.log('Length:', core.length)        // 3
-console.log('Byte length:', core.byteLength) // 11
+console.log('Byte length:', core.byteLength) // 11 (or use core.info() for future-proof access)
 console.log('Fork:', core.fork)            // 0 (never truncated)
 
 // Read a block — Hypercore verifies the Merkle proof automatically

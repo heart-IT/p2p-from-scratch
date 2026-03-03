@@ -87,7 +87,7 @@ Index:  [ 0 ] [ 2 ] [ 4 ] [ 6 ] [ 8 ]       ← Leaves (even indices)
 <tr><td>4</td><td>`100`</td><td>0</td><td>0</td><td>Leaf (block 2)</td></tr>
 <tr><td>5</td><td>`101`</td><td>1</td><td>1</td><td>Parent of [4, 6]</td></tr>
 <tr><td>6</td><td>`110`</td><td>0</td><td>0</td><td>Leaf (block 3)</td></tr>
-<tr><td>7</td><td>`111`</td><td>3</td><td>3</td><td>Root of a full 8-leaf tree</td></tr>
+<tr><td>7</td><td>`111`</td><td>3</td><td>3</td><td>Root of a full 8-leaf tree (indices 0–14)</td></tr>
 </tbody>
 </table></figure>
 
@@ -341,7 +341,7 @@ await core.append(Buffer.from('World'))
 await core.append(Buffer.from('!'))
 
 console.log('Length:', core.length)        // 3
-console.log('Byte length:', core.byteLength) // 11
+console.log('Byte length:', core.byteLength) // 11 (or use core.info() for future-proof access)
 console.log('Fork:', core.fork)            // 0 (never truncated)
 
 // Read a block — Hypercore verifies the Merkle proof automatically
