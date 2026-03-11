@@ -11,6 +11,12 @@
 
 ---
 
+## Quick Recap
+
+Over Parts <a href="part-1-nat-holepunching.md">1</a>–<a href="part-6-autobase-consensus.md">6</a>, we built the full collaboration stack: NAT traversal, encrypted transport, verified data structures, peer discovery, and multi-writer consensus. Now we need to examine what happens when a peer is malicious.
+
+---
+
 ## The Problem: No Gatekeeper, No Safety Net
 
 In a client-server world, security has a natural chokepoint. The server validates inputs, authenticates users, and controls access. If someone misbehaves, the server revokes their account. Problem solved.

@@ -28,6 +28,11 @@
 </blockquote>
 
 <hr>
+<h2 id="quick-recap">Quick Recap</h2>
+
+<p>In Parts <a href="part-3-hypercore-merkle.md">3</a>–<a href="part-4-hyperbee-hyperdrive.md">4</a>, we built single-writer data structures: Hypercores, Hyperbee databases, and Hyperdrives. In <a href="part-5-dht-discovery.md">Part 5</a>, we connected peers via DHT discovery. But everything so far has one keypair per log — one writer, many readers.</p>
+
+<hr>
 <h2 id="the-problem-single-writer-isn-t-enough">The Problem: Single-Writer Isn't Enough</h2>
 
 <p>A Hypercore is powerful, but it has a fundamental constraint: one keypair, one writer. The owner of the Ed25519 secret key is the only person who can append blocks. Everyone else is a verifier.</p>

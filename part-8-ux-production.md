@@ -11,6 +11,12 @@
 
 ---
 
+## Quick Recap
+
+Parts <a href="part-1-nat-holepunching.md">1</a>–<a href="part-6-autobase-consensus.md">6</a> built the technical stack: connectivity, encryption, data structures, discovery, and consensus. <a href="part-7-security-trust.md">Part 7</a> mapped the security model. The engineering is sound — now we need to make it feel invisible to users.
+
+---
+
 ## The Problem: Technology Isn't the Hard Part
 
 We've spent seven posts building an extraordinary stack. Encrypted pipes. Merkle-verified data. Distributed discovery. Multi-writer consensus. Six layers of security. Every component is cryptographically sound, mathematically correct, and elegantly designed.
