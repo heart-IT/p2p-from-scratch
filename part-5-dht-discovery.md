@@ -11,6 +11,12 @@
 
 ---
 
+## Quick Recap
+
+In Parts <a href="part-1-nat-holepunching.md">1</a>–<a href="part-2-encrypted-pipes.md">2</a>, we established encrypted connections through NATs. In Parts <a href="part-3-hypercore-merkle.md">3</a>–<a href="part-4-hyperbee-hyperdrive.md">4</a>, we built verified data structures on top: append-only logs, B-tree databases, and file systems. But none of it works if peers can't find each other.
+
+---
+
 ## The Problem: No Server, No Directory
 
 In the client-server world, finding a service is trivial. You type `api.example.com`, DNS resolves it to `93.184.216.34`, and you connect. The entire Internet is a giant phone book backed by a hierarchical authority.

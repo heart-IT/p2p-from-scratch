@@ -1,13 +1,19 @@
 # P2P from Scratch — Part 3: Append-Only Truth
 
-> "The question of whether a computer can think is no more interesting than the question of whether a submarine can swim."
-> — Edsger Dijkstra
+> "The first principle is that you must not fool yourself — and you are the easiest person to fool."
+> — Richard Feynman, *Cargo Cult Science*, 1974
 
 **Excerpt:** You have an encrypted pipe between two peers. Now you need something worth sending through it. Hypercore is an append-only log where every byte is cryptographically verifiable — a peer can download a single block out of millions and prove it hasn't been tampered with, using only a handful of hashes and one signature. This post explains the data structure that everything else in the Holepunch stack is built on.
 
 <!-- Series Navigation -->
 > **Series: P2P from Scratch — Building on the Holepunch Stack**
 > [Part 1: The Internet is Hostile](part-1-nat-holepunching.md) | [Part 2: Encrypted Pipes](part-2-encrypted-pipes.md) | **Part 3: Append-Only Truth (You are here)** | [Part 4: From Logs to Databases](part-4-hyperbee-hyperdrive.md) | [Part 5: Finding Peers](part-5-dht-discovery.md) | [Part 6: Many Writers, One Truth](part-6-autobase-consensus.md) | [Part 7: Trust No One](part-7-security-trust.md) | [Part 8: Building for Humans](part-8-ux-production.md)
+
+---
+
+## Quick Recap
+
+In <a href="part-1-nat-holepunching.md">Part 1</a>, we punched through NATs to establish a UDP path. In <a href="part-2-encrypted-pipes.md">Part 2</a>, we wrapped that path in Noise XX encryption and multiplexed independent protocols over it with Protomux. Now we need data worth sending through the pipe.
 
 ---
 
@@ -32,12 +38,24 @@ A Hypercore is a log. You can append new blocks to the end. You cannot modify or
 This seems limiting — but it's the foundation of everything that follows. If history is immutable, then:
 
 - **Verification is permanent.** Once you've verified block 42, it will never change. You can cache it, share it, replicate it — the proof remains valid forever.
-- **Replication is simple.** Two peers compare their lengths. Whoever has more blocks sends the difference. There are no merge conflicts, no version vectors, no three-way diffs.
+- **Replication is simple.** Two peers compare their lengths and fork IDs. If forks match, whoever has more blocks sends the difference. There are no merge conflicts, no version vectors, no three-way diffs.
 - **Auditability is free.** The full history of every change is preserved. You don't need a separate audit log — the data structure *is* the audit log.
 
 State changes are expressed as new facts appended to the log, not as mutations of existing entries. If you want to "update" a record, you append a new block that supersedes the old one. Higher layers (like Hyperbee, which we'll cover in Part 4) project the current state from this history.
 
 > **Terminology:** **Append-only** means new data is always added to the end. Existing entries are never modified. This is also called an *immutable log* or *event log*. It's the same idea behind database write-ahead logs, event sourcing, and blockchain ledgers — but without the blockchain.
+
+---
+
+## The Mental Model: Tamper-Evident Seals
+
+Imagine you're shipping a crate of 1,000 numbered bottles across the ocean. You don't trust the ship's crew. How do you let the recipient verify that *one specific bottle* hasn't been swapped — without inspecting all 1,000?
+
+Seal every pair of bottles together with a wax stamp. Then seal pairs of pairs. Keep going until you have one master seal at the top. Give the recipient that single master seal in advance (signed by you, sent separately). Now they can verify bottle #42 by checking only the chain of seals from that bottle up to the master seal — about 10 seals out of 1,000 bottles. If any seal is broken or wrong, someone tampered with the chain.
+
+That's a Merkle tree. The bottles are data blocks. The wax seals are hashes. The master seal is the signed root. The signed delivery note is the Ed25519 signature.
+
+> **Feynman Moment:** The analogy maps well, but here's where it gets more interesting. Real wax seals are symmetric — anyone can stamp one. Cryptographic hashes are one-way: you can verify a hash instantly, but you can't reverse-engineer data that produces a given hash. This asymmetry is what makes the system trustless. The recipient doesn't need to trust the crew, the ship, or the route — only the math.
 
 ---
 
@@ -172,7 +190,7 @@ This is a **single hash** over all root peaks — not a pairwise reduction. Each
 
 Including the index and size makes the commitment unambiguous — you can't reinterpret the same sequence of hashes as a different tree shape.
 
-> **Key Insight:** The `0x02` root type prefix is the third domain separator. With three prefixes — `0x00` for leaves, `0x01` for parents, `0x02` for the tree hash — no valid hash at one level can be confused with a hash at another level. This is defense in depth: even if BLAKE2b were somehow broken for collisions, the type separation would still prevent cross-level attacks.
+> **Key Insight:** The `0x02` root type prefix is the third domain separator. With three prefixes — `0x00` for leaves, `0x01` for parents, `0x02` for the tree hash — no valid hash at one level can be confused with a hash at another level. This domain separation prevents structural ambiguity attacks where a leaf could be misinterpreted as a parent or vice versa, even if hash outputs happen to overlap across node types.
 
 ---
 
@@ -184,7 +202,7 @@ The signed message is exactly **112 bytes**:
 
 | Offset | Size | Content |
 |---|---|---|
-| 0 | 32 bytes | **Namespace** — a deterministic domain separator derived from `'hypercore'` |
+| 0 | 32 bytes | **Namespace** — a 32-byte constant specific to Hypercore signatures, derived from the protocol namespace rules |
 | 32 | 32 bytes | **Manifest hash** — identifies the Hypercore's signing and encryption scheme |
 | 64 | 32 bytes | **Tree hash** — the bagged root peaks from above |
 | 96 | 8 bytes | **Length** — the block count as uint64 LE |
@@ -310,7 +328,7 @@ A typical replication exchange:
 
 The discovery key (a hash of the Hypercore's public key) is used for the channel id instead of the public key itself. This prevents a network observer from learning *which* Hypercore is being replicated — they see the discovery key, but can't reverse it to the public key without already knowing it.
 
-> **Terminology:** The **discovery key** is `BLAKE2b-256(key=publicKey, data="hypercore")` — a keyed BLAKE2b hash where the Hypercore's public key is the hash key parameter (libsodium's `crypto_generichash` key argument) and the string `"hypercore"` is the data being hashed. It's a one-way derivation: knowing the discovery key doesn't reveal the public key (which grants read access). Peers use the discovery key to find each other via the DHT, but only peers who already know the public key can actually read the data. This separates *findability* from *access*.
+> **Terminology:** The **discovery key** is `BLAKE2b-256(key=publicKey, data="hypercore")` — a keyed BLAKE2b hash where the Hypercore's public key is the hash key parameter (libsodium's `crypto_generichash` key argument) and the string `"hypercore"` is the data being hashed. It's a one-way derivation: knowing the discovery key doesn't reveal the public key (which allows verification and replication). Peers use the discovery key to find each other via the DHT, but only peers who already know the public key can actually verify and replicate the data. This separates *findability* from *access*.
 
 ---
 
@@ -363,12 +381,12 @@ The verification is automatic. Application code never touches hashes or signatur
 | What You Gain | What You Pay |
 |---|---|
 | Every block independently verifiable | Storage overhead for Merkle tree nodes (one hash per block + internal nodes) |
-| Sparse replication (download only what you need) | Must store uncle hashes alongside blocks for future proof generation |
+| Sparse replication (download only what you need) | Hypercore stores tree nodes locally to generate proofs for peers |
 | Immutable history — verified once, trusted forever | Can't edit or delete without truncation + fork |
 | Single-writer simplicity (one keypair = one log) | Multi-writer requires a layer on top (Autobase, Part 6) |
 | Replication is just "compare lengths, send difference" | First sync includes the full Merkle proof chain, not just raw data |
 
-The storage overhead is modest. Each internal node is a 32-byte hash plus an 8-byte size — 40 bytes. For a log with N blocks, there are roughly N internal nodes (a balanced binary tree has N−1 internal nodes). So the tree roughly doubles the metadata storage, but for most applications, the data blocks themselves dominate.
+The storage overhead is modest. Each node is a 32-byte hash plus an 8-byte size — 40 bytes. For a log with N blocks, the tree contains roughly 2N total nodes (N leaves + up to N−1 internal nodes). So the tree metadata roughly doubles relative to the leaf hashes, but for most applications, the data blocks themselves dominate.
 
 ---
 

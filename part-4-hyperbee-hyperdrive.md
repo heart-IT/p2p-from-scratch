@@ -11,6 +11,12 @@
 
 ---
 
+## Quick Recap
+
+In <a href="part-3-hypercore-merkle.md">Part 3</a>, we built Hypercore — an append-only log where every block is bound to a Merkle proof chain and an Ed25519 signature. Any peer can verify any block without trusting the messenger. Now we need richer data structures on top of it.
+
+---
+
 ## The Problem: Access Patterns
 
 A Hypercore gives you `append(data)` and `get(index)`. For a chat log, that's fine — messages arrive in order and you read them sequentially. But consider a contacts app: you need to look up "Alice" without scanning every block. Or a file system: you need to read `/photos/vacation.jpg` without downloading every file in the drive.
@@ -64,7 +70,7 @@ Hypercore blocks:
 
 Block 0 is always the header (protocol: `"hyperbee"`). Each subsequent block carries the inserted key-value pair plus the tree index snapshot. The *latest* block's tree index always points to the current root — reading the tree starts from the end of the log.
 
-> **Key Insight:** This append-only B-tree has an unusual property: every past state of the tree is still accessible. Block 3's index represents the tree as it was after 3 insertions. This gives you free versioning — `db.checkout(version)` returns a read-only snapshot at any historical state, with zero extra storage cost.
+> **Key Insight:** This append-only B-tree has an unusual property: every past state of the tree is still accessible. Block 3's index represents the tree as it was after 3 insertions. This gives you free versioning — `db.checkout(version)` returns a read-only snapshot at any historical state, with no additional metadata beyond what the append-only log naturally accumulates.
 
 ### Sparse Lookups
 
@@ -140,9 +146,9 @@ For optimistic concurrency control, both `put` and `del` accept a `cas` function
 // Only update if the previous value matches a condition
 await db.put('alice', { age: 31, city: 'Berlin' }, {
   cas (prev, next) {
-    // prev is the current entry (CAS is only called when updating an existing key)
+    // CAS is only called when updating an existing key — prev is always defined
     // Return true to proceed with the write
-    return prev !== null && prev.value.age < next.value.age
+    return prev.value.age < next.value.age
   }
 })
 ```
@@ -255,7 +261,7 @@ Separating metadata from content has a practical payoff:
 
 <a href="https://github.com/holepunchto/hyperblobs" target="_blank">Hyperblobs</a> is a thin wrapper around a Hypercore that handles binary large objects. When you write a file:
 
-1. The file content is split into **64 KB chunks** (the default block size)
+1. The file content is split into **64 KB chunks** (the default chunk size, configurable)
 2. Each chunk is appended to the Hyperblobs' Hypercore
 3. Hyperblobs returns a **blob ID**: `{ blockOffset, blockLength, byteOffset, byteLength }`
 4. This blob ID is stored in the Hyperbee entry alongside the file metadata
@@ -488,7 +494,7 @@ const store2 = new Corestore('./other-storage', {
 })
 ```
 
-> **Gotcha:** The `primaryKey` is the root of trust for a user's entire identity. Compromising it compromises every Hypercore in the store. It should never be logged, transmitted, or stored in plaintext outside the Corestore's own encrypted storage.
+> **Gotcha:** The `primaryKey` is the root of trust for a user's entire identity. Compromising it compromises every Hypercore in the store. It should never be logged or transmitted. Note that Corestore itself does not encrypt storage — the primaryKey is stored as raw bytes in the underlying database (RocksDB). Protecting it requires application-level measures (encrypted disk, secure enclave, or an encrypted storage backend).
 
 ### Sessions and Resource Management
 
@@ -523,7 +529,7 @@ const stream = store.replicate(isInitiator)
 // (via discovery key exchange), Corestore loads it automatically
 ```
 
-When a remote peer opens a Protomux channel for a discovery key that the local store knows about, Corestore automatically loads the corresponding Hypercore and joins the replication. This is what makes Hyperdrive's two-core replication seamless — you replicate the Corestore, and both the Hyperbee and Hyperblobs cores are handled automatically.
+When a remote peer opens a Protomux channel for a discovery key that the local store already knows about (has previously opened or created a core for), Corestore automatically loads the corresponding Hypercore and joins the replication. This is what makes Hyperdrive's two-core replication seamless — you replicate the Corestore, and both the Hyperbee and Hyperblobs cores are handled automatically.
 
 ---
 

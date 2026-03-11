@@ -220,6 +220,8 @@ await discovery.flushed()
 console.log('Announced on topic, waiting for peers...')
 ```
 
+> **Note:** Code examples in this series use `require()` with top-level `await` for clarity. To run them, either wrap the body in `(async () => { ... })()` or save with an `.mjs` extension and use `import` instead of `require`. The <a href="https://docs.pears.com/" target="_blank">Pear Runtime</a> supports this syntax natively.
+
 Run this same script on two different machines (or two different networks) — e.g., `node holepunch-demo.js Alice` on one and `node holepunch-demo.js Bob` on the other. Because the topic is hardcoded, both peers discover each other automatically. You'll see the connection event and the data exchange. If both peers are behind randomized (symmetric) NATs, Hyperswarm silently falls back to relay — the `connection` event fires either way. If only one side is symmetric, holepunching still works directly.
 
 > **Gotcha:** If you run both peers on the same machine or the same LAN, you're not testing holepunching at all — you're testing local discovery. Real holepunching only happens across NAT boundaries. To test properly, use two different networks or a cloud VM as the second peer.

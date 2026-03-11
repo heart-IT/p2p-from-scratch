@@ -28,6 +28,11 @@
 </blockquote>
 
 <hr>
+<h2 id="quick-recap">Quick Recap</h2>
+
+<p>In <a href="part-1-nat-holepunching.md">Part 1</a>, we punched through NATs using a DHT-coordinated timing dance and established a raw UDP path between two peers. The hole is open — but the pipe is unprotected.</p>
+
+<hr>
 <h2 id="the-problem-an-open-pipe-is-a-dangerous-pipe">The Problem: An Open Pipe Is a Dangerous Pipe</h2>
 
 <p>At the end of Part 1, Alice and Bob had a working UDP path. Packets flow in both directions. The NAT doors are open.</p>
@@ -54,7 +59,7 @@
 <p>The <a href="https://noiseprotocol.org/noise.html" target="_blank">Noise Protocol Framework</a> isn&#39;t a single protocol — it&#39;s a framework for building authenticated key-agreement protocols. You compose a Noise protocol by choosing:</p>
 <ul>
 <li>A <strong>handshake pattern</strong> — which messages carry which keys</li>
-<li>A <strong>DH function</strong> — how keys are exchanged (Ed25519 in Hyperswarm, via <a href="https://github.com/holepunchto/noise-curve-ed" target="_blank">noise-curve-ed</a>)</li>
+<li>A <strong>DH function</strong> — how keys are exchanged (scalar multiplication on Ed25519 points in Hyperswarm, via <a href="https://github.com/holepunchto/noise-curve-ed" target="_blank">noise-curve-ed</a>)</li>
 <li>A <strong>cipher</strong> — for encrypting handshake payloads (ChaCha20-Poly1305)</li>
 <li>A <strong>hash function</strong> — for key derivation (BLAKE2b)</li>
 </ul>
@@ -132,6 +137,9 @@ sequenceDiagram
 <li>The <strong>remotePublicKey</strong> — the peer&#39;s verified Ed25519 public key</li>
 </ul>
 <p>The <code>handshakeHash</code> is particularly important. It cryptographically binds everything that happened during the handshake — which keys were exchanged, in what order, with what randomness. If a man-in-the-middle had tampered with any message, the hashes wouldn&#39;t match and the handshake would fail.</p>
+<blockquote class="callout-gotcha">
+<p><strong>Gotcha:</strong> Noise XX provides <em>authentication</em> — you know you&#39;re talking to the same keypair throughout the session. But authentication is not trust. You don&#39;t know <em>who</em> owns that keypair unless you&#39;ve verified it out-of-band (pinned it, received it through an invitation flow, etc.). A stranger&#39;s keypair is authenticated but untrusted.</p>
+</blockquote>
 <hr>
 <h2 id="post-handshake-the-encrypted-stream">Post-Handshake: The Encrypted Stream</h2>
 
@@ -153,7 +161,7 @@ sequenceDiagram
 </tbody>
 </table></figure>
 
-<p>The 24-byte nonce is the key advantage. With a 12-byte nonce (AES-GCM), you risk catastrophic failure if two messages accidentally use the same nonce. With 24 bytes, random nonce generation is safe for trillions of messages. And libsodium&#39;s secretstream manages the nonce internally — the application never touches it.</p>
+<p>The 24-byte nonce is the key advantage. With a 12-byte nonce (AES-GCM), you risk catastrophic failure if two messages accidentally use the same nonce. With 24 bytes, the nonce space is large enough that random collision is negligible. In practice, libsodium&#39;s secretstream doesn&#39;t randomly generate a fresh nonce per message — it uses deterministic nonce evolution with an internal counter and automatic rekeying. The application never touches nonce management.</p>
 <p>The result: application code just reads and writes from a standard Node.js Duplex stream. The encryption is invisible.</p>
 <div class="code-filename">secret-stream-example.js</div>
 <pre><code class="language-js">const SecretStream = require('@hyperswarm/secret-stream')
@@ -253,7 +261,7 @@ textMessage.send('Hello from the other side')</code></pre>
 <li><strong>Protocol name:</strong> <code>&#39;hypercore/alpha&#39;</code></li>
 <li><strong>Channel id:</strong> The Hypercore&#39;s <strong>discoveryKey</strong> (a keyed BLAKE2b-256 hash: <code>BLAKE2b-256(key=publicKey, data=&quot;hypercore&quot;)</code> — not the public key itself, which would leak what data you&#39;re interested in)</li>
 </ul>
-<p>The Hypercore replication protocol defines 10 message types on this channel:</p>
+<p>The Hypercore replication protocol currently defines 10 message types on this channel:</p>
 <figure class="wp-block-table"><table>
 <thead>
 <tr><th>Message</th><th>Direction</th><th>Purpose</th></tr>
@@ -367,7 +375,7 @@ graph TD
 <ul>
 <li>All channels share the same encryption session (one handshake, not one per channel)</li>
 <li>A new Protomux channel doesn&#39;t require a new Noise handshake</li>
-<li>The encrypted stream can&#39;t distinguish between channels (an eavesdropper doesn&#39;t even know how many protocols are active)</li>
+<li>Channel identities and protocol names are hidden from eavesdroppers (though traffic analysis — packet sizes, timing patterns — can still leak side-channel metadata)</li>
 </ul>
 <blockquote class="callout-feynman">
 <p><strong>Feynman Moment:</strong> Why encrypt below the multiplexer, not above it? If you encrypted each channel separately, an eavesdropper could observe the number of channels, the timing of messages per channel, and the size distribution of each protocol&#39;s traffic. By encrypting the entire multiplexed stream, all of this metadata is hidden. The eavesdropper sees one opaque stream of bytes.</p>

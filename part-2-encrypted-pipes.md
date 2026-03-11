@@ -11,6 +11,12 @@
 
 ---
 
+## Quick Recap
+
+In <a href="part-1-nat-holepunching.md">Part 1</a>, we punched through NATs using a DHT-coordinated timing dance and established a raw UDP path between two peers. The hole is open — but the pipe is unprotected.
+
+---
+
 ## The Problem: An Open Pipe Is a Dangerous Pipe
 
 At the end of Part 1, Alice and Bob had a working UDP path. Packets flow in both directions. The NAT doors are open.
@@ -43,7 +49,7 @@ The result is a standard Node.js Duplex stream that happens to encrypt everythin
 The <a href="https://noiseprotocol.org/noise.html" target="_blank">Noise Protocol Framework</a> isn't a single protocol — it's a framework for building authenticated key-agreement protocols. You compose a Noise protocol by choosing:
 
 - A **handshake pattern** — which messages carry which keys
-- A **DH function** — how keys are exchanged (Ed25519 in Hyperswarm, via <a href="https://github.com/holepunchto/noise-curve-ed" target="_blank">noise-curve-ed</a>)
+- A **DH function** — how keys are exchanged (scalar multiplication on Ed25519 points in Hyperswarm, via <a href="https://github.com/holepunchto/noise-curve-ed" target="_blank">noise-curve-ed</a>)
 - A **cipher** — for encrypting handshake payloads (ChaCha20-Poly1305)
 - A **hash function** — for key derivation (BLAKE2b)
 
@@ -121,6 +127,8 @@ After the three messages, both peers have:
 
 The `handshakeHash` is particularly important. It cryptographically binds everything that happened during the handshake — which keys were exchanged, in what order, with what randomness. If a man-in-the-middle had tampered with any message, the hashes wouldn't match and the handshake would fail.
 
+> **Gotcha:** Noise XX provides *authentication* — you know you're talking to the same keypair throughout the session. But authentication is not trust. You don't know *who* owns that keypair unless you've verified it out-of-band (pinned it, received it through an invitation flow, etc.). A stranger's keypair is authenticated but untrusted.
+
 ---
 
 ## Post-Handshake: The Encrypted Stream
@@ -138,7 +146,7 @@ Why XChaCha20-Poly1305 and not AES-GCM?
 | Nonce management | Automatic (libsodium secretstream handles it) | Manual (application must track nonces) |
 | Implementation safety | ARX operations are naturally constant-time | Cache-timing risks in table-based software implementations |
 
-The 24-byte nonce is the key advantage. With a 12-byte nonce (AES-GCM), you risk catastrophic failure if two messages accidentally use the same nonce. With 24 bytes, random nonce generation is safe for trillions of messages. And libsodium's secretstream manages the nonce internally — the application never touches it.
+The 24-byte nonce is the key advantage. With a 12-byte nonce (AES-GCM), you risk catastrophic failure if two messages accidentally use the same nonce. With 24 bytes, the nonce space is large enough that random collision is negligible. In practice, libsodium's secretstream doesn't randomly generate a fresh nonce per message — it uses deterministic nonce evolution with an internal counter and automatic rekeying. The application never touches nonce management.
 
 The result: application code just reads and writes from a standard Node.js Duplex stream. The encryption is invisible.
 
@@ -240,7 +248,7 @@ When you replicate a Hypercore, the replication protocol opens a Protomux channe
 - **Protocol name:** `'hypercore/alpha'`
 - **Channel id:** The Hypercore's **discoveryKey** (a keyed BLAKE2b-256 hash: `BLAKE2b-256(key=publicKey, data="hypercore")` — not the public key itself, which would leak what data you're interested in)
 
-The Hypercore replication protocol defines 10 message types on this channel:
+The Hypercore replication protocol currently defines 10 message types on this channel:
 
 | Message | Direction | Purpose |
 |---|---|---|
@@ -356,7 +364,7 @@ Notice that encryption happens at the Secret Stream level — *below* the multip
 
 - All channels share the same encryption session (one handshake, not one per channel)
 - A new Protomux channel doesn't require a new Noise handshake
-- The encrypted stream can't distinguish between channels (an eavesdropper doesn't even know how many protocols are active)
+- Channel identities and protocol names are hidden from eavesdroppers (though traffic analysis — packet sizes, timing patterns — can still leak side-channel metadata)
 
 > **Feynman Moment:** Why encrypt below the multiplexer, not above it? If you encrypted each channel separately, an eavesdropper could observe the number of channels, the timing of messages per channel, and the size distribution of each protocol's traffic. By encrypting the entire multiplexed stream, all of this metadata is hidden. The eavesdropper sees one opaque stream of bytes.
 

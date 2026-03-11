@@ -28,6 +28,11 @@
 </blockquote>
 
 <hr>
+<h2 id="quick-recap">Quick Recap</h2>
+
+<p>In <a href="part-3-hypercore-merkle.md">Part 3</a>, we built Hypercore — an append-only log where every block is bound to a Merkle proof chain and an Ed25519 signature. Any peer can verify any block without trusting the messenger. Now we need richer data structures on top of it.</p>
+
+<hr>
 <h2 id="the-problem-access-patterns">The Problem: Access Patterns</h2>
 
 <p>A Hypercore gives you <code>append(data)</code> and <code>get(index)</code>. For a chat log, that&#39;s fine — messages arrive in order and you read them sequentially. But consider a contacts app: you need to look up &quot;Alice&quot; without scanning every block. Or a file system: you need to read <code>/photos/vacation.jpg</code> without downloading every file in the drive.</p>
@@ -75,7 +80,7 @@
 
 <p>Block 0 is always the header (protocol: <code>&quot;hyperbee&quot;</code>). Each subsequent block carries the inserted key-value pair plus the tree index snapshot. The <em>latest</em> block&#39;s tree index always points to the current root — reading the tree starts from the end of the log.</p>
 <blockquote class="callout-insight">
-<p><strong>Key Insight:</strong> This append-only B-tree has an unusual property: every past state of the tree is still accessible. Block 3&#39;s index represents the tree as it was after 3 insertions. This gives you free versioning — <code>db.checkout(version)</code> returns a read-only snapshot at any historical state, with zero extra storage cost.</p>
+<p><strong>Key Insight:</strong> This append-only B-tree has an unusual property: every past state of the tree is still accessible. Block 3&#39;s index represents the tree as it was after 3 insertions. This gives you free versioning — <code>db.checkout(version)</code> returns a read-only snapshot at any historical state, with no additional metadata beyond what the append-only log naturally accumulates.</p>
 </blockquote>
 
 <h3 id="sparse-lookups">Sparse Lookups</h3>
@@ -143,9 +148,9 @@ await batch.flush()
 <pre><code class="language-js">// Only update if the previous value matches a condition
 await db.put('alice', { age: 31, city: 'Berlin' }, {
   cas (prev, next) {
-    // prev is the current entry (CAS is only called when updating an existing key)
+    // CAS is only called when updating an existing key — prev is always defined
     // Return true to proceed with the write
-    return prev !== null &amp;&amp; prev.value.age &lt; next.value.age
+    return prev.value.age &lt; next.value.age
   }
 })</code></pre>
 
@@ -251,7 +256,7 @@ entry.on('update', () =&gt; {
 
 <p><a href="https://github.com/holepunchto/hyperblobs" target="_blank">Hyperblobs</a> is a thin wrapper around a Hypercore that handles binary large objects. When you write a file:</p>
 <ol>
-<li>The file content is split into <strong>64 KB chunks</strong> (the default block size)</li>
+<li>The file content is split into <strong>64 KB chunks</strong> (the default chunk size, configurable)</li>
 <li>Each chunk is appended to the Hyperblobs&#39; Hypercore</li>
 <li>Hyperblobs returns a <strong>blob ID</strong>: <code>{ blockOffset, blockLength, byteOffset, byteLength }</code></li>
 <li>This blob ID is stored in the Hyperbee entry alongside the file metadata</li>
@@ -465,7 +470,7 @@ const store2 = new Corestore('./other-storage', {
 })</code></pre>
 
 <blockquote class="callout-gotcha">
-<p><strong>Gotcha:</strong> The <code>primaryKey</code> is the root of trust for a user&#39;s entire identity. Compromising it compromises every Hypercore in the store. It should never be logged, transmitted, or stored in plaintext outside the Corestore&#39;s own encrypted storage.</p>
+<p><strong>Gotcha:</strong> The <code>primaryKey</code> is the root of trust for a user&#39;s entire identity. Compromising it compromises every Hypercore in the store. It should never be logged or transmitted. Note that Corestore itself does not encrypt storage — the primaryKey is stored as raw bytes in the underlying database (RocksDB). Protecting it requires application-level measures (encrypted disk, secure enclave, or an encrypted storage backend).</p>
 </blockquote>
 
 <h3 id="sessions-and-resource-management">Sessions and Resource Management</h3>
@@ -497,7 +502,7 @@ store.resume()</code></pre>
 // When either side discovers a new Hypercore during replication
 // (via discovery key exchange), Corestore loads it automatically</code></pre>
 
-<p>When a remote peer opens a Protomux channel for a discovery key that the local store knows about, Corestore automatically loads the corresponding Hypercore and joins the replication. This is what makes Hyperdrive&#39;s two-core replication seamless — you replicate the Corestore, and both the Hyperbee and Hyperblobs cores are handled automatically.</p>
+<p>When a remote peer opens a Protomux channel for a discovery key that the local store already knows about (has previously opened or created a core for), Corestore automatically loads the corresponding Hypercore and joins the replication. This is what makes Hyperdrive&#39;s two-core replication seamless — you replicate the Corestore, and both the Hyperbee and Hyperblobs cores are handled automatically.</p>
 <hr>
 <h2 id="how-it-all-fits-together">How It All Fits Together</h2>
 
