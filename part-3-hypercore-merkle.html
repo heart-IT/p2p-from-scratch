@@ -24,13 +24,13 @@
 
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <strong>Part 3: Append-Only Truth (You are here)</strong> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
+<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <strong>Part 3: Append-Only Truth (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
 </blockquote>
 
 <hr>
 <h2 id="quick-recap">Quick Recap</h2>
 
-<p>In <a href="part-1-nat-holepunching.md">Part 1</a>, we punched through NATs to establish a UDP path. In <a href="part-2-encrypted-pipes.md">Part 2</a>, we wrapped that path in Noise XX encryption and multiplexed independent protocols over it with Protomux. Now we need data worth sending through the pipe.</p>
+<p>In <a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1</a>, we punched through NATs to establish a UDP path. In <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2</a>, we wrapped that path in Noise XX encryption and multiplexed independent protocols over it with Protomux. Now we need data worth sending through the pipe.</p>
 
 <hr>
 <h2 id="the-problem-trust-without-a-server">The Problem: Trust Without a Server</h2>
@@ -304,7 +304,7 @@ core.on('truncate', (ancestors, forkId) =&gt; {
 <hr>
 <h2 id="the-replication-protocol">The Replication Protocol</h2>
 
-<p>When two peers replicate a Hypercore, they open a Protomux channel (from <a href="part-2-encrypted-pipes.md">Part 2</a>) with protocol name <code>hypercore/alpha</code> and the Hypercore&#39;s <strong>discovery key</strong> as the channel id.</p>
+<p>When two peers replicate a Hypercore, they open a Protomux channel (from <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2</a>) with protocol name <code>hypercore/alpha</code> and the Hypercore&#39;s <strong>discovery key</strong> as the channel id.</p>
 <p>The replication protocol has 10 message types:</p>
 <figure class="wp-block-table"><table>
 <thead>
@@ -417,7 +417,7 @@ console.log('Block 1:', block.toString())  // &quot;World&quot;
 <h2 id="what-s-next">What's Next</h2>
 
 <p>We have a verified, append-only log. But a log is just a sequence of blocks — you can append and read by index, and that&#39;s it. Most applications need richer access patterns: sorted key-value lookups, file systems, range queries.</p>
-<p>In <a href="part-4-hyperbee-hyperdrive.md">Part 4</a>, we&#39;ll see how Hyperbee maps a B-tree onto Hypercore&#39;s sequential blocks to create a sparse-friendly sorted key-value store, and how Hyperdrive combines a Hyperbee (metadata) with Hyperblobs (content) to build a distributed file system. We&#39;ll also look at Corestore — the component that manages multiple Hypercores with deterministic key derivation from a single master seed.</p>
+<p>In <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4</a>, we&#39;ll see how Hyperbee maps a B-tree onto Hypercore&#39;s sequential blocks to create a sparse-friendly sorted key-value store, and how Hyperdrive combines a Hyperbee (metadata) with Hyperblobs (content) to build a distributed file system. We&#39;ll also look at Corestore — the component that manages multiple Hypercores with deterministic key derivation from a single master seed.</p>
 <hr>
 <h2 id="references-further-reading">References & Further Reading</h2>
 
@@ -435,7 +435,7 @@ console.log('Block 1:', block.toString())  // &quot;World&quot;
 <hr>
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <strong>Part 3: Append-Only Truth (You are here)</strong> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
+<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <strong>Part 3: Append-Only Truth (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
 </blockquote>
 
 

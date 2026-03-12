@@ -47,7 +47,9 @@ This is how Kademlia works. "Closeness" isn't geographic — it's a mathematical
 
 ### Node IDs and XOR Distance
 
-Every node in the DHT has a 32-byte (256-bit) identifier. As we covered in <a href="part-1-nat-holepunching.md">Part 1</a>, node IDs are derived from network identity: `nodeID = BLAKE2b(publicIP + publicPort)`. You can't choose your position in the keyspace.
+Every node in the DHT has a 32-byte (256-bit) identifier. As we covered in <a href="part-1-nat-holepunching.md">Part 1</a>, node IDs are derived from network identity: `nodeID = BLAKE2b(publicIP + publicPort)`. You can't choose your position in the keyspace — the DHT validates your claimed ID against your observed address, preventing arbitrary keyspace placement.
+
+> **Key distinction:** HyperDHT separates *routing identity* from *connection identity*. Routing IDs are derived from observed network addresses (for Sybil resistance and deterministic placement), while encrypted connections authenticate peers using Noise keypairs (from <a href="part-2-encrypted-pipes.md">Part 2</a>). The routing ID determines *where* you sit in the DHT; the Noise keypair determines *who* you are.
 
 The "distance" between two IDs is their **XOR** — a bitwise operation that produces a new 256-bit value. Closer IDs share more leading bits. The distance between `1001...` and `1000...` (differing at bit 4) is smaller than between `1001...` and `1100...` (differing at bit 2).
 
@@ -103,7 +105,7 @@ graph TD
 ```
 *Figure 1: Iterative Kademlia lookup. Each round discovers closer nodes. Parallel queries accelerate convergence.*
 
-For a network of 10,000 nodes, this converges in roughly `log₂(10,000) ≈ 13` hops — but with parallelism and the routing table's logarithmic structure, the real-world latency is just a few round-trips.
+Lookups scale as `O(log n)` — for a network of 10,000 nodes, the theoretical bound is about 13 sequential steps. In practice, because queries run in parallel and the routing table already contains nearby nodes, most HyperDHT lookups converge in 3–6 network round-trips.
 
 ---
 
@@ -139,7 +141,7 @@ The node performs a lookup to find the 20 closest nodes to the topic, then store
 - Up to **3 relay node addresses** (for holepunching coordination)
 - A **cryptographic signature** proving keypair ownership (prevents impersonation)
 
-Announcements have a two-phase structure: first find the closest nodes (with round-trip token collection), then commit the announcement with tokens proving you actually own that IP address.
+Announcements have a two-phase structure: first find the closest nodes (with round-trip token collection), then commit the announcement with tokens proving you previously contacted each DHT node (preventing forged announcements from spoofed addresses).
 
 **Lookup** — "Who has this data?"
 
@@ -191,8 +193,8 @@ Server mode creates a persistent presence on the DHT — periodic re-announcemen
 If you join 5 topics and discover the same peer on 3 of them, you don't get 3 connections. Hyperswarm enforces **single-connection-per-peer** semantics.
 
 When a duplicate connection is detected:
-1. The swarm compares `rawBytesRead` and `rawBytesWritten` to determine if the existing connection is established
-2. It uses a deterministic tiebreaker — comparing public keys with `Buffer.compare()` — to decide which side keeps the connection
+1. If the existing connection has already exchanged data in both directions (`rawBytesRead > 0 && rawBytesWritten > 0`), the new connection wins — the peer must have lost the old one and is reconnecting
+2. Otherwise, a deterministic tiebreaker — comparing public keys with `Buffer.compare()` — decides which side keeps the connection
 3. The loser is destroyed with an `ERR_DUPLICATE` error
 4. The winning connection's `peerInfo.topics` accumulates all relevant topics
 

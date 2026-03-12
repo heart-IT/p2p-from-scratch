@@ -24,19 +24,19 @@
 
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <strong>Part 5: Finding Peers (You are here)</strong> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
+<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <strong>Part 5: Finding Peers (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
 </blockquote>
 
 <hr>
 <h2 id="quick-recap">Quick Recap</h2>
 
-<p>In Parts <a href="part-1-nat-holepunching.md">1</a>–<a href="part-2-encrypted-pipes.md">2</a>, we established encrypted connections through NATs. In Parts <a href="part-3-hypercore-merkle.md">3</a>–<a href="part-4-hyperbee-hyperdrive.md">4</a>, we built verified data structures on top: append-only logs, B-tree databases, and file systems. But none of it works if peers can&#39;t find each other.</p>
+<p>In Parts <a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">1</a>–<a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">2</a>, we established encrypted connections through NATs. In Parts <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">3</a>–<a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">4</a>, we built verified data structures on top: append-only logs, B-tree databases, and file systems. But none of it works if peers can&#39;t find each other.</p>
 
 <hr>
 <h2 id="the-problem-no-server-no-directory">The Problem: No Server, No Directory</h2>
 
 <p>In the client-server world, finding a service is trivial. You type <code>api.example.com</code>, DNS resolves it to <code>93.184.216.34</code>, and you connect. The entire Internet is a giant phone book backed by a hierarchical authority.</p>
-<p>In a peer-to-peer system, there is no phone book. Alice has a Hypercore she wants to share. Bob wants to replicate it. Neither knows the other&#39;s IP address. Neither is running a server with a domain name. Both are behind NATs (from <a href="part-1-nat-holepunching.md">Part 1</a>) and can&#39;t receive unsolicited connections.</p>
+<p>In a peer-to-peer system, there is no phone book. Alice has a Hypercore she wants to share. Bob wants to replicate it. Neither knows the other&#39;s IP address. Neither is running a server with a domain name. Both are behind NATs (from <a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1</a>) and can&#39;t receive unsolicited connections.</p>
 <p>They need a way to announce &quot;I have this data&quot; and discover &quot;who else has this data&quot; — without any single entity controlling the directory.</p>
 <p>This is the peer discovery problem, and it&#39;s solved by a <strong>distributed hash table</strong> — a database spread across thousands of nodes where no single node holds the complete picture, but any node can find any record by asking the right neighbors.</p>
 <hr>
@@ -55,7 +55,10 @@
 <p><a href="https://github.com/holepunchto/hyperdht" target="_blank">HyperDHT</a> implements a Kademlia-based distributed hash table, built on top of <a href="https://github.com/holepunchto/dht-rpc" target="_blank">dht-rpc</a>. Let&#39;s break down the core ideas.</p>
 <h3 id="node-ids-and-xor-distance">Node IDs and XOR Distance</h3>
 
-<p>Every node in the DHT has a 32-byte (256-bit) identifier. As we covered in <a href="part-1-nat-holepunching.md">Part 1</a>, node IDs are derived from network identity: <code>nodeID = BLAKE2b(publicIP + publicPort)</code>. You can&#39;t choose your position in the keyspace.</p>
+<p>Every node in the DHT has a 32-byte (256-bit) identifier. As we covered in <a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1</a>, node IDs are derived from network identity: <code>nodeID = BLAKE2b(publicIP + publicPort)</code>. You can&#39;t choose your position in the keyspace — the DHT validates your claimed ID against your observed address, preventing arbitrary keyspace placement.</p>
+<blockquote class="callout-insight">
+<p><strong>Key distinction:</strong> HyperDHT separates <em>routing identity</em> from <em>connection identity</em>. Routing IDs are derived from observed network addresses (for Sybil resistance and deterministic placement), while encrypted connections authenticate peers using Noise keypairs (from <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2</a>). The routing ID determines <em>where</em> you sit in the DHT; the Noise keypair determines <em>who</em> you are.</p>
+</blockquote>
 <p>The &quot;distance&quot; between two IDs is their <strong>XOR</strong> — a bitwise operation that produces a new 256-bit value. Closer IDs share more leading bits. The distance between <code>1001...</code> and <code>1000...</code> (differing at bit 4) is smaller than between <code>1001...</code> and <code>1100...</code> (differing at bit 2).</p>
 <blockquote class="callout-insight">
 <p><strong>Key Insight:</strong> XOR distance is symmetric (<code>distance(A, B) = distance(B, A)</code>) and satisfies the triangle inequality. This means if A is close to B and B is close to C, then A and C aren&#39;t too far apart. This property is what makes Kademlia&#39;s routing work — each hop gets you genuinely closer to the target.</p>
@@ -107,12 +110,12 @@ graph TD
 </pre></div>
 
 <p><em>Figure 1: Iterative Kademlia lookup. Each round discovers closer nodes. Parallel queries accelerate convergence.</em></p>
-<p>For a network of 10,000 nodes, this converges in roughly <code>log₂(10,000) ≈ 13</code> hops — but with parallelism and the routing table&#39;s logarithmic structure, the real-world latency is just a few round-trips.</p>
+<p>Lookups scale as <code>O(log n)</code> — for a network of 10,000 nodes, the theoretical bound is about 13 sequential steps. In practice, because queries run in parallel and the routing table already contains nearby nodes, most HyperDHT lookups converge in 3–6 network round-trips.</p>
 <hr>
 <h2 id="topics-the-dht-s-addressing-scheme">Topics: The DHT's Addressing Scheme</h2>
 
 <p>A <strong>topic</strong> is a 32-byte buffer — any 256-bit value. The DHT stores records at the 20 nodes closest to a given topic. Peers who want to find each other choose a shared topic and rendezvous there.</p>
-<p>For Hypercore replication, the topic is the <strong>discovery key</strong> — a keyed BLAKE2b hash of the Hypercore&#39;s public key (from <a href="part-3-hypercore-merkle.md">Part 3</a>):</p>
+<p>For Hypercore replication, the topic is the <strong>discovery key</strong> — a keyed BLAKE2b hash of the Hypercore&#39;s public key (from <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3</a>):</p>
 <pre><code>discoveryKey = BLAKE2b-256(key = publicKey, data = &quot;hypercore&quot;)</code></pre>
 
 <p>The public key is the BLAKE2b <strong>key</strong> (the keyed-hash parameter), and the string <code>&quot;hypercore&quot;</code> is the <strong>data</strong> being hashed. This means only someone who already knows the public key can compute the discovery key — the hash is keyed to the identity.</p>
@@ -133,7 +136,7 @@ graph TD
 <li>Up to <strong>3 relay node addresses</strong> (for holepunching coordination)</li>
 <li>A <strong>cryptographic signature</strong> proving keypair ownership (prevents impersonation)</li>
 </ul>
-<p>Announcements have a two-phase structure: first find the closest nodes (with round-trip token collection), then commit the announcement with tokens proving you actually own that IP address.</p>
+<p>Announcements have a two-phase structure: first find the closest nodes (with round-trip token collection), then commit the announcement with tokens proving you previously contacted each DHT node (preventing forged announcements from spoofed addresses).</p>
 <p><strong>Lookup</strong> — &quot;Who has this data?&quot;</p>
 <pre><code class="language-js">const stream = node.lookup(topic)
 for await (const result of stream) {
@@ -182,12 +185,12 @@ await discovery.flushed() // Wait for initial announce + lookup to complete</cod
 <p>If you join 5 topics and discover the same peer on 3 of them, you don&#39;t get 3 connections. Hyperswarm enforces <strong>single-connection-per-peer</strong> semantics.</p>
 <p>When a duplicate connection is detected:</p>
 <ol>
-<li>The swarm compares <code>rawBytesRead</code> and <code>rawBytesWritten</code> to determine if the existing connection is established</li>
-<li>It uses a deterministic tiebreaker — comparing public keys with <code>Buffer.compare()</code> — to decide which side keeps the connection</li>
+<li>If the existing connection has already exchanged data in both directions (<code>rawBytesRead &gt; 0 &amp;&amp; rawBytesWritten &gt; 0</code>), the new connection wins — the peer must have lost the old one and is reconnecting</li>
+<li>Otherwise, a deterministic tiebreaker — comparing public keys with <code>Buffer.compare()</code> — decides which side keeps the connection</li>
 <li>The loser is destroyed with an <code>ERR_DUPLICATE</code> error</li>
 <li>The winning connection&#39;s <code>peerInfo.topics</code> accumulates all relevant topics</li>
 </ol>
-<p>This is why Protomux (from <a href="part-2-encrypted-pipes.md">Part 2</a>) is essential. One encrypted connection carries all protocol channels for all shared topics. Without multiplexing, deduplication would be impossible.</p>
+<p>This is why Protomux (from <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2</a>) is essential. One encrypted connection carries all protocol channels for all shared topics. Without multiplexing, deduplication would be impossible.</p>
 <h3 id="the-connection-event">The Connection Event</h3>
 
 <div class="code-filename">hyperswarm-connection.js</div>
@@ -203,7 +206,7 @@ await discovery.flushed() // Wait for initial announce + lookup to complete</cod
   store.replicate(socket)
 })</code></pre>
 
-<p>By the time the <code>connection</code> event fires, the full pipeline from <a href="part-1-nat-holepunching.md">Part 1</a> and <a href="part-2-encrypted-pipes.md">Part 2</a> has already executed: NAT traversal, Noise XX handshake, and session key derivation. The socket is an encrypted Duplex stream ready for application data.</p>
+<p>By the time the <code>connection</code> event fires, the full pipeline from <a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1</a> and <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2</a> has already executed: NAT traversal, Noise XX handshake, and session key derivation. The socket is an encrypted Duplex stream ready for application data.</p>
 <hr>
 <h2 id="persistent-peers-joinpeer">Persistent Peers: joinPeer</h2>
 
@@ -290,7 +293,7 @@ swarm.on('connection', (socket) =&gt; {
 await swarm.flush()</code></pre>
 
 <p>When <code>store.replicate(socket)</code> is called, Corestore wraps the encrypted socket in a Protomux instance. For each Hypercore the local store knows about, it opens a Protomux channel with protocol <code>hypercore/alpha</code> and the Hypercore&#39;s discovery key as the channel ID. The remote side&#39;s Corestore does the same. Channels pair automatically when both sides know the same Hypercore.</p>
-<p>This is why a single connection can serve dozens of Hypercores — each gets its own Protomux channel with independent replication state, all multiplexed over the one encrypted stream from <a href="part-2-encrypted-pipes.md">Part 2</a>.</p>
+<p>This is why a single connection can serve dozens of Hypercores — each gets its own Protomux channel with independent replication state, all multiplexed over the one encrypted stream from <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2</a>.</p>
 <blockquote class="callout-feynman">
 <p><strong>Feynman Moment:</strong> There&#39;s a subtlety in how existing Hypercores propagate across connections. When Alice replicates a Corestore with Bob, and Bob starts replicating a Hypercore that Alice has in her local storage but hasn&#39;t opened yet, Bob opens a Protomux channel for it. Alice&#39;s Corestore sees the discovery key, finds the matching core in storage, loads it, and joins the channel. The replication is reactive — neither side needs to coordinate &quot;let&#39;s sync core X now.&quot; The Protomux channel pairing handles it automatically. Note: Corestore only auto-loads cores it already knows about — it won&#39;t create a brand new core just because a peer announced an unknown discovery key. This is what makes multi-core systems like Hyperdrive (Part 4) and Autobase (Part 6) work seamlessly.</p>
 </blockquote>
@@ -351,7 +354,7 @@ node3.hyperdht.org:49737</code></pre>
 <h2 id="what-s-next">What's Next</h2>
 
 <p>We can find peers, connect securely, and replicate data. But everything so far has been <strong>single-writer</strong> — one keypair signs one Hypercore, and everyone else is a reader.</p>
-<p>In <a href="part-6-autobase-consensus.md">Part 6</a>, we&#39;ll tackle the hardest problem in distributed systems: multiple writers. Autobase takes multiple independent Hypercores — each written by a different peer — and linearizes them into a single, consistent view using causal ordering and quorum consensus. This is where P2P applications go from &quot;read-only mirrors&quot; to &quot;collaborative systems.&quot;</p>
+<p>In <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6</a>, we&#39;ll tackle the hardest problem in distributed systems: multiple writers. Autobase takes multiple independent Hypercores — each written by a different peer — and linearizes them into a single, consistent view using causal ordering and quorum consensus. This is where P2P applications go from &quot;read-only mirrors&quot; to &quot;collaborative systems.&quot;</p>
 <hr>
 <h2 id="references-further-reading">References & Further Reading</h2>
 
@@ -369,7 +372,7 @@ node3.hyperdht.org:49737</code></pre>
 <hr>
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <strong>Part 5: Finding Peers (You are here)</strong> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
+<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <strong>Part 5: Finding Peers (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
 </blockquote>
 
 

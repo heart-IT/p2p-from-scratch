@@ -24,13 +24,13 @@
 
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <strong>Part 6: Many Writers, One Truth (You are here)</strong> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
+<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <strong>Part 6: Many Writers, One Truth (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
 </blockquote>
 
 <hr>
 <h2 id="quick-recap">Quick Recap</h2>
 
-<p>In Parts <a href="part-3-hypercore-merkle.md">3</a>–<a href="part-4-hyperbee-hyperdrive.md">4</a>, we built single-writer data structures: Hypercores, Hyperbee databases, and Hyperdrives. In <a href="part-5-dht-discovery.md">Part 5</a>, we connected peers via DHT discovery. But everything so far has one keypair per log — one writer, many readers.</p>
+<p>In Parts <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">3</a>–<a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">4</a>, we built single-writer data structures: Hypercores, Hyperbee databases, and Hyperdrives. In <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5</a>, we connected peers via DHT discovery. But everything so far has one keypair per log — one writer, many readers.</p>
 
 <hr>
 <h2 id="the-problem-single-writer-isn-t-enough">The Problem: Single-Writer Isn't Enough</h2>
@@ -152,7 +152,7 @@ A3 ─┐ depends on         5. B2  (depends on B1, C1)
 <hr>
 <h2 id="the-apply-function-building-state-from-history">The Apply Function: Building State from History</h2>
 
-<p>Autobase doesn&#39;t just order events — it builds a <em>view</em> from them. The view is typically a Hyperbee (from <a href="part-4-hyperbee-hyperdrive.md">Part 4</a>) that represents the current application state.</p>
+<p>Autobase doesn&#39;t just order events — it builds a <em>view</em> from them. The view is typically a Hyperbee (from <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4</a>) that represents the current application state.</p>
 <p>Two user-defined functions control this:</p>
 <h3 id="open-store-host">open(store, host)</h3>
 
@@ -455,7 +455,7 @@ await base.ready()
 <h2 id="what-s-next">What's Next</h2>
 
 <p>We&#39;ve built the full collaboration stack: encrypted connections, verified data, peer discovery, and multi-writer consensus. But we&#39;ve been trusting the <em>people</em> at each end. What if a peer is malicious? What if they flood the DHT with fake nodes? What if they try to impersonate someone else?</p>
-<p>In <a href="part-7-security-trust.md">Part 7</a>, we&#39;ll examine the security model of the entire Holepunch stack — from Sybil resistance in the DHT, to Eclipse attack prevention, to the complete Merkle verification chain that makes data poisoning detectable. We&#39;ll also look at how identity works without a central authority, including blind pairing for safe peer introduction.</p>
+<p>In <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7</a>, we&#39;ll examine the security model of the entire Holepunch stack — from Sybil resistance in the DHT, to Eclipse attack prevention, to the complete Merkle verification chain that makes data poisoning detectable. We&#39;ll also look at how identity works without a central authority, including blind pairing for safe peer introduction.</p>
 <hr>
 <h2 id="references-further-reading">References & Further Reading</h2>
 
@@ -473,6 +473,6 @@ await base.ready()
 <hr>
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <strong>Part 6: Many Writers, One Truth (You are here)</strong> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
+<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <strong>Part 6: Many Writers, One Truth (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
 </blockquote>
 

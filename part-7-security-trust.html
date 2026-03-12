@@ -24,13 +24,13 @@
 
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <strong>Part 7: Trust No One (You are here)</strong> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
+<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <strong>Part 7: Trust No One (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
 </blockquote>
 
 <hr>
 <h2 id="quick-recap">Quick Recap</h2>
 
-<p>Over Parts <a href="part-1-nat-holepunching.md">1</a>–<a href="part-6-autobase-consensus.md">6</a>, we built the full collaboration stack: NAT traversal, encrypted transport, verified data structures, peer discovery, and multi-writer consensus. Now we need to examine what happens when a peer is malicious.</p>
+<p>Over Parts <a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">1</a>–<a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">6</a>, we built the full collaboration stack: NAT traversal, encrypted transport, verified data structures, peer discovery, and multi-writer consensus. Now we need to examine what happens when a peer is malicious.</p>
 
 <hr>
 <h2 id="the-problem-no-gatekeeper-no-safety-net">The Problem: No Gatekeeper, No Safety Net</h2>
@@ -67,7 +67,7 @@
 <p>HyperDHT defends against Sybil attacks with three interlocking mechanisms.</p>
 <h3 id="mechanism-1-node-ids-are-tied-to-network-address">Mechanism 1: Node IDs Are Tied to Network Address</h3>
 
-<p>As we covered in <a href="part-5-dht-discovery.md">Part 5</a>, every DHT node&#39;s ID is derived from its observed IP and port:</p>
+<p>As we covered in <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5</a>, every DHT node&#39;s ID is derived from its observed IP and port:</p>
 <div class="code-filename">dht-rpc/lib/peer.js</div>
 <pre><code class="language-js">function id (host, port, out = b4a.allocUnsafeSlow(32)) {
   const addr = out.subarray(0, 6)
@@ -115,7 +115,7 @@
 <h2 id="layer-3-dht-poisoning-and-the-noise-handshake">Layer 3: DHT Poisoning and the Noise Handshake</h2>
 
 <p><strong>DHT poisoning</strong> is when an attacker announces fake records on a topic — so that when you look up &quot;who has this data?&quot;, the DHT returns attacker-controlled addresses instead of real peers.</p>
-<p>The defense is elegant: <strong>the DHT provides candidates, not trusted peers.</strong> Every connection goes through a Noise XX handshake (from <a href="part-2-encrypted-pipes.md">Part 2</a>) that cryptographically proves the remote peer holds the private key matching the announced public key.</p>
+<p>The defense is elegant: <strong>the DHT provides candidates, not trusted peers.</strong> Every connection goes through a Noise XX handshake (from <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2</a>) that cryptographically proves the remote peer holds the private key matching the announced public key.</p>
 <pre><code>Lookup result:  { publicKey: 0xABCD..., relayAddresses: [...] }
                           ↓
                HyperDHT connect(publicKey)
@@ -195,9 +195,9 @@
 <p>In a centralized system, your identity lives on a server. Lose your password? Reset it via email. Account compromised? The admin revokes it. P2P has no admin. Your identity <em>is</em> your keypair, and the rules are simple and unforgiving:</p>
 <ul>
 <li><strong>Lose your private key → lose your identity forever.</strong> No recovery, no appeal, no reset.</li>
-<li><strong>Compromise your primary key → compromise everything.</strong> All Hypercore keypairs derive deterministically from the Corestore primary key (as we covered in <a href="part-4-hyperbee-hyperdrive.md">Part 4</a>). One key rules them all.</li>
+<li><strong>Compromise your primary key → compromise everything.</strong> All Hypercore keypairs derive deterministically from the Corestore primary key (as we covered in <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4</a>). One key rules them all.</li>
 </ul>
-<p>The derivation chain from <a href="part-4-hyperbee-hyperdrive.md">Part 4</a>:</p>
+<p>The derivation chain from <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4</a>:</p>
 <pre><code>Primary Key (32 bytes — the root of trust)
     ↓ keyed BLAKE2b with namespace + name
 Deterministic Seed (32 bytes)
@@ -321,7 +321,7 @@ Ed25519 Keypair (for a specific Hypercore)</code></pre>
 <h2 id="whats-next">What's Next</h2>
 
 <p>We&#39;ve mapped every layer of the stack — from punching through NATs to securing against sophisticated attacks. The technology is sound. But technology alone doesn&#39;t make a product. Users don&#39;t care about Merkle proofs or Sybil resistance. They care about whether the app works when they&#39;re on the subway, whether their data appears instantly, and whether they can recover when things go wrong.</p>
-<p>In <a href="part-8-ux-production.md">Part 8</a>, we&#39;ll tackle the hardest challenge of all: making P2P feel reliable to real humans. We&#39;ll cover offline-first design, optimistic UX for eventually-consistent data, availability strategies (seeded mesh, personal relay nodes, hybrid architectures), mobile deployment with suspend/resume, and the observability tools that keep a serverless system debuggable.</p>
+<p>In <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8</a>, we&#39;ll tackle the hardest challenge of all: making P2P feel reliable to real humans. We&#39;ll cover offline-first design, optimistic UX for eventually-consistent data, availability strategies (seeded mesh, personal relay nodes, hybrid architectures), mobile deployment with suspend/resume, and the observability tools that keep a serverless system debuggable.</p>
 <hr>
 <h2 id="references-further-reading">References &amp; Further Reading</h2>
 
@@ -340,7 +340,7 @@ Ed25519 Keypair (for a specific Hypercore)</code></pre>
 <hr>
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <strong>Part 7: Trust No One (You are here)</strong> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
+<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <strong>Part 7: Trust No One (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
 </blockquote>
 
 
