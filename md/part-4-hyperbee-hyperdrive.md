@@ -391,6 +391,8 @@ drive.contentKey   // Public key of the blobs core
 
 > **Gotcha:** `drive.blobs` can be `null` initially — the blobs core is loaded lazily. For writable drives it's available after `ready()`, but for read-only drives you may need `await drive.getBlobs()` to force loading.
 
+> **Where we are:** Hyperbee gives us sorted key-value lookups on top of Hypercore's append-only log. Hyperdrive combines a Hyperbee (metadata) with Hyperblobs (content) to build a file system. Both are sparse-friendly and cryptographically verified. But Hyperdrive already needs two Hypercores — and real applications need many more. Managing all those keypairs manually is the problem Corestore solves.
+
 ---
 
 ## Corestore: Managing Multiple Hypercores

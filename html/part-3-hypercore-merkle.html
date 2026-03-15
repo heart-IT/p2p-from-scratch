@@ -24,14 +24,13 @@
 
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <strong>Part 3: Append-Only Truth (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
+<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <strong>Part 3: Append-Only Truth (You are here)</strong> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
 </blockquote>
 
 <hr>
 <h2 id="quick-recap">Quick Recap</h2>
 
-<p>In <a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1</a>, we punched through NATs to establish a UDP path. In <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2</a>, we wrapped that path in Noise XX encryption and multiplexed independent protocols over it with Protomux. Now we need data worth sending through the pipe.</p>
-
+<p>In <a href="part-1-nat-holepunching.md">Part 1</a>, we punched through NATs to establish a UDP path. In <a href="part-2-encrypted-pipes.md">Part 2</a>, we wrapped that path in Noise XX encryption and multiplexed independent protocols over it with Protomux. Now we need data worth sending through the pipe.</p>
 <hr>
 <h2 id="the-problem-trust-without-a-server">The Problem: Trust Without a Server</h2>
 
@@ -62,11 +61,8 @@
 <h2 id="the-mental-model-tamper-evident-seals">The Mental Model: Tamper-Evident Seals</h2>
 
 <p>Imagine you&#39;re shipping a crate of 1,000 numbered bottles across the ocean. You don&#39;t trust the ship&#39;s crew. How do you let the recipient verify that <em>one specific bottle</em> hasn&#39;t been swapped — without inspecting all 1,000?</p>
-
 <p>Seal every pair of bottles together with a wax stamp. Then seal pairs of pairs. Keep going until you have one master seal at the top. Give the recipient that single master seal in advance (signed by you, sent separately). Now they can verify bottle #42 by checking only the chain of seals from that bottle up to the master seal — about 10 seals out of 1,000 bottles. If any seal is broken or wrong, someone tampered with the chain.</p>
-
 <p>That&#39;s a Merkle tree. The bottles are data blocks. The wax seals are hashes. The master seal is the signed root. The signed delivery note is the Ed25519 signature.</p>
-
 <blockquote class="callout-feynman">
 <p><strong>Feynman Moment:</strong> The analogy maps well, but here&#39;s where it gets more interesting. Real wax seals are symmetric — anyone can stamp one. Cryptographic hashes are one-way: you can verify a hash instantly, but you can&#39;t reverse-engineer data that produces a given hash. This asymmetry is what makes the system trustless. The recipient doesn&#39;t need to trust the crew, the ship, or the route — only the math.</p>
 </blockquote>
@@ -191,6 +187,33 @@ Index:  [ 0 ] [ 2 ] [ 4 ] [ 6 ] [ 8 ]       ← Leaves (even indices)
 <li>Its <strong>byte size</strong> (8-byte LE uint64)</li>
 </ol>
 <p>Including the index and size makes the commitment unambiguous — you can&#39;t reinterpret the same sequence of hashes as a different tree shape.</p>
+<p>Here&#39;s how the peaks are computed and bagged into a single commitment:</p>
+
+<div class="mermaid-container"><pre class="mermaid">
+graph TD
+    subgraph "5 Blocks → 2 Peaks"
+        B0["Block 0"]:::leaf --> P1["Parent [1]"]:::parent
+        B1["Block 1"]:::leaf --> P1
+        B2["Block 2"]:::leaf --> P5["Parent [5]"]:::parent
+        B3["Block 3"]:::leaf --> P5
+        P1 --> R1["Root Peak [3]"]:::peak
+        P5 --> R1
+        B4["Block 4"]:::leaf --> R2["Root Peak [8]"]:::peak
+    end
+
+    R1 -->|"hash + index + size"| BAG["Tree Hash<br/>BLAKE2b(0x02 ‖ peak₁ ‖ peak₂)"]:::root
+    R2 -->|"hash + index + size"| BAG
+    BAG --> SIG["Ed25519 Signature"]:::sig
+
+    classDef leaf fill:#22272e,stroke:#539bf5,color:#e6edf3
+    classDef parent fill:#22272e,stroke:#986ee2,color:#e6edf3
+    classDef peak fill:#22272e,stroke:#986ee2,color:#e6edf3
+    classDef root fill:#22272e,stroke:#57ab5a,color:#e6edf3
+    classDef sig fill:#22272e,stroke:#57ab5a,color:#e6edf3
+</pre></div>
+
+<p><em>Figure 1: Bagging the peaks for 5 blocks. The block count (binary 101 = 4 + 1) produces two complete subtrees with root peaks at indices 3 and 8. Both peaks feed into a single BLAKE2b tree hash, which is then signed.</em></p>
+<p>This is why appending a block is cheap — only the peaks change. Adding block 5 would create a new leaf, merge two peaks into one, and produce a new tree hash and signature. The rest of the tree stays untouched.</p>
 <blockquote class="callout-insight">
 <p><strong>Key Insight:</strong> The <code>0x02</code> root type prefix is the third domain separator. With three prefixes — <code>0x00</code> for leaves, <code>0x01</code> for parents, <code>0x02</code> for the tree hash — no valid hash at one level can be confused with a hash at another level. This domain separation prevents structural ambiguity attacks where a leaf could be misinterpreted as a parent or vice versa, even if hash outputs happen to overlap across node types.</p>
 </blockquote>
@@ -251,7 +274,7 @@ graph BT
     style U3 fill:#22272e,stroke:#986ee2,color:#e6edf3
 </pre></div>
 
-<p><em>Figure 1: Verifying a single block. Purple nodes are the uncle hashes provided in the proof. Only a handful of hashes are needed, regardless of log size.</em></p>
+<p><em>Figure 2: Verifying a single block. Purple nodes are the uncle hashes provided in the proof. Only a handful of hashes are needed, regardless of log size.</em></p>
 <h3 id="how-many-uncle-hashes">How Many Uncle Hashes?</h3>
 
 <p>The number of uncle hashes depends on <strong>which root peak&#39;s subtree</strong> contains the block — not on the total log size.</p>
@@ -304,7 +327,7 @@ core.on('truncate', (ancestors, forkId) =&gt; {
 <hr>
 <h2 id="the-replication-protocol">The Replication Protocol</h2>
 
-<p>When two peers replicate a Hypercore, they open a Protomux channel (from <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2</a>) with protocol name <code>hypercore/alpha</code> and the Hypercore&#39;s <strong>discovery key</strong> as the channel id.</p>
+<p>When two peers replicate a Hypercore, they open a Protomux channel (from <a href="part-2-encrypted-pipes.md">Part 2</a>) with protocol name <code>hypercore/alpha</code> and the Hypercore&#39;s <strong>discovery key</strong> as the channel id.</p>
 <p>The replication protocol has 10 message types:</p>
 <figure class="wp-block-table"><table>
 <thead>
@@ -417,7 +440,7 @@ console.log('Block 1:', block.toString())  // &quot;World&quot;
 <h2 id="what-s-next">What's Next</h2>
 
 <p>We have a verified, append-only log. But a log is just a sequence of blocks — you can append and read by index, and that&#39;s it. Most applications need richer access patterns: sorted key-value lookups, file systems, range queries.</p>
-<p>In <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4</a>, we&#39;ll see how Hyperbee maps a B-tree onto Hypercore&#39;s sequential blocks to create a sparse-friendly sorted key-value store, and how Hyperdrive combines a Hyperbee (metadata) with Hyperblobs (content) to build a distributed file system. We&#39;ll also look at Corestore — the component that manages multiple Hypercores with deterministic key derivation from a single master seed.</p>
+<p>In <a href="part-4-hyperbee-hyperdrive.md">Part 4</a>, we&#39;ll see how Hyperbee maps a B-tree onto Hypercore&#39;s sequential blocks to create a sparse-friendly sorted key-value store, and how Hyperdrive combines a Hyperbee (metadata) with Hyperblobs (content) to build a distributed file system. We&#39;ll also look at Corestore — the component that manages multiple Hypercores with deterministic key derivation from a single master seed.</p>
 <hr>
 <h2 id="references-further-reading">References & Further Reading</h2>
 
@@ -435,7 +458,7 @@ console.log('Block 1:', block.toString())  // &quot;World&quot;
 <hr>
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <strong>Part 3: Append-Only Truth (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
+<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <strong>Part 3: Append-Only Truth (You are here)</strong> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
 </blockquote>
 
 

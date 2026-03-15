@@ -171,8 +171,14 @@ const output = `<!--
 
 ${html}${mermaidScript}`
 
-// Write output
-const outFile = inputFile.replace(/\.md$/, '.html')
+// Write output — if input is from md/, output goes to html/
+const baseName = path.basename(inputFile, '.md') + '.html'
+const inputDir = path.dirname(inputFile)
+const outDir = inputDir.endsWith('/md') || inputDir === 'md'
+  ? inputDir.replace(/\/?md$/, 'html')
+  : inputDir
+const outFile = path.join(outDir, baseName)
+fs.mkdirSync(outDir, { recursive: true })
 fs.writeFileSync(outFile, output, 'utf-8')
 console.log(`✓ Converted: ${inputFile} → ${outFile}`)
 console.log(`  Word count: ~${md.split(/\s+/).length}`)

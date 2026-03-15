@@ -36,6 +36,31 @@ The Holepunch stack addresses each of these — some with hard cryptographic gua
 
 > **Key Insight:** P2P security is layered, not binary. The cryptographic layer (signatures, handshakes, Merkle proofs) provides mathematical guarantees. The network layer (Sybil resistance, peer diversity) provides probabilistic protection. The application layer (key backup, access control) provides operational safety. A secure P2P application needs all three.
 
+The full security model has six layers, each addressing a different attack vector:
+
+```mermaid
+graph TD
+    L6["Layer 6: Blind Pairing<br/>Safe peer introductions"]:::layer6
+    L5["Layer 5: Sovereign Identity<br/>Key derivation & backup"]:::layer5
+    L4["Layer 4: Merkle Verification<br/>Every block cryptographically proven"]:::layer4
+    L3["Layer 3: Noise Handshake<br/>DHT poisoning defeated"]:::layer3
+    L2["Layer 2: Eclipse Prevention<br/>Routing table diversity"]:::layer2
+    L1["Layer 1: Sybil Resistance<br/>Hash-based IDs, tokens, proving period"]:::layer1
+
+    L6 --> L5 --> L4 --> L3 --> L2 --> L1
+
+    classDef layer1 fill:#22272e,stroke:#539bf5,color:#e6edf3
+    classDef layer2 fill:#22272e,stroke:#539bf5,color:#e6edf3
+    classDef layer3 fill:#22272e,stroke:#986ee2,color:#e6edf3
+    classDef layer4 fill:#22272e,stroke:#57ab5a,color:#e6edf3
+    classDef layer5 fill:#22272e,stroke:#986ee2,color:#e6edf3
+    classDef layer6 fill:#22272e,stroke:#57ab5a,color:#e6edf3
+```
+
+*Figure 1: The six security layers of the Holepunch stack. Lower layers (blue) provide network-level probabilistic defense. Middle layers (purple) provide cryptographic authentication. Upper layers (green) provide application-level identity and access control.*
+
+Each layer assumes the one below it is functioning. Merkle verification (Layer 4) doesn't help if an Eclipse attack (Layer 2) prevents you from reaching any honest peer. Blind Pairing (Layer 6) doesn't help if the master key (Layer 5) is compromised. The stack is only as strong as its weakest layer for any given attack.
+
 ---
 
 ## The Mental Model: A City of Strangers

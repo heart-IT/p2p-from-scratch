@@ -100,6 +100,24 @@ for (let i = 0; i < total; i++) {
 | **Optimistic + undo** | Real-time editing | Apply changes immediately; if reordering changes the outcome, show a notification |
 | **Confirm before acting** | Financial, permissions | Block irreversible actions until `signedLength` advances past the relevant entry |
 
+Let's visualize the journey every piece of data takes:
+
+```mermaid
+graph LR
+    W["Local Write<br/>(instant)"]:::local --> S["Synced<br/>(replicated to peers)"]:::synced --> C["Confirmed<br/>(past signedLength)"]:::confirmed
+
+    W -.->|"Append to<br/>local Hypercore"| S
+    S -.->|"Quorum of indexers<br/>acknowledge"| C
+
+    classDef local fill:#22272e,stroke:#539bf5,color:#e6edf3
+    classDef synced fill:#22272e,stroke:#986ee2,color:#e6edf3
+    classDef confirmed fill:#22272e,stroke:#57ab5a,color:#e6edf3
+```
+
+*Figure 1: The consistency spectrum. Data moves left-to-right through three states. Only confirmed data (past signedLength) is safe for external side effects.*
+
+The key UX decision is how to represent each state. Most applications can treat local and synced identically (both are "your data") and only distinguish confirmed from unconfirmed.
+
 The golden rule: **never trigger external side effects from provisional data.** Don't send notifications, update external databases, or fire webhooks based on entries beyond `signedLength`. Wait for confirmation.
 
 ---
@@ -144,10 +162,10 @@ console.log(`Freed ${result.blocks} blocks from storage`)
 
 | Operation | Preserves Merkle Tree | Requires Write | Recoverable |
 |-----------|:---:|:---:|:---:|
-| `clear(start, end)` | Yes | No | Yes (re-fetch from peers) |
+| `clear(start, end)` | Partially (retains what's needed) | No | Yes (re-fetch from peers) |
 | `truncate(length)` | No (rewrites) | Yes | No (permanent) |
 
-> **Key Insight:** Sparse replication and `clear()` together enable a powerful pattern: download what you need, verify it once, use it, then clear it to free space. The Merkle tree stays intact, so re-verification on re-download is automatic. This is how mobile apps can handle large datasets without exhausting storage.
+> **Key Insight:** Sparse replication and `clear()` together enable a powerful pattern: download what you need, verify it once, use it, then clear it to free space. The verification metadata needed for remaining data stays intact, so re-verification on re-download is automatic. This is how mobile apps can handle large datasets without exhausting storage.
 
 ---
 
@@ -176,7 +194,7 @@ async function onForeground () {
 }
 ```
 
-`swarm.suspend()` is aggressive — it **destroys all connections**, suspends the server and DHT, suspends all discovery sessions, and resets the retry queue. This is not a gentle pause; it's a full shutdown of networking. When `resume()` is called, the swarm rebuilds from scratch: DHT first, then server, then discovery, then outbound connections.
+`swarm.suspend()` is aggressive — it **destroys all connections**, suspends the server and DHT, suspends all discovery sessions, and resets the retry queue. This is not a gentle pause; it's a full shutdown of networking. When `resume()` is called, the swarm reinitializes networking — resuming the DHT, server, and discovery sessions (which are preserved, not recreated) — then re-attempts outbound connections.
 
 ### Corestore Suspend
 
@@ -349,7 +367,7 @@ For persistent state across restarts, Pear provides `Pear.checkpoint(value)` —
 |---|---|
 | Writes never block on connectivity | Consistency is eventual, not immediate |
 | Sparse replication saves bandwidth and storage | Cold starts are slower (data fetched on demand) |
-| Suspend/resume saves battery on mobile | All connections destroyed — resume rebuilds from scratch |
+| Suspend/resume saves battery on mobile | All connections destroyed — resume reinitializes networking |
 | Seed nodes provide baseline availability | Seed nodes must be operated and maintained |
 | Fast-forward catches up efficiently | 16-block threshold before triggering; 5-min cooldown on failure |
 | Pear distributes apps without app stores | Users need Pear Runtime installed |
@@ -363,13 +381,78 @@ For persistent state across restarts, Pear provides `Pear.checkpoint(value)` —
 
 - **Never trigger side effects from provisional data.** Everything between `signedLength` and `view.length` might reorder. Wait for confirmation before sending notifications, updating external systems, or making irreversible changes.
 
-- **Use sparse replication and `clear()` for storage management.** Download on demand, verify once, clear when done. The Merkle tree stays intact for re-verification. This is essential for mobile.
+- **Use sparse replication and `clear()` for storage management.** Download on demand, verify once, clear when done. Verification metadata stays intact for re-verification. This is essential for mobile.
 
 - **Wire suspend/resume to your platform's lifecycle.** `swarm.suspend()` destroys all connections and stops networking; `swarm.resume()` rebuilds. There's no auto-resume — forgetting to wire this means battery drain or dead networking.
 
 - **Choose an availability strategy explicitly.** Pure mesh, seeded mesh, personal node, or hybrid. Seed nodes improve availability without compromising sovereignty because the verification chain ensures data integrity regardless of the source.
 
 - **Build observability from day one.** `swarm.connections.size`, `swarm.stats`, `swarm.on('update')`, and `base.signedLength` vs `base.view.length` are your core health indicators. Every peer must be its own monitoring system.
+
+---
+
+## Putting It All Together
+
+Here's the complete picture — a collaborative key-value store that combines every layer we've built across this series. One file, ~50 lines, the full Holepunch stack:
+
+```js title="p2p-collaborative-kv.js"
+const Corestore = require('corestore')       // Part 4: Multi-core management
+const Autobase = require('autobase')          // Part 6: Multi-writer consensus
+const Hyperbee = require('hyperbee')          // Part 4: Sorted key-value store
+const Hyperswarm = require('hyperswarm')      // Part 5: Peer discovery
+
+// --- Autobase handlers (Part 6) ---
+
+function open (store) {
+  return new Hyperbee(store.get('view'), {
+    keyEncoding: 'utf-8',
+    valueEncoding: 'json'
+  })
+}
+
+async function apply (nodes, view, host) {
+  const batch = view.batch()
+  for (const node of nodes) {
+    if (node.value === null) continue          // Skip ack-only nodes
+    const { type, key, value } = node.value
+    if (type === 'add-writer') {
+      await host.addWriter(Buffer.from(key, 'hex'), { indexer: value.indexer })
+      continue
+    }
+    if (type === 'put') await batch.put(key, value)
+    if (type === 'del') await batch.del(key)
+  }
+  await batch.flush()
+}
+
+// --- Setup ---
+
+const store = new Corestore('./p2p-storage')  // Part 4: Deterministic key derivation
+const base = new Autobase(store, null, { open, apply, valueEncoding: 'json', ackInterval: 1000 })
+await base.ready()
+
+// --- Networking (Parts 1, 2, 5) ---
+
+const swarm = new Hyperswarm()                // Part 1: NAT traversal, Part 2: Encrypted pipes
+swarm.on('connection', (socket) => base.replicate(socket))  // Part 3: Merkle-verified replication
+swarm.join(base.discoveryKey, { server: true, client: true })
+await swarm.flush()
+
+// --- Use it ---
+
+await base.append({ type: 'put', key: 'hello', value: { from: 'Part 8', msg: 'The full stack in 45 lines' } })
+await base.update()
+
+const entry = await base.view.get('hello')
+console.log(entry.value)  // { from: 'Part 8', msg: 'The full stack in 45 lines' }
+
+// --- Observability (Part 8) ---
+console.log(`Peers: ${swarm.connections.size}, Confirmed: ${base.signedLength}/${base.view.length}`)
+```
+
+Every part of this series is represented in those 45 lines. NAT traversal and encrypted pipes (Parts 1–2) happen inside `Hyperswarm`. Merkle-verified append-only logs (Part 3) power every `Hypercore` underneath. `Hyperbee` and `Corestore` (Part 4) provide the database and key management. `Hyperswarm` (Part 5) handles discovery. `Autobase` (Part 6) linearizes multiple writers. The security model (Part 7) is enforced at every layer — from the Noise XX handshake to the Ed25519 signatures. And the observability line at the bottom is where Part 8 begins.
+
+A second peer joins by passing the first peer's bootstrap key — the same pattern from Part 6. From there, both peers write to their own Hypercores, Autobase linearizes everything, and the Hyperbee view stays consistent across the network.
 
 ---
 

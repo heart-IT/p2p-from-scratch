@@ -24,14 +24,13 @@
 
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <strong>Part 6: Many Writers, One Truth (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
+<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <strong>Part 6: Many Writers, One Truth (You are here)</strong> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
 </blockquote>
 
 <hr>
 <h2 id="quick-recap">Quick Recap</h2>
 
-<p>In Parts <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">3</a>–<a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">4</a>, we built single-writer data structures: Hypercores, Hyperbee databases, and Hyperdrives. In <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5</a>, we connected peers via DHT discovery. But everything so far has one keypair per log — one writer, many readers.</p>
-
+<p>In Parts <a href="part-3-hypercore-merkle.md">3</a>–<a href="part-4-hyperbee-hyperdrive.md">4</a>, we built single-writer data structures: Hypercores, Hyperbee databases, and Hyperdrives. In <a href="part-5-dht-discovery.md">Part 5</a>, we connected peers via DHT discovery. But everything so far has one keypair per log — one writer, many readers.</p>
 <hr>
 <h2 id="the-problem-single-writer-isn-t-enough">The Problem: Single-Writer Isn't Enough</h2>
 
@@ -95,11 +94,11 @@
 <tr><th>Field</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><strong>value</strong></td><td>The user&#39;s data (encoded via <code>valueEncoding</code>)</td></tr>
-<tr><td><strong>heads</strong></td><td>References to the current DAG heads at the time of writing</td></tr>
-<tr><td><strong>clock</strong></td><td>A vector clock computed from the node&#39;s dependencies</td></tr>
-<tr><td><strong>writer</strong></td><td>Which writer produced this node</td></tr>
-<tr><td><strong>length</strong></td><td>Sequence number within that writer&#39;s core</td></tr>
+<tr><td>**value**</td><td>The user's data (encoded via `valueEncoding`)</td></tr>
+<tr><td>**heads**</td><td>References to the current DAG heads at the time of writing</td></tr>
+<tr><td>**clock**</td><td>A vector clock computed from the node's dependencies</td></tr>
+<tr><td>**writer**</td><td>Which writer produced this node</td></tr>
+<tr><td>**length**</td><td>Sequence number within that writer's core</td></tr>
 </tbody>
 </table></figure>
 
@@ -145,6 +144,44 @@ Carol:              [C1] ───┘</code></pre>
 A3 ─┐ depends on         5. B2  (depends on B1, C1)
     │ B2 and A2           6. A3  (depends on A2, B2)</code></pre>
 
+<p>Here&#39;s how the transformation works visually — from independent writer cores through the causal DAG to a single ordered sequence:</p>
+
+<div class="mermaid-container"><pre class="mermaid">
+graph LR
+    subgraph Writers
+        A1["A1"]:::writer --> A2["A2"]:::writer --> A3["A3"]:::writer
+        B1["B1"]:::writer --> B2["B2"]:::writer
+        C1["C1"]:::writer
+    end
+
+    subgraph "Causal DAG"
+        DA1["A1"]:::dag --> DA2["A2"]:::dag
+        DA2 --> DA3["A3"]:::dag
+        DB1["B1"]:::dag --> DB2["B2"]:::dag
+        DC1["C1"]:::dag --> DB2
+        DB2 --> DA3
+    end
+
+    subgraph "Linearized View"
+        L1["1. A1"]:::view
+        L2["2. B1"]:::view
+        L3["3. C1"]:::view
+        L4["4. A2"]:::view
+        L5["5. B2"]:::view
+        L6["6. A3"]:::view
+    end
+
+    A1 -.-> DA1
+    B1 -.-> DB1
+    C1 -.-> DC1
+
+    classDef writer fill:#22272e,stroke:#539bf5,color:#e6edf3
+    classDef dag fill:#22272e,stroke:#986ee2,color:#e6edf3
+    classDef view fill:#22272e,stroke:#57ab5a,color:#e6edf3
+</pre></div>
+
+<p><em>Figure 1: From independent writer cores (blue) through the causal DAG (purple) to the deterministic linearized view (green). Concurrent events (like A2, B1, C1) are ordered by lexicographic key comparison.</em></p>
+<p>Notice that the DAG preserves all causal relationships — B2 depends on C1, and A3 depends on B2. The linearization respects these dependencies absolutely. Only the ordering of <em>concurrent</em> events (those with no causal relationship) is decided by the tiebreaker.</p>
 <blockquote class="callout-insight">
 <p><strong>Key Insight:</strong> The tiebreaker being the public key means the ordering is deterministic and verifiable — no randomness, no timestamps, no coordination. Any peer who knows the same set of events will produce the exact same sequence. The choice of lexicographic key comparison is arbitrary but consistent, which is all that matters.</p>
 </blockquote>
@@ -152,7 +189,7 @@ A3 ─┐ depends on         5. B2  (depends on B1, C1)
 <hr>
 <h2 id="the-apply-function-building-state-from-history">The Apply Function: Building State from History</h2>
 
-<p>Autobase doesn&#39;t just order events — it builds a <em>view</em> from them. The view is typically a Hyperbee (from <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4</a>) that represents the current application state.</p>
+<p>Autobase doesn&#39;t just order events — it builds a <em>view</em> from them. The view is typically a Hyperbee (from <a href="part-4-hyperbee-hyperdrive.md">Part 4</a>) that represents the current application state.</p>
 <p>Two user-defined functions control this:</p>
 <h3 id="open-store-host">open(store, host)</h3>
 
@@ -206,7 +243,7 @@ A3 ─┐ depends on         5. B2  (depends on B1, C1)
 <p>Use this for client-server patterns: servers are indexers (they determine ordering), clients are non-indexing writers (they submit data but don&#39;t vote). This keeps the quorum small and fast while allowing many contributors.</p>
 <h3 id="relayed-writers">Relayed Writers</h3>
 
-<p>Entries appear only when referenced by a confirmed node from another writer. Relayed writers can never be the &quot;head&quot; of the DAG — their entries are only visible after an indexer or non-indexer includes them.</p>
+<p>Entries appear only when referenced by a confirmed node from another writer. Relayed writers can never be the &quot;head&quot; of the DAG — their entries are only visible after an indexer or non-indexer includes them. (This role is defined in the <a href="https://github.com/holepunchto/autobase/blob/main/DESIGN.md" target="_blank">Autobase DESIGN.md</a> but is not yet a distinct API option — the current <code>addWriter</code> API only distinguishes indexing vs. non-indexing writers.)</p>
 <p>Use this for untrusted submitters: their data enters the system only if a trusted writer vouches for it.</p>
 <div class="code-filename">writer-roles.js</div>
 <pre><code class="language-js">async function apply (nodes, view, host) {
@@ -230,7 +267,7 @@ A3 ─┐ depends on         5. B2  (depends on B1, C1)
 <hr>
 <h2 id="quorum-consensus-when-does-ordering-become-permanent">Quorum Consensus: When Does Ordering Become Permanent?</h2>
 
-<p>This is the hardest part of Autobase — and the part that makes it fundamentally different from simpler multi-writer systems like CRDTs.</p>
+<p>This is the hardest part of Autobase — and the part that makes it fundamentally different from simpler multi-writer systems like CRDTs. Note that Autobase does not run a traditional leader-based consensus algorithm like Raft or Paxos. The ordering itself is deterministic — consensus determines <em>when</em> that ordering becomes permanently confirmed.</p>
 <h3 id="the-problem">The Problem</h3>
 
 <p>The linearized order of concurrent events depends on which events you&#39;ve seen. If Alice has seen events <code>{A1, B1}</code> and Bob has seen events <code>{A1, B1, C1}</code>, they might compute different orderings for the concurrent events. As more information arrives, the ordering can change — events that were in position 3 might shift to position 5.</p>
@@ -292,8 +329,8 @@ A3 ─┐ depends on         5. B2  (depends on B1, C1)
 <tr><th>Property</th><th>Meaning</th></tr>
 </thead>
 <tbody>
-<tr><td><code>base.view.length</code></td><td>Total entries including unconfirmed tip</td></tr>
-<tr><td><code>base.signedLength</code></td><td>Confirmed entries (quorum-locked, will never reorder)</td></tr>
+<tr><td>`base.view.length`</td><td>Total entries including unconfirmed tip</td></tr>
+<tr><td>`base.signedLength`</td><td>Confirmed entries (quorum-locked, will never reorder)</td></tr>
 </tbody>
 </table></figure>
 
@@ -414,7 +451,7 @@ await base.ready()
 <h2 id="fast-forward-catching-up-efficiently">Fast-Forward: Catching Up Efficiently</h2>
 
 <p>When a peer has been offline for a long time, replaying the entire DAG history through <code>apply</code> would be expensive. Autobase supports <strong>fast-forward</strong>: if the confirmed checkpoint has advanced significantly, a behind peer can jump directly to the checkpoint state without replaying intermediate history.</p>
-<p>This works because confirmed data (before <code>signedLength</code>) is immutable — the view at that point has been signed by a quorum of indexers. A behind peer can trust the signed view state and start processing only from the checkpoint forward.</p>
+<p>This works because confirmed data (before <code>signedLength</code>) is immutable — the view at that point has been signed by a quorum of indexers. A behind peer can verify the checkpoint cryptographically (Hypercore&#39;s Merkle proofs validate every block retrieved) and start processing only from the checkpoint forward.</p>
 <p>Fast-forward is enabled by default (<code>fastForward: true</code> in the constructor). It triggers automatically when the gap between the local state and the remote checkpoint is large enough.</p>
 <hr>
 <h2 id="the-tradeoffs">The Tradeoffs</h2>
@@ -429,7 +466,7 @@ await base.ready()
 <tr><td>Causal ordering preserved — events never precede their dependencies</td><td>Vector clocks add metadata overhead to every entry</td></tr>
 <tr><td>Quorum-confirmed checkpoints — ordering becomes permanent</td><td>Requires a majority of indexers to be active for progress</td></tr>
 <tr><td>Apply function builds rich views (Hyperbee, custom stores)</td><td>Apply must be pure — no side effects, no non-determinism</td></tr>
-<tr><td>Fast-forward for catching up after long offline periods</td><td>Behind peers must trust the quorum-signed checkpoint</td></tr>
+<tr><td>Fast-forward for catching up after long offline periods</td><td>Behind peers must verify the quorum-signed checkpoint</td></tr>
 <tr><td>Writer roles separate contributions from consensus</td><td>More indexers = more reliable consensus but slower confirmation</td></tr>
 </tbody>
 </table></figure>
@@ -455,7 +492,7 @@ await base.ready()
 <h2 id="what-s-next">What's Next</h2>
 
 <p>We&#39;ve built the full collaboration stack: encrypted connections, verified data, peer discovery, and multi-writer consensus. But we&#39;ve been trusting the <em>people</em> at each end. What if a peer is malicious? What if they flood the DHT with fake nodes? What if they try to impersonate someone else?</p>
-<p>In <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7</a>, we&#39;ll examine the security model of the entire Holepunch stack — from Sybil resistance in the DHT, to Eclipse attack prevention, to the complete Merkle verification chain that makes data poisoning detectable. We&#39;ll also look at how identity works without a central authority, including blind pairing for safe peer introduction.</p>
+<p>In <a href="part-7-security-trust.md">Part 7</a>, we&#39;ll examine the security model of the entire Holepunch stack — from Sybil resistance in the DHT, to Eclipse attack prevention, to the complete Merkle verification chain that makes data poisoning detectable. We&#39;ll also look at how identity works without a central authority, including blind pairing for safe peer introduction.</p>
 <hr>
 <h2 id="references-further-reading">References & Further Reading</h2>
 
@@ -473,6 +510,33 @@ await base.ready()
 <hr>
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <strong>Part 6: Many Writers, One Truth (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
+<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <strong>Part 6: Many Writers, One Truth (You are here)</strong> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
 </blockquote>
 
+
+<!-- Mermaid.js — renders <pre class="mermaid"> blocks -->
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'dark',
+  themeVariables: {
+    primaryColor: '#2d333b',
+    primaryTextColor: '#8b949e',
+    primaryBorderColor: '#373e47',
+    lineColor: '#539bf5',
+    secondaryColor: '#22272e',
+    tertiaryColor: '#1b1f24',
+    noteBkgColor: '#2d333b',
+    noteTextColor: '#8b949e',
+    noteBorderColor: '#986ee2',
+    actorBkg: '#2d333b',
+    actorBorder: '#373e47',
+    actorTextColor: '#cdd9e5',
+    actorLineColor: '#373e47',
+    signalColor: '#539bf5',
+    signalTextColor: '#8b949e',
+    sequenceNumberColor: '#1b1f24'
+  }
+});
+</script>

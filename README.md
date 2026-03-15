@@ -73,11 +73,11 @@ graph TD
 
 ## Posts
 
-1. [Part 1: The Internet is Hostile](part-1-nat-holepunching.md)
-2. [Part 2: Encrypted Pipes](part-2-encrypted-pipes.md)
-3. Part 3: Append-Only Truth
-4. Part 4: From Logs to Databases
-5. Part 5: Finding Peers
-6. Part 6: Many Writers, One Truth
-7. Part 7: Trust No One
-8. Part 8: Building for Humans
+1. [Part 1: The Internet is Hostile](md/part-1-nat-holepunching.md)
+2. [Part 2: Encrypted Pipes](md/part-2-encrypted-pipes.md)
+3. [Part 3: Append-Only Truth](md/part-3-hypercore-merkle.md)
+4. [Part 4: From Logs to Databases](md/part-4-hyperbee-hyperdrive.md)
+5. [Part 5: Finding Peers](md/part-5-dht-discovery.md)
+6. [Part 6: Many Writers, One Truth](md/part-6-autobase-consensus.md)
+7. [Part 7: Trust No One](md/part-7-security-trust.md)
+8. [Part 8: Building for Humans](md/part-8-ux-production.md)

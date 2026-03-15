@@ -190,6 +190,34 @@ This is a **single hash** over all root peaks — not a pairwise reduction. Each
 
 Including the index and size makes the commitment unambiguous — you can't reinterpret the same sequence of hashes as a different tree shape.
 
+Here's how the peaks are computed and bagged into a single commitment:
+
+```mermaid
+graph TD
+    subgraph "5 Blocks → 2 Peaks"
+        B0["Block 0"]:::leaf --> P1["Parent [1]"]:::parent
+        B1["Block 1"]:::leaf --> P1
+        B2["Block 2"]:::leaf --> P5["Parent [5]"]:::parent
+        B3["Block 3"]:::leaf --> P5
+        P1 --> R1["Root Peak [3]"]:::peak
+        P5 --> R1
+        B4["Block 4"]:::leaf --> R2["Root Peak [8]"]:::peak
+    end
+
+    R1 -->|"hash + index + size"| BAG["Tree Hash<br/>BLAKE2b(0x02 ‖ peak₁ ‖ peak₂)"]:::root
+    R2 -->|"hash + index + size"| BAG
+    BAG --> SIG["Ed25519 Signature"]:::sig
+
+    classDef leaf fill:#22272e,stroke:#539bf5,color:#e6edf3
+    classDef parent fill:#22272e,stroke:#986ee2,color:#e6edf3
+    classDef peak fill:#22272e,stroke:#986ee2,color:#e6edf3
+    classDef root fill:#22272e,stroke:#57ab5a,color:#e6edf3
+    classDef sig fill:#22272e,stroke:#57ab5a,color:#e6edf3
+```
+*Figure 1: Bagging the peaks for 5 blocks. The block count (binary 101 = 4 + 1) produces two complete subtrees with root peaks at indices 3 and 8. Both peaks feed into a single BLAKE2b tree hash, which is then signed.*
+
+This is why appending a block is cheap — only the peaks change. Adding block 5 would create a new leaf, merge two peaks into one, and produce a new tree hash and signature. The rest of the tree stays untouched.
+
 > **Key Insight:** The `0x02` root type prefix is the third domain separator. With three prefixes — `0x00` for leaves, `0x01` for parents, `0x02` for the tree hash — no valid hash at one level can be confused with a hash at another level. This domain separation prevents structural ambiguity attacks where a leaf could be misinterpreted as a parent or vice versa, even if hash outputs happen to overlap across node types.
 
 ---
@@ -247,7 +275,7 @@ graph BT
     style U2 fill:#22272e,stroke:#986ee2,color:#e6edf3
     style U3 fill:#22272e,stroke:#986ee2,color:#e6edf3
 ```
-*Figure 1: Verifying a single block. Purple nodes are the uncle hashes provided in the proof. Only a handful of hashes are needed, regardless of log size.*
+*Figure 2: Verifying a single block. Purple nodes are the uncle hashes provided in the proof. Only a handful of hashes are needed, regardless of log size.*
 
 ### How Many Uncle Hashes?
 

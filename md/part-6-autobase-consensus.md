@@ -146,6 +146,46 @@ A3 ─┐ depends on         5. B2  (depends on B1, C1)
     │ B2 and A2           6. A3  (depends on A2, B2)
 ```
 
+Here's how the transformation works visually — from independent writer cores through the causal DAG to a single ordered sequence:
+
+```mermaid
+graph LR
+    subgraph Writers
+        A1["A1"]:::writer --> A2["A2"]:::writer --> A3["A3"]:::writer
+        B1["B1"]:::writer --> B2["B2"]:::writer
+        C1["C1"]:::writer
+    end
+
+    subgraph "Causal DAG"
+        DA1["A1"]:::dag --> DA2["A2"]:::dag
+        DA2 --> DA3["A3"]:::dag
+        DB1["B1"]:::dag --> DB2["B2"]:::dag
+        DC1["C1"]:::dag --> DB2
+        DB2 --> DA3
+    end
+
+    subgraph "Linearized View"
+        L1["1. A1"]:::view
+        L2["2. B1"]:::view
+        L3["3. C1"]:::view
+        L4["4. A2"]:::view
+        L5["5. B2"]:::view
+        L6["6. A3"]:::view
+    end
+
+    A1 -.-> DA1
+    B1 -.-> DB1
+    C1 -.-> DC1
+
+    classDef writer fill:#22272e,stroke:#539bf5,color:#e6edf3
+    classDef dag fill:#22272e,stroke:#986ee2,color:#e6edf3
+    classDef view fill:#22272e,stroke:#57ab5a,color:#e6edf3
+```
+
+*Figure 1: From independent writer cores (blue) through the causal DAG (purple) to the deterministic linearized view (green). Concurrent events (like A2, B1, C1) are ordered by lexicographic key comparison.*
+
+Notice that the DAG preserves all causal relationships — B2 depends on C1, and A3 depends on B2. The linearization respects these dependencies absolutely. Only the ordering of *concurrent* events (those with no causal relationship) is decided by the tiebreaker.
+
 > **Key Insight:** The tiebreaker being the public key means the ordering is deterministic and verifiable — no randomness, no timestamps, no coordination. Any peer who knows the same set of events will produce the exact same sequence. The choice of lexicographic key comparison is arbitrary but consistent, which is all that matters.
 
 ---
@@ -218,7 +258,7 @@ Use this for client-server patterns: servers are indexers (they determine orderi
 
 ### Relayed Writers
 
-Entries appear only when referenced by a confirmed node from another writer. Relayed writers can never be the "head" of the DAG — their entries are only visible after an indexer or non-indexer includes them.
+Entries appear only when referenced by a confirmed node from another writer. Relayed writers can never be the "head" of the DAG — their entries are only visible after an indexer or non-indexer includes them. (This role is defined in the <a href="https://github.com/holepunchto/autobase/blob/main/DESIGN.md" target="_blank">Autobase DESIGN.md</a> but is not yet a distinct API option — the current `addWriter` API only distinguishes indexing vs. non-indexing writers.)
 
 Use this for untrusted submitters: their data enters the system only if a trusted writer vouches for it.
 
@@ -244,7 +284,7 @@ async function apply (nodes, view, host) {
 
 ## Quorum Consensus: When Does Ordering Become Permanent?
 
-This is the hardest part of Autobase — and the part that makes it fundamentally different from simpler multi-writer systems like CRDTs.
+This is the hardest part of Autobase — and the part that makes it fundamentally different from simpler multi-writer systems like CRDTs. Note that Autobase does not run a traditional leader-based consensus algorithm like Raft or Paxos. The ordering itself is deterministic — consensus determines *when* that ordering becomes permanently confirmed.
 
 ### The Problem
 
@@ -445,7 +485,7 @@ Writer addition happens *through* the `apply` function — the first writer appe
 
 When a peer has been offline for a long time, replaying the entire DAG history through `apply` would be expensive. Autobase supports **fast-forward**: if the confirmed checkpoint has advanced significantly, a behind peer can jump directly to the checkpoint state without replaying intermediate history.
 
-This works because confirmed data (before `signedLength`) is immutable — the view at that point has been signed by a quorum of indexers. A behind peer can trust the signed view state and start processing only from the checkpoint forward.
+This works because confirmed data (before `signedLength`) is immutable — the view at that point has been signed by a quorum of indexers. A behind peer can verify the checkpoint cryptographically (Hypercore's Merkle proofs validate every block retrieved) and start processing only from the checkpoint forward.
 
 Fast-forward is enabled by default (`fastForward: true` in the constructor). It triggers automatically when the gap between the local state and the remote checkpoint is large enough.
 
@@ -460,7 +500,7 @@ Fast-forward is enabled by default (`fastForward: true` in the constructor). It 
 | Causal ordering preserved — events never precede their dependencies | Vector clocks add metadata overhead to every entry |
 | Quorum-confirmed checkpoints — ordering becomes permanent | Requires a majority of indexers to be active for progress |
 | Apply function builds rich views (Hyperbee, custom stores) | Apply must be pure — no side effects, no non-determinism |
-| Fast-forward for catching up after long offline periods | Behind peers must trust the quorum-signed checkpoint |
+| Fast-forward for catching up after long offline periods | Behind peers must verify the quorum-signed checkpoint |
 | Writer roles separate contributions from consensus | More indexers = more reliable consensus but slower confirmation |
 
 ---

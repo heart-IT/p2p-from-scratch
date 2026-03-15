@@ -64,6 +64,30 @@ Not all NATs are created equal. The way your router creates and filters its mapp
 | **Port Restricted** | Same external port for all destinations | Only IP:port pairs you've contacted | Yes — with precise timing |
 | **Symmetric** | Different external port per destination IP:port | Only the specific destination | No — port unpredictable |
 
+The key question for holepunching is whether the external port is predictable:
+
+```mermaid
+graph LR
+    subgraph "Predictable Port (Holepunchable)"
+        FC["Full Cone<br/>Any source allowed"]:::green
+        RC["Restricted Cone<br/>IP must match"]:::green
+        PR["Port Restricted<br/>IP:port must match"]:::green
+    end
+
+    subgraph "Unpredictable Port (Relay Required)"
+        SYM["Symmetric<br/>Different port per destination"]:::red
+    end
+
+    FC --- RC --- PR
+
+    classDef green fill:#22272e,stroke:#57ab5a,color:#e6edf3
+    classDef red fill:#22272e,stroke:#e5534b,color:#e6edf3
+```
+
+*Figure 1: The NAT classification from a holepunching perspective. The first three types share a critical property — predictable external ports — that makes them holepunchable. Symmetric NAT assigns unpredictable ports, requiring relay.*
+
+HyperDHT simplifies this into three levels: **OPEN** (full cone — no coordination needed), **CONSISTENT** (restricted/port-restricted — port is predictable, coordination required), and **RANDOM** (symmetric — port unpredictable, relay needed).
+
 > **Note on terminology:** The four names above (Full Cone, Restricted Cone, Port Restricted, Symmetric) come from <a href="https://www.rfc-editor.org/rfc/rfc3489" target="_blank">RFC 3489</a> (2003). The later <a href="https://www.rfc-editor.org/rfc/rfc4787" target="_blank">RFC 4787</a> (2007) replaces this with a two-axis model — *mapping behavior* (Endpoint-Independent / Address-Dependent / Address-and-Port-Dependent) × *filtering behavior* — which better captures real-world NATs that don't fit neatly into one of four boxes. Internally, HyperDHT uses a three-level classification — **OPEN**, **CONSISTENT** (predictable port mapping), and **RANDOM** (unpredictable) — which maps to what matters for holepunching: can you predict the port or not?
 
 The first three types share a critical property: the external port stays the same regardless of destination. If your laptop sends a packet to server A and gets mapped to external port `41928`, it also uses port `41928` when talking to server B. This consistency is what makes holepunching possible — a coordinator can observe the port from one connection and tell a peer to aim at that same port.
@@ -122,7 +146,7 @@ sequenceDiagram
 
     Note over A,B: Direct P2P connection established
 ```
-*Figure 1: The holepunching dance. Both peers must send before either receives.*
+*Figure 2: The holepunching dance. Both peers must send before either receives.*
 
 > **Implementation detail:** The diagram above shows the logical flow. In practice, HyperDHT sends multiple probe rounds with retries — the first packets sent to an unopened NAT mapping are expected to be dropped. The holepunch succeeds when at least one packet from each side arrives *after* the other side's outbound packet has created the necessary mapping. This is why timing coordination matters more than single-packet delivery.
 
@@ -197,7 +221,7 @@ The connection setup cost is a one-time tax. Once the hole is punched, the direc
 
 ## In Practice: Watching It Happen
 
-You can observe Hyperswarm's holepunching in action with a minimal script. Install the module and create two peers that discover each other via a shared topic:
+You can observe Hyperswarm's holepunching in action with a minimal script. Start with the bare essentials — join a topic:
 
 ```js title="holepunch-demo.js"
 const Hyperswarm = require('hyperswarm')
@@ -210,19 +234,26 @@ const topic = Buffer.from(
 )
 
 const swarm = new Hyperswarm()
-swarm.on('connection', (conn, info) => {
-  console.log('Connected to peer!', info.publicKey.toString('hex').slice(0, 8))
-  conn.on('data', data => console.log('Received:', data.toString()))
-  conn.write('Hello from ' + (process.argv[2] || 'anonymous'))
-})
 const discovery = swarm.join(topic, { server: true, client: true })
 await discovery.flushed()
 console.log('Announced on topic, waiting for peers...')
 ```
 
+That's enough to join the DHT and announce yourself. Now add connection handling — when a peer is found, exchange a message:
+
+```js title="holepunch-demo.js (complete)" {1-5}
+swarm.on('connection', (conn, info) => {
+  console.log('Connected to peer!', info.publicKey.toString('hex').slice(0, 8))
+  conn.on('data', data => console.log('Received:', data.toString()))
+  conn.write('Hello from ' + (process.argv[2] || 'anonymous'))
+})
+```
+
+The complete script combines both pieces. Run it on two different machines — e.g., `node holepunch-demo.js Alice` on one and `node holepunch-demo.js Bob` on the other.
+
 > **Note:** Code examples in this series use `require()` with top-level `await` for clarity. To run them, either wrap the body in `(async () => { ... })()` or save with an `.mjs` extension and use `import` instead of `require`. The <a href="https://docs.pears.com/" target="_blank">Pear Runtime</a> supports this syntax natively.
 
-Run this same script on two different machines (or two different networks) — e.g., `node holepunch-demo.js Alice` on one and `node holepunch-demo.js Bob` on the other. Because the topic is hardcoded, both peers discover each other automatically. You'll see the connection event and the data exchange. If both peers are behind randomized (symmetric) NATs, Hyperswarm silently falls back to relay — the `connection` event fires either way. If only one side is symmetric, holepunching still works directly.
+Because the topic is hardcoded, both peers discover each other automatically. You'll see the connection event and the data exchange. If both peers are behind randomized (symmetric) NATs, Hyperswarm silently falls back to relay — the `connection` event fires either way. If only one side is symmetric, holepunching still works directly.
 
 > **Gotcha:** If you run both peers on the same machine or the same LAN, you're not testing holepunching at all — you're testing local discovery. Real holepunching only happens across NAT boundaries. To test properly, use two different networks or a cloud VM as the second peer.
 

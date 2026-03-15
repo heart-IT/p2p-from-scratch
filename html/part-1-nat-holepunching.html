@@ -24,7 +24,7 @@
 
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<strong>Part 1: The Internet is Hostile (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
+<strong>Part 1: The Internet is Hostile (You are here)</strong> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
 </blockquote>
 
 <hr>
@@ -75,7 +75,29 @@
 </tbody>
 </table></figure>
 
-<blockquote class="callout-note">
+<p>The key question for holepunching is whether the external port is predictable:</p>
+
+<div class="mermaid-container"><pre class="mermaid">
+graph LR
+    subgraph "Predictable Port (Holepunchable)"
+        FC["Full Cone<br/>Any source allowed"]:::green
+        RC["Restricted Cone<br/>IP must match"]:::green
+        PR["Port Restricted<br/>IP:port must match"]:::green
+    end
+
+    subgraph "Unpredictable Port (Relay Required)"
+        SYM["Symmetric<br/>Different port per destination"]:::red
+    end
+
+    FC --- RC --- PR
+
+    classDef green fill:#22272e,stroke:#57ab5a,color:#e6edf3
+    classDef red fill:#22272e,stroke:#e5534b,color:#e6edf3
+</pre></div>
+
+<p><em>Figure 1: The NAT classification from a holepunching perspective. The first three types share a critical property — predictable external ports — that makes them holepunchable. Symmetric NAT assigns unpredictable ports, requiring relay.</em></p>
+<p>HyperDHT simplifies this into three levels: <strong>OPEN</strong> (full cone — no coordination needed), <strong>CONSISTENT</strong> (restricted/port-restricted — port is predictable, coordination required), and <strong>RANDOM</strong> (symmetric — port unpredictable, relay needed).</p>
+<blockquote>
 <p><strong>Note on terminology:</strong> The four names above (Full Cone, Restricted Cone, Port Restricted, Symmetric) come from <a href="https://www.rfc-editor.org/rfc/rfc3489" target="_blank">RFC 3489</a> (2003). The later <a href="https://www.rfc-editor.org/rfc/rfc4787" target="_blank">RFC 4787</a> (2007) replaces this with a two-axis model — <em>mapping behavior</em> (Endpoint-Independent / Address-Dependent / Address-and-Port-Dependent) × <em>filtering behavior</em> — which better captures real-world NATs that don&#39;t fit neatly into one of four boxes. Internally, HyperDHT uses a three-level classification — <strong>OPEN</strong>, <strong>CONSISTENT</strong> (predictable port mapping), and <strong>RANDOM</strong> (unpredictable) — which maps to what matters for holepunching: can you predict the port or not?</p>
 </blockquote>
 
@@ -129,18 +151,18 @@ sequenceDiagram
     Note over A,B: Direct P2P connection established
 </pre></div>
 
-<p><em>Figure 1: The holepunching dance. Both peers must send before either receives.</em></p>
-<blockquote class="callout-note">
+<p><em>Figure 2: The holepunching dance. Both peers must send before either receives.</em></p>
+<blockquote>
 <p><strong>Implementation detail:</strong> The diagram above shows the logical flow. In practice, HyperDHT sends multiple probe rounds with retries — the first packets sent to an unopened NAT mapping are expected to be dropped. The holepunch succeeds when at least one packet from each side arrives <em>after</em> the other side&#39;s outbound packet has created the necessary mapping. This is why timing coordination matters more than single-packet delivery.</p>
 </blockquote>
 
-<blockquote class="callout-note">
+<blockquote>
 <p><strong>Note:</strong> All of this refers to <strong>UDP holepunching</strong>. Hyperswarm uses UDP for the holepunch dance because UDP NAT mappings are simpler and more predictable. TCP holepunching is significantly harder — it requires simultaneous SYN packets and many NATs don&#39;t support it reliably. This is why Hyperswarm establishes the UDP path first and then upgrades it to a reliable, encrypted stream.</p>
 </blockquote>
 
 <h3 id="step-4-encrypted-stream">Step 4: Encrypted Stream</h3>
 
-<p>Once the UDP path is established, Hyperswarm upgrades the connection to a reliable, encrypted stream using <a href="https://github.com/holepunchto/hyperswarm-secret-stream" target="_blank">Secret Stream</a> — a Noise XX handshake with Ed25519 keypairs, followed by libsodium&#39;s AEAD encryption for all payload data. We&#39;ll cover this in detail in <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2</a>.</p>
+<p>Once the UDP path is established, Hyperswarm upgrades the connection to a reliable, encrypted stream using <a href="https://github.com/holepunchto/hyperswarm-secret-stream" target="_blank">Secret Stream</a> — a Noise XX handshake with Ed25519 keypairs, followed by libsodium&#39;s AEAD encryption for all payload data. We&#39;ll cover this in detail in <a href="part-2-encrypted-pipes.md">Part 2</a>.</p>
 <blockquote class="callout-gotcha">
 <p><strong>Gotcha:</strong> The timing requirement isn&#39;t just &quot;roughly at the same time.&quot; NAT mappings have expiry timers. If Alice sends her packet but Bob&#39;s router takes too long to relay the signal, Alice&#39;s mapping may expire before Bob&#39;s packet arrives. Connection failures that look like &quot;peer unreachable&quot; are often timing desynchronization in disguise.</p>
 </blockquote>
@@ -199,11 +221,11 @@ sequenceDiagram
 </tbody>
 </table></figure>
 
-<p>The connection setup cost is a one-time tax. Once the hole is punched, the direct UDP path is as fast as any other Internet connection. But that initial negotiation — DHT lookup, signaling, simultaneous send, handshake — takes real time. Your UX needs to account for this (we&#39;ll cover P2P UX design in <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8</a>).</p>
+<p>The connection setup cost is a one-time tax. Once the hole is punched, the direct UDP path is as fast as any other Internet connection. But that initial negotiation — DHT lookup, signaling, simultaneous send, handshake — takes real time. Your UX needs to account for this (we&#39;ll cover P2P UX design in <a href="part-8-ux-production.md">Part 8</a>).</p>
 <hr>
 <h2 id="in-practice-watching-it-happen">In Practice: Watching It Happen</h2>
 
-<p>You can observe Hyperswarm&#39;s holepunching in action with a minimal script. Install the module and create two peers that discover each other via a shared topic:</p>
+<p>You can observe Hyperswarm&#39;s holepunching in action with a minimal script. Start with the bare essentials — join a topic:</p>
 <div class="code-filename">holepunch-demo.js</div>
 <pre><code class="language-js">const Hyperswarm = require('hyperswarm')
 
@@ -215,20 +237,24 @@ const topic = Buffer.from(
 )
 
 const swarm = new Hyperswarm()
-swarm.on('connection', (conn, info) =&gt; {
-  console.log('Connected to peer!', info.publicKey.toString('hex').slice(0, 8))
-  conn.on('data', data =&gt; console.log('Received:', data.toString()))
-  conn.write('Hello from ' + (process.argv[2] || 'anonymous'))
-})
 const discovery = swarm.join(topic, { server: true, client: true })
 await discovery.flushed()
 console.log('Announced on topic, waiting for peers...')</code></pre>
 
-<blockquote class="callout-note">
+<p>That&#39;s enough to join the DHT and announce yourself. Now add connection handling — when a peer is found, exchange a message:</p>
+<div class="code-filename">holepunch-demo.js (complete)</div>
+<pre><code class="language-js {1-5}">swarm.on('connection', (conn, info) =&gt; {
+  console.log('Connected to peer!', info.publicKey.toString('hex').slice(0, 8))
+  conn.on('data', data =&gt; console.log('Received:', data.toString()))
+  conn.write('Hello from ' + (process.argv[2] || 'anonymous'))
+})</code></pre>
+
+<p>The complete script combines both pieces. Run it on two different machines — e.g., <code>node holepunch-demo.js Alice</code> on one and <code>node holepunch-demo.js Bob</code> on the other.</p>
+<blockquote>
 <p><strong>Note:</strong> Code examples in this series use <code>require()</code> with top-level <code>await</code> for clarity. To run them, either wrap the body in <code>(async () =&gt; { ... })()</code> or save with an <code>.mjs</code> extension and use <code>import</code> instead of <code>require</code>. The <a href="https://docs.pears.com/" target="_blank">Pear Runtime</a> supports this syntax natively.</p>
 </blockquote>
 
-<p>Run this same script on two different machines (or two different networks) — e.g., <code>node holepunch-demo.js Alice</code> on one and <code>node holepunch-demo.js Bob</code> on the other. Because the topic is hardcoded, both peers discover each other automatically. You&#39;ll see the connection event and the data exchange. If both peers are behind randomized (symmetric) NATs, Hyperswarm silently falls back to relay — the <code>connection</code> event fires either way. If only one side is symmetric, holepunching still works directly.</p>
+<p>Because the topic is hardcoded, both peers discover each other automatically. You&#39;ll see the connection event and the data exchange. If both peers are behind randomized (symmetric) NATs, Hyperswarm silently falls back to relay — the <code>connection</code> event fires either way. If only one side is symmetric, holepunching still works directly.</p>
 <blockquote class="callout-gotcha">
 <p><strong>Gotcha:</strong> If you run both peers on the same machine or the same LAN, you&#39;re not testing holepunching at all — you&#39;re testing local discovery. Real holepunching only happens across NAT boundaries. To test properly, use two different networks or a cloud VM as the second peer.</p>
 </blockquote>
@@ -252,7 +278,7 @@ console.log('Announced on topic, waiting for peers...')</code></pre>
 <h2 id="what-s-next">What's Next</h2>
 
 <p>We&#39;ve established that two peers can find each other and create a connection path — even through hostile network conditions. But that path is just raw UDP packets. Anyone between the two peers can read them, modify them, or inject fake ones.</p>
-<p>In <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2</a>, we&#39;ll look at how Hyperswarm turns that raw UDP path into an encrypted, multiplexed communication channel using the Noise protocol, Secret Stream, and Protomux. We&#39;ll see how a single encrypted connection carries multiple independent protocol channels — and why that matters when you start replicating data structures in Part 3.</p>
+<p>In <a href="part-2-encrypted-pipes.md">Part 2</a>, we&#39;ll look at how Hyperswarm turns that raw UDP path into an encrypted, multiplexed communication channel using the Noise protocol, Secret Stream, and Protomux. We&#39;ll see how a single encrypted connection carries multiple independent protocol channels — and why that matters when you start replicating data structures in Part 3.</p>
 <hr>
 <h2 id="references-further-reading">References & Further Reading</h2>
 
@@ -270,7 +296,7 @@ console.log('Announced on topic, waiting for peers...')</code></pre>
 <hr>
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<strong>Part 1: The Internet is Hostile (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
+<strong>Part 1: The Internet is Hostile (You are here)</strong> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
 </blockquote>
 
 

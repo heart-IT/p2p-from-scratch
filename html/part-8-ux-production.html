@@ -24,16 +24,15 @@
 
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <strong>Part 8: Building for Humans (You are here)</strong></p>
+<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <strong>Part 8: Building for Humans (You are here)</strong></p>
 </blockquote>
 
 <hr>
 <h2 id="quick-recap">Quick Recap</h2>
 
-<p>Parts <a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">1</a>–<a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">6</a> built the technical stack: connectivity, encryption, data structures, discovery, and consensus. <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7</a> mapped the security model. The engineering is sound — now we need to make it feel invisible to users.</p>
-
+<p>Parts <a href="part-1-nat-holepunching.md">1</a>–<a href="part-6-autobase-consensus.md">6</a> built the technical stack: connectivity, encryption, data structures, discovery, and consensus. <a href="part-7-security-trust.md">Part 7</a> mapped the security model. The engineering is sound — now we need to make it feel invisible to users.</p>
 <hr>
-<h2 id="the-problem-technology-isnt-the-hard-part">The Problem: Technology Isn&#39;t the Hard Part</h2>
+<h2 id="the-problem-technology-isn-t-the-hard-part">The Problem: Technology Isn't the Hard Part</h2>
 
 <p>We&#39;ve spent seven posts building an extraordinary stack. Encrypted pipes. Merkle-verified data. Distributed discovery. Multi-writer consensus. Six layers of security. Every component is cryptographically sound, mathematically correct, and elegantly designed.</p>
 <p>And none of your users will care.</p>
@@ -44,12 +43,12 @@
 </blockquote>
 
 <hr>
-<h2 id="the-mental-model-a-shared-whiteboard-in-a-cafe">The Mental Model: A Shared Whiteboard in a Café</h2>
+<h2 id="the-mental-model-a-shared-whiteboard-in-a-caf">The Mental Model: A Shared Whiteboard in a Café</h2>
 
 <p>Imagine a whiteboard in a café where friends collaborate on a drawing. When you&#39;re in the café, you draw and see everyone&#39;s strokes in real time. When you leave and sketch on your own notepad, your drawings exist — but they&#39;re &quot;yours&quot; until you return to the café and transcribe them onto the whiteboard. The café whiteboard is the canonical state; your notepad is local-first.</p>
 <p>Now imagine the whiteboard is <em>everywhere</em> — not just the café, but wherever any contributor has a copy. There&#39;s no single canonical whiteboard. Each copy is equally valid, and they sync when people meet.</p>
 <blockquote class="callout-feynman">
-<p><strong>Feynman Moment:</strong> The analogy hides the hardest part: when two people draw in the same spot independently, someone has to decide which stroke goes on top. In our system, that&#39;s Autobase&#39;s linearization (from <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6</a>). But from the <em>user&#39;s</em> perspective, the question isn&#39;t &quot;which algorithm decides&quot; — it&#39;s &quot;will I lose my work?&quot; The answer must always be no. Both strokes are preserved; only their ordering might change before confirmation.</p>
+<p><strong>Feynman Moment:</strong> The analogy hides the hardest part: when two people draw in the same spot independently, someone has to decide which stroke goes on top. In our system, that&#39;s Autobase&#39;s linearization (from <a href="part-6-autobase-consensus.md">Part 6</a>). But from the <em>user&#39;s</em> perspective, the question isn&#39;t &quot;which algorithm decides&quot; — it&#39;s &quot;will I lose my work?&quot; The answer must always be no. Both strokes are preserved; only their ordering might change before confirmation.</p>
 </blockquote>
 
 <hr>
@@ -69,9 +68,9 @@ await base.append({ type: 'put', key: 'meeting-notes', value: { text: 'Draft age
 <tr><th>State</th><th>What the User Sees</th><th>What It Means</th></tr>
 </thead>
 <tbody>
-<tr><td><strong>Local</strong></td><td>Their data, visible instantly</td><td>Written to local Hypercore, not yet seen by peers</td></tr>
-<tr><td><strong>Synced</strong></td><td>Data visible to collaborators</td><td>Replicated to connected peers</td></tr>
-<tr><td><strong>Confirmed</strong></td><td>Permanently ordered</td><td>Past <code>signedLength</code> — quorum-locked, will never reorder</td></tr>
+<tr><td>**Local**</td><td>Their data, visible instantly</td><td>Written to local Hypercore, not yet seen by peers</td></tr>
+<tr><td>**Synced**</td><td>Data visible to collaborators</td><td>Replicated to connected peers</td></tr>
+<tr><td>**Confirmed**</td><td>Permanently ordered</td><td>Past `signedLength` — quorum-locked, will never reorder</td></tr>
 </tbody>
 </table></figure>
 
@@ -82,7 +81,7 @@ await base.append({ type: 'put', key: 'meeting-notes', value: { text: 'Draft age
 <hr>
 <h2 id="the-consistency-spectrum-signedlength-in-practice">The Consistency Spectrum: signedLength in Practice</h2>
 
-<p>From <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6</a>, we know Autobase exposes two markers: <code>base.signedLength</code> (confirmed, quorum-locked) and <code>base.view.length</code> (total including provisional). The gap between them is the <strong>consistency spectrum</strong> — data that exists but whose ordering might change.</p>
+<p>From <a href="part-6-autobase-consensus.md">Part 6</a>, we know Autobase exposes two markers: <code>base.signedLength</code> (confirmed, quorum-locked) and <code>base.view.length</code> (total including provisional). The gap between them is the <strong>consistency spectrum</strong> — data that exists but whose ordering might change.</p>
 <p>Your application must make this spectrum visible without overwhelming users:</p>
 <div class="code-filename">consistency-aware-ui.js</div>
 <pre><code class="language-js">await base.update()
@@ -109,15 +108,30 @@ for (let i = 0; i &lt; total; i++) {
 <tr><th>Pattern</th><th>When to Use</th><th>How It Works</th></tr>
 </thead>
 <tbody>
-<tr><td><strong>Fade unconfirmed</strong></td><td>Chat apps, feeds</td><td>Provisional messages appear slightly dimmed; they solidify as quorum confirms</td></tr>
-<tr><td><strong>&quot;Syncing&quot; badge</strong></td><td>Collaborative docs</td><td>A small indicator shows entries are provisional; disappears on confirmation</td></tr>
-<tr><td><strong>Optimistic + undo</strong></td><td>Real-time editing</td><td>Apply changes immediately; if reordering changes the outcome, show a notification</td></tr>
-<tr><td><strong>Confirm before acting</strong></td><td>Financial, permissions</td><td>Block irreversible actions until <code>signedLength</code> advances past the relevant entry</td></tr>
+<tr><td>**Fade unconfirmed**</td><td>Chat apps, feeds</td><td>Provisional messages appear slightly dimmed; they solidify as quorum confirms</td></tr>
+<tr><td>**"Syncing" badge**</td><td>Collaborative docs</td><td>A small indicator shows entries are provisional; disappears on confirmation</td></tr>
+<tr><td>**Optimistic + undo**</td><td>Real-time editing</td><td>Apply changes immediately; if reordering changes the outcome, show a notification</td></tr>
+<tr><td>**Confirm before acting**</td><td>Financial, permissions</td><td>Block irreversible actions until `signedLength` advances past the relevant entry</td></tr>
 </tbody>
 </table></figure>
 
-<p>The golden rule: <strong>never trigger external side effects from provisional data.</strong> Don&#39;t send notifications, update external databases, or fire webhooks based on entries beyond <code>signedLength</code>. Wait for confirmation.</p>
+<p>Let&#39;s visualize the journey every piece of data takes:</p>
 
+<div class="mermaid-container"><pre class="mermaid">
+graph LR
+    W["Local Write<br/>(instant)"]:::local --> S["Synced<br/>(replicated to peers)"]:::synced --> C["Confirmed<br/>(past signedLength)"]:::confirmed
+
+    W -.->|"Append to<br/>local Hypercore"| S
+    S -.->|"Quorum of indexers<br/>acknowledge"| C
+
+    classDef local fill:#22272e,stroke:#539bf5,color:#e6edf3
+    classDef synced fill:#22272e,stroke:#986ee2,color:#e6edf3
+    classDef confirmed fill:#22272e,stroke:#57ab5a,color:#e6edf3
+</pre></div>
+
+<p><em>Figure 1: The consistency spectrum. Data moves left-to-right through three states. Only confirmed data (past signedLength) is safe for external side effects.</em></p>
+<p>The key UX decision is how to represent each state. Most applications can treat local and synced identically (both are &quot;your data&quot;) and only distinguish confirmed from unconfirmed.</p>
+<p>The golden rule: <strong>never trigger external side effects from provisional data.</strong> Don&#39;t send notifications, update external databases, or fire webhooks based on entries beyond <code>signedLength</code>. Wait for confirmation.</p>
 <hr>
 <h2 id="sparse-replication-download-only-what-you-need">Sparse Replication: Download Only What You Need</h2>
 
@@ -155,13 +169,13 @@ console.log(`Freed ${result.blocks} blocks from storage`)
 <tr><th>Operation</th><th>Preserves Merkle Tree</th><th>Requires Write</th><th>Recoverable</th></tr>
 </thead>
 <tbody>
-<tr><td><code>clear(start, end)</code></td><td>Yes</td><td>No</td><td>Yes (re-fetch from peers)</td></tr>
-<tr><td><code>truncate(length)</code></td><td>No (rewrites)</td><td>Yes</td><td>No (permanent)</td></tr>
+<tr><td>`clear(start, end)`</td><td>Partially (retains what's needed)</td><td>No</td><td>Yes (re-fetch from peers)</td></tr>
+<tr><td>`truncate(length)`</td><td>No (rewrites)</td><td>Yes</td><td>No (permanent)</td></tr>
 </tbody>
 </table></figure>
 
 <blockquote class="callout-insight">
-<p><strong>Key Insight:</strong> Sparse replication and <code>clear()</code> together enable a powerful pattern: download what you need, verify it once, use it, then clear it to free space. The Merkle tree stays intact for re-verification. This is how mobile apps can handle large datasets without exhausting storage.</p>
+<p><strong>Key Insight:</strong> Sparse replication and <code>clear()</code> together enable a powerful pattern: download what you need, verify it once, use it, then clear it to free space. The verification metadata needed for remaining data stays intact, so re-verification on re-download is automatic. This is how mobile apps can handle large datasets without exhausting storage.</p>
 </blockquote>
 
 <hr>
@@ -188,7 +202,7 @@ async function onForeground () {
   // Outbound connections re-attempted
 }</code></pre>
 
-<p><code>swarm.suspend()</code> is aggressive — it <strong>destroys all connections</strong>, suspends the server and DHT, suspends all discovery sessions, and resets the retry queue. This is not a gentle pause; it&#39;s a full shutdown of networking. When <code>resume()</code> is called, the swarm rebuilds from scratch: DHT first, then server, then discovery, then outbound connections.</p>
+<p><code>swarm.suspend()</code> is aggressive — it <strong>destroys all connections</strong>, suspends the server and DHT, suspends all discovery sessions, and resets the retry queue. This is not a gentle pause; it&#39;s a full shutdown of networking. When <code>resume()</code> is called, the swarm reinitializes networking — resuming the DHT, server, and discovery sessions (which are preserved, not recreated) — then re-attempts outbound connections.</p>
 <h3 id="corestore-suspend">Corestore Suspend</h3>
 
 <div class="code-filename">corestore-suspend.js</div>
@@ -212,10 +226,10 @@ await store.resume()</code></pre>
 <tr><th>Strategy</th><th>How It Works</th><th>Availability</th><th>Sovereignty</th></tr>
 </thead>
 <tbody>
-<tr><td><strong>Pure mesh</strong></td><td>Data lives only on user devices</td><td>Low — requires overlap</td><td>Maximum</td></tr>
-<tr><td><strong>Seeded mesh</strong></td><td>Dedicated always-on peers seed popular data</td><td>Medium — baseline guaranteed</td><td>High</td></tr>
-<tr><td><strong>Personal node</strong></td><td>User runs their own always-on device (NAS, VPS)</td><td>High — user-controlled uptime</td><td>Maximum</td></tr>
-<tr><td><strong>Hybrid assist</strong></td><td>Optional infrastructure accelerates sync</td><td>Highest — infrastructure + mesh</td><td>High (infrastructure is optional)</td></tr>
+<tr><td>**Pure mesh**</td><td>Data lives only on user devices</td><td>Low — requires overlap</td><td>Maximum</td></tr>
+<tr><td>**Seeded mesh**</td><td>Dedicated always-on peers seed popular data</td><td>Medium — baseline guaranteed</td><td>High</td></tr>
+<tr><td>**Personal node**</td><td>User runs their own always-on device (NAS, VPS)</td><td>High — user-controlled uptime</td><td>Maximum</td></tr>
+<tr><td>**Hybrid assist**</td><td>Optional infrastructure accelerates sync</td><td>Highest — infrastructure + mesh</td><td>High (infrastructure is optional)</td></tr>
 </tbody>
 </table></figure>
 
@@ -241,7 +255,7 @@ for (const topic of topics) {
 
 <p>The seed node is <em>not</em> a server. It doesn&#39;t control access, validate data, or enforce business logic. It&#39;s a mirror — it holds copies so that data is available when the original authors are offline. Users who distrust the seed node lose nothing; their data is still verified by Merkle proofs and Ed25519 signatures regardless of who served it.</p>
 <blockquote class="callout-insight">
-<p><strong>Key Insight:</strong> Availability and sovereignty are not opposites. A seed node improves availability without compromising sovereignty because the verification chain (from <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7</a>) ensures data integrity regardless of the source. The seed could be malicious — it doesn&#39;t matter, because it can&#39;t forge signatures or alter verified data.</p>
+<p><strong>Key Insight:</strong> Availability and sovereignty are not opposites. A seed node improves availability without compromising sovereignty because the verification chain (from <a href="part-7-security-trust.md">Part 7</a>) ensures data integrity regardless of the source. The seed could be malicious — it doesn&#39;t matter, because it can&#39;t forge signatures or alter verified data.</p>
 </blockquote>
 
 <hr>
@@ -266,7 +280,6 @@ if (behind &gt; 0) {
 await base.repair()  // forces fast-forward regardless of threshold</code></pre>
 
 <p>If fast-forward fails (network issues, corrupted state), a 5-minute cooldown prevents retry storms. The <code>repair()</code> method bypasses this cooldown and the minimum threshold — use it for manual recovery when automatic mechanisms fail.</p>
-
 <hr>
 <h2 id="observability-debugging-without-a-server">Observability: Debugging Without a Server</h2>
 
@@ -323,11 +336,11 @@ for (const peer of core.peers) {
 <tr><th>Metric</th><th>What It Tells You</th><th>Warning Threshold</th></tr>
 </thead>
 <tbody>
-<tr><td><code>swarm.connections.size</code></td><td>Network health</td><td>0 for &gt; 30 seconds</td></tr>
-<tr><td><code>swarm.stats.connects.client.attempted</code> vs <code>opened</code></td><td>Connection success rate</td><td>&lt; 50% success</td></tr>
-<tr><td><code>base.signedLength</code> vs <code>base.view.length</code></td><td>Consensus health</td><td>Gap growing over time</td></tr>
-<tr><td><code>core.length</code> vs peer <code>remoteLength</code></td><td>Replication progress</td><td>Falling behind</td></tr>
-<tr><td><code>base.isFastForwarding()</code></td><td>Catch-up status</td><td>Extended fast-forward</td></tr>
+<tr><td>`swarm.connections.size`</td><td>Network health</td><td>0 for > 30 seconds</td></tr>
+<tr><td>`swarm.stats.connects.client.attempted` vs `opened`</td><td>Connection success rate</td><td>< 50% success</td></tr>
+<tr><td>`base.signedLength` vs `base.view.length`</td><td>Consensus health</td><td>Gap growing over time</td></tr>
+<tr><td>`core.length` vs peer `remoteLength`</td><td>Replication progress</td><td>Falling behind</td></tr>
+<tr><td>`base.isFastForwarding()`</td><td>Catch-up status</td><td>Extended fast-forward</td></tr>
 </tbody>
 </table></figure>
 
@@ -356,7 +369,7 @@ pear seed         →  Announce to DHT and serve to peers</code></pre>
 <tbody>
 <tr><td>Writes never block on connectivity</td><td>Consistency is eventual, not immediate</td></tr>
 <tr><td>Sparse replication saves bandwidth and storage</td><td>Cold starts are slower (data fetched on demand)</td></tr>
-<tr><td>Suspend/resume saves battery on mobile</td><td>All connections destroyed — resume rebuilds from scratch</td></tr>
+<tr><td>Suspend/resume saves battery on mobile</td><td>All connections destroyed — resume reinitializes networking</td></tr>
 <tr><td>Seed nodes provide baseline availability</td><td>Seed nodes must be operated and maintained</td></tr>
 <tr><td>Fast-forward catches up efficiently</td><td>16-block threshold before triggering; 5-min cooldown on failure</td></tr>
 <tr><td>Pear distributes apps without app stores</td><td>Users need Pear Runtime installed</td></tr>
@@ -372,7 +385,7 @@ pear seed         →  Announce to DHT and serve to peers</code></pre>
 </li>
 <li><p><strong>Never trigger side effects from provisional data.</strong> Everything between <code>signedLength</code> and <code>view.length</code> might reorder. Wait for confirmation before sending notifications, updating external systems, or making irreversible changes.</p>
 </li>
-<li><p><strong>Use sparse replication and <code>clear()</code> for storage management.</strong> Download on demand, verify once, clear when done. The Merkle tree stays intact for re-verification. This is essential for mobile.</p>
+<li><p><strong>Use sparse replication and <code>clear()</code> for storage management.</strong> Download on demand, verify once, clear when done. Verification metadata stays intact for re-verification. This is essential for mobile.</p>
 </li>
 <li><p><strong>Wire suspend/resume to your platform&#39;s lifecycle.</strong> <code>swarm.suspend()</code> destroys all connections and stops networking; <code>swarm.resume()</code> rebuilds. There&#39;s no auto-resume — forgetting to wire this means battery drain or dead networking.</p>
 </li>
@@ -382,14 +395,73 @@ pear seed         →  Announce to DHT and serve to peers</code></pre>
 </li>
 </ul>
 <hr>
+<h2 id="putting-it-all-together">Putting It All Together</h2>
+
+<p>Here&#39;s the complete picture — a collaborative key-value store that combines every layer we&#39;ve built across this series. One file, ~50 lines, the full Holepunch stack:</p>
+<div class="code-filename">p2p-collaborative-kv.js</div>
+<pre><code class="language-js">const Corestore = require('corestore')       // Part 4: Multi-core management
+const Autobase = require('autobase')          // Part 6: Multi-writer consensus
+const Hyperbee = require('hyperbee')          // Part 4: Sorted key-value store
+const Hyperswarm = require('hyperswarm')      // Part 5: Peer discovery
+
+// --- Autobase handlers (Part 6) ---
+
+function open (store) {
+  return new Hyperbee(store.get('view'), {
+    keyEncoding: 'utf-8',
+    valueEncoding: 'json'
+  })
+}
+
+async function apply (nodes, view, host) {
+  const batch = view.batch()
+  for (const node of nodes) {
+    if (node.value === null) continue          // Skip ack-only nodes
+    const { type, key, value } = node.value
+    if (type === 'add-writer') {
+      await host.addWriter(Buffer.from(key, 'hex'), { indexer: value.indexer })
+      continue
+    }
+    if (type === 'put') await batch.put(key, value)
+    if (type === 'del') await batch.del(key)
+  }
+  await batch.flush()
+}
+
+// --- Setup ---
+
+const store = new Corestore('./p2p-storage')  // Part 4: Deterministic key derivation
+const base = new Autobase(store, null, { open, apply, valueEncoding: 'json', ackInterval: 1000 })
+await base.ready()
+
+// --- Networking (Parts 1, 2, 5) ---
+
+const swarm = new Hyperswarm()                // Part 1: NAT traversal, Part 2: Encrypted pipes
+swarm.on('connection', (socket) =&gt; base.replicate(socket))  // Part 3: Merkle-verified replication
+swarm.join(base.discoveryKey, { server: true, client: true })
+await swarm.flush()
+
+// --- Use it ---
+
+await base.append({ type: 'put', key: 'hello', value: { from: 'Part 8', msg: 'The full stack in 45 lines' } })
+await base.update()
+
+const entry = await base.view.get('hello')
+console.log(entry.value)  // { from: 'Part 8', msg: 'The full stack in 45 lines' }
+
+// --- Observability (Part 8) ---
+console.log(`Peers: ${swarm.connections.size}, Confirmed: ${base.signedLength}/${base.view.length}`)</code></pre>
+
+<p>Every part of this series is represented in those 45 lines. NAT traversal and encrypted pipes (Parts 1–2) happen inside <code>Hyperswarm</code>. Merkle-verified append-only logs (Part 3) power every <code>Hypercore</code> underneath. <code>Hyperbee</code> and <code>Corestore</code> (Part 4) provide the database and key management. <code>Hyperswarm</code> (Part 5) handles discovery. <code>Autobase</code> (Part 6) linearizes multiple writers. The security model (Part 7) is enforced at every layer — from the Noise XX handshake to the Ed25519 signatures. And the observability line at the bottom is where Part 8 begins.</p>
+<p>A second peer joins by passing the first peer&#39;s bootstrap key — the same pattern from Part 6. From there, both peers write to their own Hypercores, Autobase linearizes everything, and the Hyperbee view stays consistent across the network.</p>
+<hr>
 <h2 id="series-wrap-up">Series Wrap-Up</h2>
 
 <p>Eight posts ago, we started with a simple question: <em>why can&#39;t two computers just talk to each other?</em> The answer turned out to be a journey through NAT traversal, encrypted transport, append-only logs, B-trees, distributed hash tables, causal DAGs, quorum consensus, six layers of security, and finally — making it all feel invisible to users.</p>
 <p>The Holepunch stack is not simple. But the complexity serves a purpose: giving individuals sovereignty over their data without sacrificing the collaborative features we&#39;ve come to expect from centralized services. Every layer we&#39;ve explored exists to solve a specific problem that P2P uniquely faces — and together, they form a system where trust is cryptographic, identity is self-sovereign, and no single point of failure can take the network down.</p>
 <p>The technology is ready. The question now is what you&#39;ll build with it.</p>
-
 <hr>
-<h2 id="references-further-reading">References &amp; Further Reading</h2>
+<h2 id="references-further-reading">References & Further Reading</h2>
 
 <ol>
 <li><a href="https://github.com/holepunchto/hyperswarm" target="_blank">holepunchto/hyperswarm — Peer discovery with suspend/resume lifecycle management</a></li>
@@ -404,7 +476,7 @@ pear seed         →  Announce to DHT and serve to peers</code></pre>
 <hr>
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <strong>Part 8: Building for Humans (You are here)</strong></p>
+<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <strong>Part 8: Building for Humans (You are here)</strong></p>
 </blockquote>
 
 
