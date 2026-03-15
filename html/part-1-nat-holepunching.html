@@ -24,7 +24,7 @@
 
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<strong>Part 1: The Internet is Hostile (You are here)</strong> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
+<strong>Part 1: The Internet is Hostile (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
 </blockquote>
 
 <hr>
@@ -162,7 +162,7 @@ sequenceDiagram
 
 <h3 id="step-4-encrypted-stream">Step 4: Encrypted Stream</h3>
 
-<p>Once the UDP path is established, Hyperswarm upgrades the connection to a reliable, encrypted stream using <a href="https://github.com/holepunchto/hyperswarm-secret-stream" target="_blank">Secret Stream</a> — a Noise XX handshake with Ed25519 keypairs, followed by libsodium&#39;s AEAD encryption for all payload data. We&#39;ll cover this in detail in <a href="part-2-encrypted-pipes.md">Part 2</a>.</p>
+<p>Once the UDP path is established, Hyperswarm upgrades the connection to a reliable, encrypted stream using <a href="https://github.com/holepunchto/hyperswarm-secret-stream" target="_blank">Secret Stream</a> — a Noise XX handshake with Ed25519 keypairs, followed by libsodium&#39;s AEAD encryption for all payload data. We&#39;ll cover this in detail in <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2</a>.</p>
 <blockquote class="callout-gotcha">
 <p><strong>Gotcha:</strong> The timing requirement isn&#39;t just &quot;roughly at the same time.&quot; NAT mappings have expiry timers. If Alice sends her packet but Bob&#39;s router takes too long to relay the signal, Alice&#39;s mapping may expire before Bob&#39;s packet arrives. Connection failures that look like &quot;peer unreachable&quot; are often timing desynchronization in disguise.</p>
 </blockquote>
@@ -221,7 +221,7 @@ sequenceDiagram
 </tbody>
 </table></figure>
 
-<p>The connection setup cost is a one-time tax. Once the hole is punched, the direct UDP path is as fast as any other Internet connection. But that initial negotiation — DHT lookup, signaling, simultaneous send, handshake — takes real time. Your UX needs to account for this (we&#39;ll cover P2P UX design in <a href="part-8-ux-production.md">Part 8</a>).</p>
+<p>The connection setup cost is a one-time tax. Once the hole is punched, the direct UDP path is as fast as any other Internet connection. But that initial negotiation — DHT lookup, signaling, simultaneous send, handshake — takes real time. Your UX needs to account for this (we&#39;ll cover P2P UX design in <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8</a>).</p>
 <hr>
 <h2 id="in-practice-watching-it-happen">In Practice: Watching It Happen</h2>
 
@@ -278,7 +278,7 @@ console.log('Announced on topic, waiting for peers...')</code></pre>
 <h2 id="what-s-next">What's Next</h2>
 
 <p>We&#39;ve established that two peers can find each other and create a connection path — even through hostile network conditions. But that path is just raw UDP packets. Anyone between the two peers can read them, modify them, or inject fake ones.</p>
-<p>In <a href="part-2-encrypted-pipes.md">Part 2</a>, we&#39;ll look at how Hyperswarm turns that raw UDP path into an encrypted, multiplexed communication channel using the Noise protocol, Secret Stream, and Protomux. We&#39;ll see how a single encrypted connection carries multiple independent protocol channels — and why that matters when you start replicating data structures in Part 3.</p>
+<p>In <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2</a>, we&#39;ll look at how Hyperswarm turns that raw UDP path into an encrypted, multiplexed communication channel using the Noise protocol, Secret Stream, and Protomux. We&#39;ll see how a single encrypted connection carries multiple independent protocol channels — and why that matters when you start replicating data structures in Part 3.</p>
 <hr>
 <h2 id="references-further-reading">References & Further Reading</h2>
 
@@ -296,7 +296,7 @@ console.log('Announced on topic, waiting for peers...')</code></pre>
 <hr>
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<strong>Part 1: The Internet is Hostile (You are here)</strong> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
+<strong>Part 1: The Internet is Hostile (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
 </blockquote>
 
 

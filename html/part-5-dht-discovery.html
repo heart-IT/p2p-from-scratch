@@ -31,7 +31,6 @@
 <h2 id="quick-recap">Quick Recap</h2>
 
 <p>In Parts <a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">1</a>–<a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">2</a>, we established encrypted connections through NATs. In Parts <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">3</a>–<a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">4</a>, we built verified data structures on top: append-only logs, B-tree databases, and file systems. But none of it works if peers can&#39;t find each other.</p>
-
 <hr>
 <h2 id="the-problem-no-server-no-directory">The Problem: No Server, No Directory</h2>
 
@@ -56,9 +55,10 @@
 <h3 id="node-ids-and-xor-distance">Node IDs and XOR Distance</h3>
 
 <p>Every node in the DHT has a 32-byte (256-bit) identifier. As we covered in <a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1</a>, node IDs are derived from network identity: <code>nodeID = BLAKE2b(publicIP + publicPort)</code>. You can&#39;t choose your position in the keyspace — the DHT validates your claimed ID against your observed address, preventing arbitrary keyspace placement.</p>
-<blockquote class="callout-insight">
+<blockquote>
 <p><strong>Key distinction:</strong> HyperDHT separates <em>routing identity</em> from <em>connection identity</em>. Routing IDs are derived from observed network addresses (for Sybil resistance and deterministic placement), while encrypted connections authenticate peers using Noise keypairs (from <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2</a>). The routing ID determines <em>where</em> you sit in the DHT; the Noise keypair determines <em>who</em> you are.</p>
 </blockquote>
+
 <p>The &quot;distance&quot; between two IDs is their <strong>XOR</strong> — a bitwise operation that produces a new 256-bit value. Closer IDs share more leading bits. The distance between <code>1001...</code> and <code>1000...</code> (differing at bit 4) is smaller than between <code>1001...</code> and <code>1100...</code> (differing at bit 2).</p>
 <blockquote class="callout-insight">
 <p><strong>Key Insight:</strong> XOR distance is symmetric (<code>distance(A, B) = distance(B, A)</code>) and satisfies the triangle inequality. This means if A is close to B and B is close to C, then A and C aren&#39;t too far apart. This property is what makes Kademlia&#39;s routing work — each hop gets you genuinely closer to the target.</p>

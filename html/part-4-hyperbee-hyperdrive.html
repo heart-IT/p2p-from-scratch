@@ -24,13 +24,13 @@
 
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <strong>Part 4: From Logs to Databases (You are here)</strong> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
+<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <strong>Part 4: From Logs to Databases (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
 </blockquote>
 
 <hr>
 <h2 id="quick-recap">Quick Recap</h2>
 
-<p>In <a href="part-3-hypercore-merkle.md">Part 3</a>, we built Hypercore — an append-only log where every block is bound to a Merkle proof chain and an Ed25519 signature. Any peer can verify any block without trusting the messenger. Now we need richer data structures on top of it.</p>
+<p>In <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3</a>, we built Hypercore — an append-only log where every block is bound to a Merkle proof chain and an Ed25519 signature. Any peer can verify any block without trusting the messenger. Now we need richer data structures on top of it.</p>
 <hr>
 <h2 id="the-problem-access-patterns">The Problem: Access Patterns</h2>
 
@@ -85,7 +85,7 @@
 <h3 id="sparse-lookups">Sparse Lookups</h3>
 
 <p>When a remote peer queries <code>db.get(&quot;alice&quot;)</code>, Hyperbee only downloads the blocks along the B-tree path from the current root to the leaf containing &quot;alice&quot;. For a database with a million entries, that&#39;s roughly 7 blocks — not a million.</p>
-<p>Each downloaded block is a Hypercore block, which means it comes with a Merkle proof (from <a href="part-3-hypercore-merkle.md">Part 3</a>). The lookup is not only sparse but <strong>cryptographically verified</strong> — you know each block is authentic without trusting the peer who sent it.</p>
+<p>Each downloaded block is a Hypercore block, which means it comes with a Merkle proof (from <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3</a>). The lookup is not only sparse but <strong>cryptographically verified</strong> — you know each block is authentic without trusting the peer who sent it.</p>
 <hr>
 <h2 id="hyperbee-api-what-you-can-do">Hyperbee API: What You Can Do</h2>
 
@@ -572,7 +572,7 @@ graph TD
 <h2 id="what-s-next">What's Next</h2>
 
 <p>We have data structures: key-value stores, file systems, deterministic key management. But we&#39;re still missing a fundamental piece — how do peers <em>find each other</em>?</p>
-<p>In <a href="part-5-dht-discovery.md">Part 5</a>, we&#39;ll explore Hyperswarm&#39;s DHT-based discovery: how peers announce themselves on topics, how the Kademlia DHT routes queries without a central server, and how <code>joinPeer()</code> maintains persistent connections through the chaos of peer churn.</p>
+<p>In <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5</a>, we&#39;ll explore Hyperswarm&#39;s DHT-based discovery: how peers announce themselves on topics, how the Kademlia DHT routes queries without a central server, and how <code>joinPeer()</code> maintains persistent connections through the chaos of peer churn.</p>
 <hr>
 <h2 id="references-further-reading">References & Further Reading</h2>
 
@@ -590,7 +590,7 @@ graph TD
 <hr>
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <strong>Part 4: From Logs to Databases (You are here)</strong> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <a href="part-8-ux-production.md">Part 8: Building for Humans</a></p>
+<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <strong>Part 4: From Logs to Databases (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
 </blockquote>
 
 

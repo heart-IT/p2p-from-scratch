@@ -24,13 +24,13 @@
 
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <strong>Part 8: Building for Humans (You are here)</strong></p>
+<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <strong>Part 8: Building for Humans (You are here)</strong></p>
 </blockquote>
 
 <hr>
 <h2 id="quick-recap">Quick Recap</h2>
 
-<p>Parts <a href="part-1-nat-holepunching.md">1</a>–<a href="part-6-autobase-consensus.md">6</a> built the technical stack: connectivity, encryption, data structures, discovery, and consensus. <a href="part-7-security-trust.md">Part 7</a> mapped the security model. The engineering is sound — now we need to make it feel invisible to users.</p>
+<p>Parts <a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">1</a>–<a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">6</a> built the technical stack: connectivity, encryption, data structures, discovery, and consensus. <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7</a> mapped the security model. The engineering is sound — now we need to make it feel invisible to users.</p>
 <hr>
 <h2 id="the-problem-technology-isn-t-the-hard-part">The Problem: Technology Isn't the Hard Part</h2>
 
@@ -48,7 +48,7 @@
 <p>Imagine a whiteboard in a café where friends collaborate on a drawing. When you&#39;re in the café, you draw and see everyone&#39;s strokes in real time. When you leave and sketch on your own notepad, your drawings exist — but they&#39;re &quot;yours&quot; until you return to the café and transcribe them onto the whiteboard. The café whiteboard is the canonical state; your notepad is local-first.</p>
 <p>Now imagine the whiteboard is <em>everywhere</em> — not just the café, but wherever any contributor has a copy. There&#39;s no single canonical whiteboard. Each copy is equally valid, and they sync when people meet.</p>
 <blockquote class="callout-feynman">
-<p><strong>Feynman Moment:</strong> The analogy hides the hardest part: when two people draw in the same spot independently, someone has to decide which stroke goes on top. In our system, that&#39;s Autobase&#39;s linearization (from <a href="part-6-autobase-consensus.md">Part 6</a>). But from the <em>user&#39;s</em> perspective, the question isn&#39;t &quot;which algorithm decides&quot; — it&#39;s &quot;will I lose my work?&quot; The answer must always be no. Both strokes are preserved; only their ordering might change before confirmation.</p>
+<p><strong>Feynman Moment:</strong> The analogy hides the hardest part: when two people draw in the same spot independently, someone has to decide which stroke goes on top. In our system, that&#39;s Autobase&#39;s linearization (from <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6</a>). But from the <em>user&#39;s</em> perspective, the question isn&#39;t &quot;which algorithm decides&quot; — it&#39;s &quot;will I lose my work?&quot; The answer must always be no. Both strokes are preserved; only their ordering might change before confirmation.</p>
 </blockquote>
 
 <hr>
@@ -81,7 +81,7 @@ await base.append({ type: 'put', key: 'meeting-notes', value: { text: 'Draft age
 <hr>
 <h2 id="the-consistency-spectrum-signedlength-in-practice">The Consistency Spectrum: signedLength in Practice</h2>
 
-<p>From <a href="part-6-autobase-consensus.md">Part 6</a>, we know Autobase exposes two markers: <code>base.signedLength</code> (confirmed, quorum-locked) and <code>base.view.length</code> (total including provisional). The gap between them is the <strong>consistency spectrum</strong> — data that exists but whose ordering might change.</p>
+<p>From <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6</a>, we know Autobase exposes two markers: <code>base.signedLength</code> (confirmed, quorum-locked) and <code>base.view.length</code> (total including provisional). The gap between them is the <strong>consistency spectrum</strong> — data that exists but whose ordering might change.</p>
 <p>Your application must make this spectrum visible without overwhelming users:</p>
 <div class="code-filename">consistency-aware-ui.js</div>
 <pre><code class="language-js">await base.update()
@@ -255,7 +255,7 @@ for (const topic of topics) {
 
 <p>The seed node is <em>not</em> a server. It doesn&#39;t control access, validate data, or enforce business logic. It&#39;s a mirror — it holds copies so that data is available when the original authors are offline. Users who distrust the seed node lose nothing; their data is still verified by Merkle proofs and Ed25519 signatures regardless of who served it.</p>
 <blockquote class="callout-insight">
-<p><strong>Key Insight:</strong> Availability and sovereignty are not opposites. A seed node improves availability without compromising sovereignty because the verification chain (from <a href="part-7-security-trust.md">Part 7</a>) ensures data integrity regardless of the source. The seed could be malicious — it doesn&#39;t matter, because it can&#39;t forge signatures or alter verified data.</p>
+<p><strong>Key Insight:</strong> Availability and sovereignty are not opposites. A seed node improves availability without compromising sovereignty because the verification chain (from <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7</a>) ensures data integrity regardless of the source. The seed could be malicious — it doesn&#39;t matter, because it can&#39;t forge signatures or alter verified data.</p>
 </blockquote>
 
 <hr>
@@ -476,7 +476,7 @@ console.log(`Peers: ${swarm.connections.size}, Confirmed: ${base.signedLength}/$
 <hr>
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="part-1-nat-holepunching.md">Part 1: The Internet is Hostile</a> | <a href="part-2-encrypted-pipes.md">Part 2: Encrypted Pipes</a> | <a href="part-3-hypercore-merkle.md">Part 3: Append-Only Truth</a> | <a href="part-4-hyperbee-hyperdrive.md">Part 4: From Logs to Databases</a> | <a href="part-5-dht-discovery.md">Part 5: Finding Peers</a> | <a href="part-6-autobase-consensus.md">Part 6: Many Writers, One Truth</a> | <a href="part-7-security-trust.md">Part 7: Trust No One</a> | <strong>Part 8: Building for Humans (You are here)</strong></p>
+<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <strong>Part 8: Building for Humans (You are here)</strong></p>
 </blockquote>
 
 

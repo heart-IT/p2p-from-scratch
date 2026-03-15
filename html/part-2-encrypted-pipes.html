@@ -31,7 +31,6 @@
 <h2 id="quick-recap">Quick Recap</h2>
 
 <p>In <a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1</a>, we punched through NATs using a DHT-coordinated timing dance and established a raw UDP path between two peers. The hole is open — but the pipe is unprotected.</p>
-
 <hr>
 <h2 id="the-problem-an-open-pipe-is-a-dangerous-pipe">The Problem: An Open Pipe Is a Dangerous Pipe</h2>
 
@@ -140,6 +139,7 @@ sequenceDiagram
 <blockquote class="callout-gotcha">
 <p><strong>Gotcha:</strong> Noise XX provides <em>authentication</em> — you know you&#39;re talking to the same keypair throughout the session. But authentication is not trust. You don&#39;t know <em>who</em> owns that keypair unless you&#39;ve verified it out-of-band (pinned it, received it through an invitation flow, etc.). A stranger&#39;s keypair is authenticated but untrusted.</p>
 </blockquote>
+
 <hr>
 <h2 id="post-handshake-the-encrypted-stream">Post-Handshake: The Encrypted Stream</h2>
 
