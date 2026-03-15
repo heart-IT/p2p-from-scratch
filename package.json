@@ -4,7 +4,11 @@
   "description": "> \"The best way to predict the future is to invent it.\" > — Alan Kay",
   "main": "convert-to-wp.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "convert": "node convert-to-wp.js",
+    "publish": "node publish.js",
+    "publish:all": "node publish.js --all",
+    "ship": "node publish.js --all --publish",
+    "status": "node publish.js --all --status"
   },
   "keywords": [],
   "author": "",
