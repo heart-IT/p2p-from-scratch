@@ -1,19 +1,4 @@
-<!--
-  WORDPRESS IMPORT INSTRUCTIONS
-  ==============================
-  1. Create a new Post in WordPress
-  2. Switch to the Code Editor (⋮ menu > Code editor)
-  3. Select ALL text below this comment block and paste
-  4. Switch back to Visual Editor to verify
-
-  Plugins required:
-  - Prismatic (syntax highlighting)
-
-  Mermaid diagrams are loaded via CDN (no plugin needed).
-  The <script> tag at the bottom handles rendering.
--->
-
-<h1 id="p2p-from-scratch-part-2-encrypted-pipes">P2P from Scratch — Part 2: Encrypted Pipes</h1>
+<h1 id="p2p-from-scratch-part-2-p2p-encryption-with-the-noise-protocol">P2P from Scratch — Part 2: P2P Encryption with the Noise Protocol</h1>
 
 <blockquote>
 <p>&quot;Privacy is necessary for an open society in the electronic age.&quot;
@@ -21,53 +6,80 @@
 </blockquote>
 
 <p><strong>Excerpt:</strong> In Part 1, we punched a hole through two NATs and established a raw UDP path between peers. But raw UDP is the network equivalent of shouting across an open field — anyone standing between you can listen, modify, or impersonate. This post shows how Hyperswarm turns that raw path into an encrypted, multiplexed communication channel — and why a single connection can carry dozens of independent protocols simultaneously.</p>
+<!-- meta-description: How Hyperswarm uses the Noise protocol, Secret Stream, and Protomux to build encrypted multiplexed P2P channels. With code examples. -->
+<!-- meta-labs: p2p-channels -->
+
 
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <strong>Part 2: Encrypted Pipes (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
+<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: NAT Hole Punching Explained</a> | <strong>Part 2: P2P Encryption with the Noise Protocol (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Merkle Trees and Append-Only Logs</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: Building P2P Databases with Hyperbee and Hyperdrive</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Peer Discovery with Kademlia DHT</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Multi-Writer Consensus with Autobase</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: P2P Security — Threats, Defenses, and Trust</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Offline-First UX for P2P Applications</a></p>
 </blockquote>
 
 <hr>
+<blockquote>
+<p><strong>Verified against:</strong> secret-stream 6.9.1 · noise-handshake 4.2.0 · sodium-native 5.1.0 · protomux 3.11.0 · compact-encoding 3.3.2 · hyperdht 6.33.2 — checked 2026-09-03. Every constant, default and byte count in this post is asserted in <a href="https://github.com/heart-IT/p2p-from-scratch-labs/tree/main/verify"><code>verify/</code></a>, which installs whatever Holepunch publishes today and fails if the stack has moved.</p>
+</blockquote>
+
 <h2 id="quick-recap">Quick Recap</h2>
 
-<p>In <a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1</a>, we punched through NATs using a DHT-coordinated timing dance and established a raw UDP path between two peers. The hole is open — but the pipe is unprotected.</p>
+<p>In <a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1</a>, we punched through NATs using a DHT-coordinated timing dance and established a raw UDP path between two peers. The hole is open — but the pipe is raw. UDP gives us no reliability, no encryption, no authentication. This post shows how three layers — <a href="https://github.com/holepunchto/libudx" target="_blank">libudx</a>, <a href="https://github.com/holepunchto/hyperswarm-secret-stream" target="_blank">Secret Stream</a>, and <a href="https://github.com/holepunchto/protomux" target="_blank">Protomux</a> — turn that raw path into something usable.</p>
 <hr>
-<h2 id="the-problem-an-open-pipe-is-a-dangerous-pipe">The Problem: An Open Pipe Is a Dangerous Pipe</h2>
+<h2 id="the-problem-with-raw-udp">The Problem with Raw UDP</h2>
 
-<p>At the end of Part 1, Alice and Bob had a working UDP path. Packets flow in both directions. The NAT doors are open.</p>
-<p>But here&#39;s the thing about UDP: it&#39;s just raw bytes on a wire. There&#39;s no encryption, no authentication, and no ordering guarantee. Three problems follow immediately.</p>
-<p><strong>Anyone on the network path can read the data.</strong> Your ISP, the coffee shop Wi-Fi operator, any router between you and your peer — they can all see every byte. For a file-sharing app, that means someone can read your files. For a chat app, your messages.</p>
-<p><strong>Anyone can modify the data in transit.</strong> A malicious router could rewrite the contents of your packets before forwarding them. You&#39;d receive corrupted data and have no way to detect the tampering.</p>
-<p><strong>Anyone can impersonate your peer.</strong> Without authentication, you have no way to verify that the packets you&#39;re receiving actually come from the person you intended to talk to. A third party could intercept the connection and pretend to be Bob.</p>
+<p>At the end of Part 1, Alice and Bob had a working UDP path. Packets flow in both directions. The NAT doors are open. But that open path is far from usable.</p>
+<p>Here&#39;s the thing about UDP: it&#39;s just raw bytes on a wire. No reliability, no encryption, no authentication. Two categories of problems follow immediately.</p>
+<p><strong>The pipe is unreliable.</strong> UDP datagrams can arrive out of order, arrive twice, or never arrive at all. There&#39;s no delivery guarantee, no sequencing, no congestion control. You can&#39;t build a meaningful protocol on a transport that silently drops your data.</p>
+<p><strong>The pipe is unprotected.</strong> Anyone on the network path can read, modify, or impersonate the data:</p>
+<ul>
+<li><strong>Anyone can read it.</strong> Your ISP, the coffee shop Wi-Fi operator, any router between you and your peer — they can all see every byte. For a file-sharing app, that means someone can read your files. For a chat app, your messages.</li>
+<li><strong>Anyone can modify it.</strong> A malicious router could rewrite the contents of your packets before forwarding them. You&#39;d receive corrupted data and have no way to detect the tampering.</li>
+<li><strong>Anyone can impersonate your peer.</strong> Without authentication, you have no way to verify that the packets you&#39;re receiving actually come from the person you intended to talk to. A third party could intercept the connection and pretend to be Bob.</li>
+</ul>
 <p>This is the classic <a href="https://en.wikipedia.org/wiki/Man-in-the-middle_attack" target="_blank">man-in-the-middle</a> problem. And solving it in peer-to-peer is harder than in client-server, because there&#39;s no certificate authority, no TLS handshake backed by a central trust hierarchy, and no domain name to verify.</p>
 <blockquote class="callout-insight">
 <p><strong>Key Insight:</strong> In client-server HTTPS, trust flows from certificate authorities: your browser trusts DigiCert, DigiCert vouches for <code>example.com</code>, so you trust the connection. In P2P, there&#39;s no certificate authority. Trust must be bootstrapped from the keypairs themselves — you trust a connection because you already know the peer&#39;s public key, not because a third party vouched for them.</p>
 </blockquote>
 
 <hr>
-<h2 id="secret-stream-from-raw-bytes-to-encrypted-channel">Secret Stream: From Raw Bytes to Encrypted Channel</h2>
+<h2 id="libudx-making-udp-reliable">libudx: Making UDP Reliable</h2>
 
-<p><a href="https://github.com/holepunchto/hyperswarm-secret-stream" target="_blank">Secret Stream</a> is the component that transforms a raw Duplex stream (like our holepunched UDP path) into an encrypted, authenticated channel. It uses two cryptographic layers:</p>
+<p>Before we can encrypt anything, we need to solve the reliability problem from above. The obvious question: why not just use TCP? Because TCP holepunching is unreliable — it requires simultaneous SYN packets and many NATs don&#39;t handle it correctly. UDP holepunching works, so Holepunch holepunches with UDP and then builds reliability on top.</p>
+<p>That&#39;s what <a href="https://github.com/holepunchto/libudx" target="_blank">libudx</a> does. It&#39;s a C library that turns raw UDP into a reliable, ordered byte stream — doing the same job as TCP, but over the holepunched UDP path. Its JavaScript binding, <a href="https://github.com/holepunchto/udx-native" target="_blank">udx-native</a>, wraps the C transport and exposes it as a Duplex stream (via <a href="https://github.com/mafintosh/streamx" target="_blank">streamx</a>). Together they handle:</p>
+<ul>
+<li><strong>Retransmission</strong> — detects lost packets and resends them</li>
+<li><strong>Ordering</strong> — reassembles packets that arrive out of sequence</li>
+<li><strong>Congestion control</strong> — uses <a href="https://en.wikipedia.org/wiki/TCP_BBR" target="_blank">BBR</a> (Bottleneck Bandwidth and Round-trip propagation time) to avoid flooding the network path</li>
+<li><strong>Flow control</strong> — prevents overwhelming a slower receiver</li>
+</ul>
+<p>The result is a TCP-like reliable, ordered, bidirectional Duplex stream — but established over UDP via the holepunched path from Part 1. This is the stream that Secret Stream then wraps with encryption.</p>
+<blockquote class="callout-insight">
+<p><strong>Key Insight:</strong> The transport stack has a clean separation of concerns. libudx solves <em>reliability</em> (getting bytes from A to B, in order, without loss). Secret Stream solves <em>security</em> (ensuring nobody else can read or tamper with those bytes). Protomux solves <em>multiplexing</em> (running many protocols over one connection). Each layer does one job.</p>
+</blockquote>
+
+<hr>
+<h2 id="secret-stream-from-reliable-bytes-to-encrypted-channel">Secret Stream: From Reliable Bytes to Encrypted Channel</h2>
+
+<p><a href="https://github.com/holepunchto/hyperswarm-secret-stream" target="_blank">Secret Stream</a> is the component that transforms a reliable Duplex stream (the libudx stream from above) into an encrypted, authenticated channel. It uses two cryptographic layers:</p>
 <ol>
-<li><strong>Noise XX handshake</strong> — for mutual authentication and session key derivation</li>
+<li><strong>Noise handshake</strong> — for mutual authentication and deriving session keys. Used standalone, Secret Stream runs the <strong>XX</strong> pattern by default (configurable via <code>pattern</code>); a Hyperswarm connection arrives with an <strong>IK</strong> handshake already completed over the DHT — more on that below</li>
 <li><strong>libsodium&#39;s secretstream</strong> — for ongoing AEAD encryption of all payload data</li>
 </ol>
-<p>The result is a standard Node.js Duplex stream that happens to encrypt everything transparently. Application code writes plaintext; the wire carries ciphertext.</p>
+<p>The result is a Duplex stream (<a href="https://github.com/mafintosh/streamx" target="_blank">streamx</a>, not Node.js core streams) that happens to encrypt everything transparently. Application code writes plaintext; the wire carries ciphertext.</p>
 <h3 id="the-noise-protocol-framework">The Noise Protocol Framework</h3>
 
 <p>The <a href="https://noiseprotocol.org/noise.html" target="_blank">Noise Protocol Framework</a> isn&#39;t a single protocol — it&#39;s a framework for building authenticated key-agreement protocols. You compose a Noise protocol by choosing:</p>
 <ul>
 <li>A <strong>handshake pattern</strong> — which messages carry which keys</li>
 <li>A <strong>DH function</strong> — how keys are exchanged (scalar multiplication on Ed25519 points in Hyperswarm, via <a href="https://github.com/holepunchto/noise-curve-ed" target="_blank">noise-curve-ed</a>)</li>
-<li>A <strong>cipher</strong> — for encrypting handshake payloads (ChaCha20-Poly1305)</li>
+<li>A <strong>cipher</strong> — for encrypting handshake payloads (ChaChaPoly — the IETF variant of ChaCha20-Poly1305)</li>
 <li>A <strong>hash function</strong> — for key derivation (BLAKE2b)</li>
 </ul>
-<p>Hyperswarm uses the <strong>XX</strong> pattern. The letters describe what each side does: X means &quot;transmit static key.&quot; Since both sides do X, both sides share their long-term public key during the handshake.</p>
+<p>Secret Stream&#39;s default is the <strong>XX</strong> pattern. The letters describe what each side does: X means &quot;transmit static key.&quot; Since both sides do X, both sides share their long-term public key during the handshake. Hyperswarm itself runs <strong>IK</strong> — the Initiator already Knows the responder&#39;s key — for a reason the next section makes clear.</p>
 <blockquote class="callout-term">
-<p><strong>Terminology:</strong> A <strong>handshake pattern</strong> in Noise defines the sequence of messages and which cryptographic keys are exchanged at each step. The letters encode the behavior: N = no static key for that party (anonymous), K = static key Known in advance, X = static key Transmitted. XX means both sides transmit their static key — mutual authentication with no prior knowledge required.</p>
+<p><strong>Terminology:</strong> A <strong>handshake pattern</strong> in Noise defines the sequence of messages and which cryptographic keys are exchanged at each step. The letters encode the behavior: N = no static key for that party (anonymous), K = static key Known in advance, I = static key sent Immediately (reduced identity hiding), X = static key Transmitted. XX means both sides transmit their static key — mutual authentication with no prior knowledge required.</p>
 </blockquote>
 
-<h3 id="why-xx-and-not-ik-or-nk">Why XX? (And Not IK or NK)</h3>
+<h3 id="which-pattern-it-depends-on-who-already-knows-whom">Which Pattern? It Depends on Who Already Knows Whom</h3>
 
 <p>The choice of handshake pattern has real consequences:</p>
 <figure class="wp-block-table"><table>
@@ -75,20 +87,61 @@
 <tr><th>Pattern</th><th>What It Means</th><th>Requires Prior Knowledge?</th><th>Used When</th></tr>
 </thead>
 <tbody>
-<tr><td>**NK**</td><td>Initiator has no static key (anonymous)</td><td>Responder's key must be known in advance</td><td>Connecting to a known server</td></tr>
-<tr><td>**IK**</td><td>Initiator's static key sent Immediately</td><td>Responder's key must be known in advance</td><td>Both keys known beforehand</td></tr>
-<tr><td>**XX**</td><td>Both sides Transmit static key</td><td>No prior knowledge needed</td><td>General-purpose peer discovery</td></tr>
+<tr><td><strong>NK</strong></td><td>Initiator has no static key (anonymous)</td><td>Responder&#39;s key must be known in advance</td><td>Connecting to a known server</td></tr>
+<tr><td><strong>IK</strong></td><td>Initiator&#39;s static key sent Immediately</td><td>Responder&#39;s key must be known in advance</td><td>Connecting to a known peer while revealing own identity upfront</td></tr>
+<tr><td><strong>XX</strong></td><td>Both sides Transmit static key</td><td>No prior knowledge needed</td><td>General-purpose peer discovery</td></tr>
 </tbody>
 </table></figure>
 
-<p>In a DHT-based peer discovery system, Alice often doesn&#39;t know Bob&#39;s public key in advance — she discovered him via a topic announcement. And Bob doesn&#39;t know Alice&#39;s key either. The XX pattern handles this gracefully: both peers learn each other&#39;s identity <em>during</em> the handshake.</p>
-<p>The tradeoff is that XX requires three messages (one more message than IK), but for Hyperswarm&#39;s use case — where peers are strangers meeting via a DHT — this is the right choice.</p>
+<p>In Hyperswarm&#39;s DHT-based discovery, the topic announcement Alice looks up <em>is</em> Bob&#39;s public key plus his relay addresses — by the time she calls <code>dht.connect(publicKey)</code> she knows exactly whom she&#39;s dialing. Bob, though, doesn&#39;t know Alice&#39;s key. That asymmetry is the IK pattern exactly: the initiator sends her static key Immediately, encrypted to the responder&#39;s Known key, and the handshake finishes in two messages. XX is what you reach for when <em>neither</em> side knows the other — which is why it&#39;s Secret Stream&#39;s standalone default.</p>
+<p>The tradeoff is that XX requires three messages (one more message than IK) but hides both identities with forward secrecy, while IK saves a message by leaning on the responder&#39;s key being public already — at the cost that a later leak of the responder&#39;s static key exposes which initiators talked to it. Hyperswarm takes IK&#39;s deal because the DHT has already published the responder&#39;s key. The three-message XX walkthrough below is still the clearest way to see how the DH steps compose; IK arrives at the same session keys in two messages, but with a different token list — <code>e, es, s, ss</code> then <code>e, ee, se</code> — which adds a static-static DH that XX has no need for.</p>
 <hr>
-<h2 id="the-three-message-dance">The Three-Message Dance</h2>
+<h2 id="the-three-message-dance-noise-xx-handshake">The Three-Message Dance: Noise XX Handshake</h2>
 
-<p>The Noise XX handshake has three messages. Each message mixes ephemeral and static keys to progressively build a shared secret.</p>
+<!-- wp:html -->
+<div class="vg-embed" data-vg-snippet="noise/xx-handshake">
+  <div class="vg-card vg-card--wide">
+          <div class="vg-card-visual">
+            <svg class="vg-svg" viewBox="0 0 700 260" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="30" y="40" width="120" height="180" rx="6" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.4"/>
+              <text x="90" y="65" text-anchor="middle" fill="#00d4ff" font-size="13" font-weight="600" style="font-size:13px;font-weight:600">Initiator</text>
+              <text x="90" y="85" text-anchor="middle" fill="#636e7b" font-size="9" style="font-size:9px">Static keypair</text>
+              <text x="90" y="100" text-anchor="middle" fill="#636e7b" font-size="9" style="font-size:9px">Ephemeral keypair</text>
+              <rect x="550" y="40" width="120" height="180" rx="6" fill="#0a1628" stroke="#ff00cc" stroke-opacity="0.4"/>
+              <text x="610" y="65" text-anchor="middle" fill="#ff00cc" font-size="13" font-weight="600" style="font-size:13px;font-weight:600">Responder</text>
+              <text x="610" y="85" text-anchor="middle" fill="#636e7b" font-size="9" style="font-size:9px">Static keypair</text>
+              <text x="610" y="100" text-anchor="middle" fill="#636e7b" font-size="9" style="font-size:9px">Ephemeral keypair</text>
+              <line x1="150" y1="125" x2="550" y2="125" stroke="#00d4ff" stroke-width="1.5" stroke-opacity="0.5"/>
+              <polygon points="545,120 555,125 545,130" fill="#00d4ff" fill-opacity="0.5"/>
+              <text x="350" y="118" text-anchor="middle" fill="#00d4ff" font-size="10" style="font-size:10px">1. → e (ephemeral pubkey, plaintext)</text>
+              <line x1="550" y1="155" x2="150" y2="155" stroke="#ff00cc" stroke-width="1.5" stroke-opacity="0.5"/>
+              <polygon points="155,150 145,155 155,160" fill="#ff00cc" fill-opacity="0.5"/>
+              <text x="350" y="148" text-anchor="middle" fill="#ff00cc" font-size="10" style="font-size:10px">2. ← e, ee, encrypted(s, es)</text>
+              <line x1="150" y1="185" x2="550" y2="185" stroke="#00ff88" stroke-width="1.5" stroke-opacity="0.5"/>
+              <polygon points="545,180 555,185 545,190" fill="#00ff88" fill-opacity="0.5"/>
+              <text x="350" y="178" text-anchor="middle" fill="#00ff88" font-size="10" style="font-size:10px">3. → encrypted(s, se) — both sides authenticated</text>
+              <rect x="200" y="210" width="300" height="35" rx="5" fill="#00ff88" fill-opacity="0.06" stroke="#00ff88" stroke-opacity="0.3"/>
+              <text x="350" y="232" text-anchor="middle" fill="#00ff88" font-size="10" font-weight="500" style="font-size:10px;font-weight:500">Shared secret — encrypted channel</text>
+            </svg>
+          </div>
+          <div class="vg-card-body">
+            <div class="vg-card-title">XX Handshake Pattern</div>
+            <div class="vg-card-text">Three messages, mutual authentication. Forward secrecy via ephemeral keys that are destroyed after the handshake. All post-handshake traffic uses ChaCha20-Poly1305.</div>
+            <div class="vg-legend">
+              <div class="vg-legend-item"><div class="vg-legend-dot" style="background: #00d4ff;"></div> e = ephemeral key</div>
+              <div class="vg-legend-item"><div class="vg-legend-dot" style="background: #ff00cc;"></div> s = static key</div>
+              <div class="vg-legend-item"><div class="vg-legend-dot" style="background: #00ff88;"></div> ee/es/se = DH operations</div>
+            </div>
+          </div>
+        </div>
+  <div data-vg-anim="vg-p-2" style="display:none">CiAgKGZ1bmN0aW9uKCkgewogIGlmICghd2luZG93LnZnUnVudGltZSkgcmV0dXJuOwogIHZhciB3cmFwID0gZG9jdW1lbnQucXVlcnlTZWxlY3RvcignW2RhdGEtdmctc25pcHBldD0ibm9pc2UveHgtaGFuZHNoYWtlIl0nKTsKICBpZiAoIXdyYXApIHJldHVybjsKICB2YXIgY2FyZCA9IHdyYXAucXVlcnlTZWxlY3RvcignLnZnLWNhcmQnKTsKICB2YXIgc3ZnID0gY2FyZC5xdWVyeVNlbGVjdG9yKCcudmctc3ZnJyk7CiAgaWYgKCFzdmcpIHsgaWYgKHR5cGVvZiBnc2FwICE9PSAndW5kZWZpbmVkJykgZ3NhcC5zZXQoY2FyZCwgeyBvcGFjaXR5OiAxLCB5OiAwIH0pOyByZXR1cm47IH0KICB2YXIgdGwgPSB2Z1J1bnRpbWUuY2FyZFRMKGNhcmQpOwogIHZhciByZWN0cyA9IHN2Zy5xdWVyeVNlbGVjdG9yQWxsKCdyZWN0Jyk7CiAgdmFyIGxpbmVzID0gc3ZnLnF1ZXJ5U2VsZWN0b3JBbGwoJ2xpbmUnKTsKICB2YXIgcG9seWdvbnMgPSBzdmcucXVlcnlTZWxlY3RvckFsbCgncG9seWdvbicpOwogIHZhciB0ZXh0cyA9IHN2Zy5xdWVyeVNlbGVjdG9yQWxsKCd0ZXh0Jyk7CiAgCiAgLy8gSW5pdGlhdG9yIHJlY3QgKGxlZnQpCiAgdGwuZnJvbShyZWN0c1swXSwgeyBvcGFjaXR5OiAwLCB4OiAtMzAsIGR1cmF0aW9uOiAwLjQgfSwgMC4zKTsKICAvLyBJbml0aWF0b3IgbGFiZWxzCiAgdGwuZnJvbShBcnJheS5wcm90b3R5cGUuc2xpY2UuY2FsbCh0ZXh0cywgMCwgMyksIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiwgc3RhZ2dlcjogMC4wNSB9LCAnPi0wLjEnKTsKICAKICAvLyBSZXNwb25kZXIgcmVjdCAocmlnaHQpCiAgdGwuZnJvbShyZWN0c1sxXSwgeyBvcGFjaXR5OiAwLCB4OiAzMCwgZHVyYXRpb246IDAuNCB9LCAnPDAuMScpOwogIHRsLmZyb20oQXJyYXkucHJvdG90eXBlLnNsaWNlLmNhbGwodGV4dHMsIDMsIDYpLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjIsIHN0YWdnZXI6IDAuMDUgfSwgJz4tMC4xJyk7CiAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsICdCb3RoIHNpZGVzIGhhdmUgc3RhdGljICsgZXBoZW1lcmFsIGtleXBhaXJzJ10pOwoKICAvLyBNZXNzYWdlIDE6IOKGkiBlIChsZWZ0IHRvIHJpZ2h0KQogIHRsLmZyb20obGluZXNbMF0sIHsgc2NhbGVYOiAwLCB0cmFuc2Zvcm1PcmlnaW46ICdsZWZ0Jywgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuNSwgZWFzZTogJ3Bvd2VyMi5vdXQnIH0sICc+MC4zJyk7CiAgdGwuZnJvbShwb2x5Z29uc1swXSwgeyBvcGFjaXR5OiAwLCB4OiAtMTAsIGR1cmF0aW9uOiAwLjIgfSwgJz4tMC4wNScpOwogIHRsLmZyb20odGV4dHNbNl0sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiB9LCAnPi0wLjEnKTsKICB0bC5jYWxsKHZnUnVudGltZS5jYXB0aW9uLCBbd3JhcCwgJ01lc3NhZ2UgMTogaW5pdGlhdG9yIHNlbmRzIGVwaGVtZXJhbCBwdWJsaWMga2V5IChwbGFpbnRleHQpJ10pOwoKICAvLyBNZXNzYWdlIDI6IOKGkCAocmlnaHQgdG8gbGVmdCkKICB0bC5mcm9tKGxpbmVzWzFdLCB7IHNjYWxlWDogMCwgdHJhbnNmb3JtT3JpZ2luOiAncmlnaHQnLCBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC41LCBlYXNlOiAncG93ZXIyLm91dCcgfSwgJz4wLjI1Jyk7CiAgdGwuZnJvbShwb2x5Z29uc1sxXSwgeyBvcGFjaXR5OiAwLCB4OiAxMCwgZHVyYXRpb246IDAuMiB9LCAnPi0wLjA1Jyk7CiAgdGwuZnJvbSh0ZXh0c1s3XSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yIH0sICc+LTAuMScpOwogIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnTWVzc2FnZSAyOiByZXNwb25kZXIgc2VuZHMgZXBoZW1lcmFsICsgZW5jcnlwdGVkIHN0YXRpYyBrZXknXSk7CgogIC8vIE1lc3NhZ2UgMzog4oaSIChsZWZ0IHRvIHJpZ2h0LCBhdXRoIGNvbXBsZXRlKQogIHRsLmZyb20obGluZXNbMl0sIHsgc2NhbGVYOiAwLCB0cmFuc2Zvcm1PcmlnaW46ICdsZWZ0Jywgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuNSwgZWFzZTogJ3Bvd2VyMi5vdXQnIH0sICc+MC4yNScpOwogIHRsLmZyb20ocG9seWdvbnNbMl0sIHsgb3BhY2l0eTogMCwgeDogLTEwLCBkdXJhdGlvbjogMC4yIH0sICc+LTAuMDUnKTsKICB0bC5mcm9tKHRleHRzWzhdLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjIgfSwgJz4tMC4xJyk7CiAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsICdNZXNzYWdlIDM6IG11dHVhbCBhdXRoZW50aWNhdGlvbiBjb21wbGV0ZSBcdTIwMTQgZm9yd2FyZCBzZWNyZWN5IGVzdGFibGlzaGVkJ10pOwoKICAvLyBSZXN1bHQgYm94IGdsb3dzIGluCiAgdGwuZnJvbShyZWN0c1syXSwgeyBvcGFjaXR5OiAwLCBzY2FsZTogMC45LCB0cmFuc2Zvcm1PcmlnaW46ICdjZW50ZXInLCBkdXJhdGlvbjogMC40LCBlYXNlOiAnYmFjay5vdXQoMS4zKScgfSwgJz4wLjInKTsKICB0bC5mcm9tKHRleHRzWzldLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjI1IH0sICc+LTAuMScpOwogIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnU2hhcmVkIHNlY3JldCBcdTIwMTQgYWxsIGZ1cnRoZXIgdHJhZmZpYyBlbmNyeXB0ZWQgd2l0aCBDaGFDaGEyMC1Qb2x5MTMwNSddKTsKICB0bC5jYWxsKHZnUnVudGltZS5jYXB0aW9uLCBbd3JhcCwgJyddLCAnPjEnKTsKfSkoKTsKICA=</div>
+</div>
+
+<!-- /wp:html -->
+
+<p>The Noise XX handshake has three messages. The messages progressively mix ephemeral and static keys to build a shared secret.</p>
 <blockquote class="callout-term">
-<p><strong>Terminology:</strong> In Noise, an <strong>ephemeral key</strong> is a fresh keypair generated for this specific handshake. It provides forward secrecy — even if someone later steals your static key, they can&#39;t decrypt past sessions. A <strong>static key</strong> is your long-term Ed25519 identity key. Hyperswarm uses <a href="https://github.com/holepunchto/noise-curve-ed" target="_blank">noise-curve-ed</a>, which performs Diffie-Hellman directly on Ed25519 points (<code>crypto_scalarmult_ed25519_noclamp</code>) — no conversion to Curve25519 needed.</p>
+<p><strong>Terminology:</strong> In Noise, an <strong>ephemeral key</strong> is a fresh keypair generated for this specific handshake. It provides forward secrecy — even if someone later steals your static key, they can&#39;t decrypt past sessions. A <strong>static key</strong> is your long-term Ed25519 identity key. Hyperswarm uses <a href="https://github.com/holepunchto/noise-curve-ed" target="_blank">noise-curve-ed</a>, which performs Diffie-Hellman directly on Ed25519 points using Ed25519 scalar multiplication (<code>crypto_scalarmult_ed25519_noclamp</code>) — which avoids the usual conversion to Curve25519 — the Noise spec itself names only the 25519 and 448 DH functions (§12), so this is a Holepunch-side choice.</p>
 </blockquote>
 
 <p>Here&#39;s what flows over the wire:</p>
@@ -102,27 +155,28 @@ sequenceDiagram
 
     A->>B: Message 1: eA (Alice's ephemeral public key)
     Note over B: Generate ephemeral keypair (eB)
-    Note over B: DH(eB, eA) → shared secret
-    Note over B: Encrypt Bob's static key with shared secret
+    Note over B: ee: DH(eB, eA) → shared secret
+    Note over B: Encrypt sB with ee-derived key
+    Note over B: es: DH(sB, eA) → mix into state
 
     B->>A: Message 2: eB + encrypted(sB)
-    Note over A: DH(eA, eB) → shared secret
-    Note over A: Decrypt Bob's static key
-    Note over A: DH(sA, eB) → additional shared secret
-    Note over A: Encrypt Alice's static key
+    Note over A: ee: DH(eA, eB) → shared secret
+    Note over A: Decrypt Bob's static key (sB)
+    Note over A: es: DH(eA, sB) → mix into state
 
     A->>B: Message 3: encrypted(sA)
-    Note over B: DH(eB, sA) → additional shared secret
-    Note over B: Derive final session keys
+    Note over A: se: DH(sA, eB) → mix into state
+    Note over B: se: DH(eB, sA) → mix into state
+    Note over A,B: Derive final session keys
 
-    Note over A,B: Both sides now have: session key, handshakeHash, remotePublicKey
+    Note over A,B: Both sides now have: session keys, handshakeHash, remotePublicKey
 </pre></div>
 
-<p><em>Figure 1: The Noise XX three-message handshake. Ephemeral keys go first; static keys are encrypted.</em></p>
+<p><em>Figure 1: The Noise XX three-message handshake (<code>-&gt; e, &lt;- e ee s es, -&gt; s se</code>). Ephemeral keys go first; static keys are encrypted. Each DH result is mixed into the symmetric state progressively.</em></p>
 <p>Let&#39;s unpack each step:</p>
 <p><strong>Message 1 — Alice introduces herself (ephemerally).</strong> Alice generates a fresh ephemeral keypair and sends the public half. This is unencrypted — an eavesdropper can see it. But that&#39;s fine: ephemeral keys are disposable and reveal nothing about Alice&#39;s identity.</p>
-<p><strong>Message 2 — Bob responds with his identity.</strong> Bob generates his own ephemeral keypair, performs a Diffie-Hellman with Alice&#39;s ephemeral key to derive a shared secret, and uses that secret to <em>encrypt</em> his static public key. An eavesdropper sees Bob&#39;s ephemeral key (plaintext) and a blob of ciphertext. They can&#39;t decrypt it without performing the DH themselves.</p>
-<p><strong>Message 3 — Alice reveals her identity.</strong> Alice decrypts Bob&#39;s static key, performs additional DH operations mixing static and ephemeral keys, and sends her own static public key — encrypted. After this message, both sides have performed all the DH operations needed to derive the final session keys.</p>
+<p><strong>Message 2 — Bob responds with his identity.</strong> Bob generates his own ephemeral keypair and both sides compute <code>ee = DH(eB, eA)</code> — the first shared secret. Bob uses the ee-derived key to <em>encrypt</em> his static public key and sends it. Then both sides compute <code>es = DH(sB, eA)</code> (Bob&#39;s static with Alice&#39;s ephemeral), mixing the result into the evolving symmetric state. An eavesdropper sees Bob&#39;s ephemeral key (plaintext) and a blob of ciphertext. They can&#39;t decrypt it because they lack the ephemeral private keys needed for the DH.</p>
+<p><strong>Message 3 — Alice reveals her identity.</strong> Alice encrypts her own static public key (using the state derived from <code>ee</code> and <code>es</code>) and sends it. Then both sides compute <code>se = DH(sA, eB)</code> (Alice&#39;s static with Bob&#39;s ephemeral). After this message, the symmetric state incorporates all three DH results (<code>ee</code>, <code>es</code>, <code>se</code>), and both sides derive the final session keys.</p>
 <blockquote class="callout-insight">
 <p><strong>Key Insight:</strong> The ephemeral keys serve two purposes. First, they provide <strong>forward secrecy</strong> for all post-handshake traffic — if an attacker records the handshake and later compromises a static key, they still can&#39;t derive the session keys because the ephemeral keys are gone. Second, they protect <strong>identity hiding</strong> — static keys are encrypted, so a passive eavesdropper can&#39;t determine who is talking to whom (though the responder&#39;s identity can be probed by an active attacker who initiates a fake handshake — the initiator has stronger identity protection).</p>
 </blockquote>
@@ -131,11 +185,11 @@ sequenceDiagram
 
 <p>After the three messages, both peers have:</p>
 <ul>
-<li>A <strong>session key</strong> — derived from the combined DH operations, used for all subsequent encryption</li>
+<li>A <strong>pair of session keys</strong> — one for each direction, derived from the combined DH operations, used for all subsequent encryption</li>
 <li>The <strong>handshakeHash</strong> — a cryptographic binding of the entire handshake transcript, useful for channel binding</li>
 <li>The <strong>remotePublicKey</strong> — the peer&#39;s verified Ed25519 public key</li>
 </ul>
-<p>The <code>handshakeHash</code> is particularly important. It cryptographically binds everything that happened during the handshake — which keys were exchanged, in what order, with what randomness. If a man-in-the-middle had tampered with any message, the hashes wouldn&#39;t match and the handshake would fail.</p>
+<p>The <code>handshakeHash</code> is particularly important. It cryptographically binds the handshake transcript — the public keys exchanged and the ciphertexts produced at each step. It&#39;s useful for <strong>channel binding</strong>: proving to an external system that both sides completed the same handshake (e.g., by signing it as a post-handshake authentication step). Note that in XX a man-in-the-middle doesn&#39;t cause the handshake to fail — the attacker runs two separate valid handshakes, one with each peer. What defeats MITM is that each peer sees the attacker&#39;s <code>remotePublicKey</code> instead of the intended peer&#39;s key. In Hyperswarm&#39;s IK handshake the initiator gets this check for free — the key from the DHT record is mixed into the handshake, so an impostor posing as Bob can&#39;t complete it — but Bob still only learns <em>a</em> key. The application must verify that <code>remotePublicKey</code> belongs to the intended peer — via pinning, invitation flows, or out-of-band exchange.</p>
 <blockquote class="callout-gotcha">
 <p><strong>Gotcha:</strong> Noise XX provides <em>authentication</em> — you know you&#39;re talking to the same keypair throughout the session. But authentication is not trust. You don&#39;t know <em>who</em> owns that keypair unless you&#39;ve verified it out-of-band (pinned it, received it through an invitation flow, etc.). A stranger&#39;s keypair is authenticated but untrusted.</p>
 </blockquote>
@@ -154,15 +208,15 @@ sequenceDiagram
 <tr><th>Property</th><th>XChaCha20-Poly1305</th><th>AES-GCM</th></tr>
 </thead>
 <tbody>
-<tr><td>Nonce size</td><td>24 bytes (safe to generate randomly)</td><td>12 bytes (nonce reuse = catastrophic for both; 24 bytes makes random collision negligible)</td></tr>
+<tr><td>Nonce size</td><td>24 bytes (random collision negligible)</td><td>12 bytes (nonce reuse is catastrophic; random collision risk is real)</td></tr>
 <tr><td>Hardware dependency</td><td>No special instructions needed</td><td>Needs AES-NI or ARM Crypto Extensions for full speed</td></tr>
 <tr><td>Nonce management</td><td>Automatic (libsodium secretstream handles it)</td><td>Manual (application must track nonces)</td></tr>
 <tr><td>Implementation safety</td><td>ARX operations are naturally constant-time</td><td>Cache-timing risks in table-based software implementations</td></tr>
 </tbody>
 </table></figure>
 
-<p>The 24-byte nonce is the key advantage. With a 12-byte nonce (AES-GCM), you risk catastrophic failure if two messages accidentally use the same nonce. With 24 bytes, the nonce space is large enough that random collision is negligible. In practice, libsodium&#39;s secretstream doesn&#39;t randomly generate a fresh nonce per message — it uses deterministic nonce evolution with an internal counter and automatic rekeying. The application never touches nonce management.</p>
-<p>The result: application code just reads and writes from a standard Node.js Duplex stream. The encryption is invisible.</p>
+<p>The 24-byte nonce matters when nonces are generated randomly — with 12 bytes (AES-GCM), NIST caps random-IV use at ~2^32 messages per key (per <a href="https://csrc.nist.gov/pubs/sp/800/38/d/final">SP 800-38D §8.3</a>), well below the ~2^48 birthday midpoint, because any random collision is a total break, not a soft warning. And nonce <em>reuse</em> in GCM leaks the GHASH authentication key — universal forgery, not just a confidentiality lapse. With 24 bytes, random collision is negligible. In practice, libsodium&#39;s secretstream draws randomness exactly once per stream — the 24-byte header it sends when the session opens — and derives every per-message nonce from it deterministically: a 32-bit counter alongside an 8-byte value that is XORed with each frame&#39;s authentication tag, so the application never touches nonce management. This counter-based approach would also be safe with a 12-byte nonce, but the real advantage of secretstream&#39;s design is that it removes nonce management from the application entirely — no counter to track, no risk of accidental reuse.</p>
+<p>The result: application code just reads and writes from a Duplex stream. The encryption is invisible.</p>
 <div class="code-filename">secret-stream-example.js</div>
 <pre><code class="language-js">const SecretStream = require('@hyperswarm/secret-stream')
 
@@ -183,11 +237,66 @@ encrypted.write('Hello, authenticated peer!')
 encrypted.on('data', data =&gt; console.log('Received:', data.toString()))</code></pre>
 
 <blockquote class="callout-gotcha">
-<p><strong>Gotcha:</strong> Secret Stream wraps the <em>entire</em> connection — not individual messages. You don&#39;t choose what to encrypt and what to leave plain. Everything is encrypted, always. This is by design: selective encryption is an anti-pattern that inevitably leaks metadata.</p>
+<p><strong>Gotcha:</strong> Secret Stream encrypts <em>every</em> chunk written to the connection — you don&#39;t choose what to encrypt and what to leave plain. Under the hood, each write produces a discrete ciphertext frame — a 3-byte little-endian length prefix, then libsodium&#39;s secretstream output: a 1-byte tag, the encrypted payload, and the 16-byte Poly1305 auth tag (20 bytes of overhead per frame — 3 for the prefix, 17 for the tag and MAC — and a hard cap of 16,777,198 plaintext bytes per write) — and secretstream chains the internal state between frames so nonces evolve deterministically. The result behaves like a single encrypted pipe, but the wire carries individually authenticated chunks — not one monolithic ciphertext blob. This is by design: leaving some frames in the clear would tell an observer which parts of the stream carry what.</p>
 </blockquote>
 
 <hr>
 <h2 id="protomux-one-pipe-many-protocols">Protomux: One Pipe, Many Protocols</h2>
+
+<!-- wp:html -->
+<div class="vg-embed" data-vg-snippet="protomux/protocol-channels">
+  <div class="vg-card vg-card--wide">
+          <div class="vg-card-visual">
+            <svg class="vg-svg" viewBox="0 0 700 240" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="50" y="100" width="600" height="40" rx="20" fill="#0a1628" stroke="#636e7b" stroke-opacity="0.3"/>
+              <text x="350" y="125" text-anchor="middle" fill="#636e7b" font-size="11" style="font-size:11px">Single Encrypted Connection</text>
+              <rect x="80" y="25" width="160" height="50" rx="6" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.5"/>
+              <text x="160" y="47" text-anchor="middle" fill="#00d4ff" font-size="11" font-weight="500" style="font-size:11px;font-weight:500">Channel: Hypercore</text>
+              <text x="160" y="62" text-anchor="middle" fill="#636e7b" font-size="9" style="font-size:9px">replication protocol</text>
+              <line x1="160" y1="75" x2="160" y2="100" stroke="#00d4ff" stroke-opacity="0.3" stroke-width="1.5"/>
+              <rect x="270" y="25" width="160" height="50" rx="6" fill="#0a1628" stroke="#00ff88" stroke-opacity="0.5"/>
+              <text x="350" y="47" text-anchor="middle" fill="#00ff88" font-size="11" font-weight="500" style="font-size:11px;font-weight:500">Channel: Chat</text>
+              <text x="350" y="62" text-anchor="middle" fill="#636e7b" font-size="9" style="font-size:9px">custom messages</text>
+              <line x1="350" y1="75" x2="350" y2="100" stroke="#00ff88" stroke-opacity="0.3" stroke-width="1.5"/>
+              <rect x="460" y="25" width="160" height="50" rx="6" fill="#0a1628" stroke="#f5a623" stroke-opacity="0.5"/>
+              <text x="540" y="47" text-anchor="middle" fill="#f5a623" font-size="11" font-weight="500" style="font-size:11px;font-weight:500">Channel: RPC</text>
+              <text x="540" y="62" text-anchor="middle" fill="#636e7b" font-size="9" style="font-size:9px">request/response</text>
+              <line x1="540" y1="75" x2="540" y2="100" stroke="#f5a623" stroke-opacity="0.3" stroke-width="1.5"/>
+              <circle cx="160" cy="118" r="3" fill="#00d4ff" class="vg-pulse"/>
+              <circle cx="350" cy="118" r="3" fill="#00ff88" class="vg-pulse"/>
+              <circle cx="540" cy="118" r="3" fill="#f5a623" class="vg-pulse"/>
+              <text x="50" y="195" fill="#cdd9e5" font-size="11" style="font-size:11px">Peer A</text>
+              <text x="620" y="195" fill="#cdd9e5" font-size="11" style="font-size:11px">Peer B</text>
+              <line x1="50" y1="165" x2="50" y2="185" stroke="#636e7b" stroke-opacity="0.3"/>
+              <line x1="650" y1="165" x2="650" y2="185" stroke="#636e7b" stroke-opacity="0.3"/>
+              <line x1="50" y1="165" x2="50" y2="140" stroke="#636e7b" stroke-opacity="0.3"/>
+              <line x1="650" y1="165" x2="650" y2="140" stroke="#636e7b" stroke-opacity="0.3"/>
+              <text x="350" y="220" text-anchor="middle" fill="#636e7b" font-size="10" style="font-size:10px">Multiple independent protocols share one socket</text>
+            </svg>
+          </div>
+          <div class="vg-card-body">
+            <div class="vg-card-title">Protocol Channels</div>
+            <div class="vg-card-text">One encrypted connection carries all protocols simultaneously. Each channel has typed messages defined with compact-encoding. Channels are independent — closing one doesn't affect the others.</div>
+            <div class="vg-code" data-vg-narrate='[{"line":0,"label":"narr-0","desc":"Wrap a socket in a Protomux — the encrypted pipe"},{"line":2,"label":"narr-1","desc":"Create a named channel — independent bidirectional stream"},{"line":7,"label":"narr-2","desc":"Define typed messages with compact-encoding schemas"},{"line":12,"label":"narr-3","desc":"Open the channel + send data — flow begins"}]'><span class="kw">const</span> mux = Protomux.<span class="fn">from</span>(socket)
+
+<span class="kw">const</span> channel = mux.<span class="fn">createChannel</span>({
+  protocol: <span class="str">'my-chat'</span>,
+  <span class="fn">onopen</span>() { console.<span class="fn">log</span>(<span class="str">'channel open'</span>) }
+})
+
+<span class="kw">const</span> msg = channel.<span class="fn">addMessage</span>({
+  encoding: c.string,
+  <span class="fn">onmessage</span>(text) { console.<span class="fn">log</span>(<span class="str">'got:'</span>, text) }
+})
+
+channel.<span class="fn">open</span>()
+msg.<span class="fn">send</span>(<span class="str">'hello from peer!'</span>)</div>
+          </div>
+        </div>
+  <div data-vg-anim="vg-p-3" style="display:none">CiAgKGZ1bmN0aW9uKCkgewogIGlmICghd2luZG93LnZnUnVudGltZSkgcmV0dXJuOwogIHZhciB3cmFwID0gZG9jdW1lbnQucXVlcnlTZWxlY3RvcignW2RhdGEtdmctc25pcHBldD0icHJvdG9tdXgvcHJvdG9jb2wtY2hhbm5lbHMiXScpOwogIGlmICghd3JhcCkgcmV0dXJuOwogIHZhciBjYXJkID0gd3JhcC5xdWVyeVNlbGVjdG9yKCcudmctY2FyZCcpOwogIHZhciBzdmcgPSBjYXJkLnF1ZXJ5U2VsZWN0b3IoJy52Zy1zdmcnKTsKICBpZiAoIXN2ZykgeyBpZiAodHlwZW9mIGdzYXAgIT09ICd1bmRlZmluZWQnKSBnc2FwLnNldChjYXJkLCB7IG9wYWNpdHk6IDEsIHk6IDAgfSk7IHJldHVybjsgfQogIHZhciB0bCA9IHZnUnVudGltZS5jYXJkVEwoY2FyZCk7CiAgdmFyIHJlY3RzID0gc3ZnLnF1ZXJ5U2VsZWN0b3JBbGwoJ3JlY3QnKTsKICB2YXIgdGV4dHMgPSBzdmcucXVlcnlTZWxlY3RvckFsbCgndGV4dCcpOwogIHZhciBsaW5lcyA9IHN2Zy5xdWVyeVNlbGVjdG9yQWxsKCdsaW5lJyk7CgogIC8vIG5hcnItMDogQ29ubmVjdGlvbiBwaXBlICsgcGVlciBsYWJlbHMKICB0bC5mcm9tKHJlY3RzWzBdLCB7IG9wYWNpdHk6IDAsIHNjYWxlWDogMCwgdHJhbnNmb3JtT3JpZ2luOiAnY2VudGVyJywgZHVyYXRpb246IDAuNSwgZWFzZTogJ3Bvd2VyMi5vdXQnIH0sIDAuMyk7CiAgdGwuZnJvbSh0ZXh0c1swXSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yIH0sICc+LTAuMScpOyAvLyAiU2luZ2xlIEVuY3J5cHRlZCBDb25uZWN0aW9uIgogIC8vIFBlZXIgQS9CIGxhYmVscyArIHRoZWlyIGxpbmVzCiAgdGwuZnJvbShBcnJheS5wcm90b3R5cGUuc2xpY2UuY2FsbCh0ZXh0cywgNywgOSksIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiwgc3RhZ2dlcjogMC4wNSB9LCAnPi0wLjA1Jyk7CiAgdGwuZnJvbShBcnJheS5wcm90b3R5cGUuc2xpY2UuY2FsbChsaW5lcywgMyksIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiwgc3RhZ2dlcjogMC4wMyB9LCAnPi0wLjEnKTsKICB0bC5hZGRMYWJlbCgnbmFyci0wJyk7CiAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsICdTaW5nbGUgZW5jcnlwdGVkIGNvbm5lY3Rpb24gYmV0d2VlbiB0d28gcGVlcnMnXSk7CgogIC8vIG5hcnItMTogQ2hhdCBjaGFubmVsIGRyb3BzIGluICh0aGUgZ3JlZW4gY2hhbm5lbCA9IHJlY3RzWzJdKQogIHRsLmZyb20ocmVjdHNbMl0sIHsgb3BhY2l0eTogMCwgeTogLTIwLCBkdXJhdGlvbjogMC4zLCBlYXNlOiAnYmFjay5vdXQoMS40KScgfSwgJz4wLjEnKTsKICB0bC5mcm9tKFt0ZXh0c1szXSwgdGV4dHNbNF1dLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjIgfSwgJz4tMC4xJyk7IC8vICJDaGFubmVsOiBDaGF0IiwgImN1c3RvbSBtZXNzYWdlcyIKICB2Z1J1bnRpbWUuZHJhd0xpbmVzKHRsLCBzdmcsICdsaW5lOm50aC1vZi10eXBlKDIpJywgeyBkdXI6IDAuMyB9KTsKICB0bC5hZGRMYWJlbCgnbmFyci0xJyk7CiAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsICdDaGFubmVsIGNyZWF0ZWQgXHUyMDE0IGluZGVwZW5kZW50IGJpZGlyZWN0aW9uYWwgc3RyZWFtJ10pOwoKICAvLyBuYXJyLTI6IE90aGVyIGNoYW5uZWxzIGFwcGVhcgogIHRsLmZyb20ocmVjdHNbMV0sIHsgb3BhY2l0eTogMCwgeTogLTIwLCBkdXJhdGlvbjogMC4zLCBlYXNlOiAnYmFjay5vdXQoMS40KScgfSwgJz4wLjA1Jyk7CiAgdGwuZnJvbShyZWN0c1szXSwgeyBvcGFjaXR5OiAwLCB5OiAtMjAsIGR1cmF0aW9uOiAwLjMsIGVhc2U6ICdiYWNrLm91dCgxLjQpJyB9LCAnPDAuMScpOwogIHRsLmZyb20oW3RleHRzWzFdLCB0ZXh0c1syXV0sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiB9LCAnPi0wLjE1Jyk7IC8vIEh5cGVyY29yZSBjaGFubmVsIGxhYmVscwogIHRsLmZyb20oW3RleHRzWzVdLCB0ZXh0c1s2XV0sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiB9LCAnPCcpOyAvLyBSUEMgY2hhbm5lbCBsYWJlbHMKICB2Z1J1bnRpbWUuZHJhd0xpbmVzKHRsLCBzdmcsICdsaW5lOm50aC1vZi10eXBlKDEpJywgeyBkdXI6IDAuMywgYXQ6ICc+LTAuMScgfSk7CiAgdmdSdW50aW1lLmRyYXdMaW5lcyh0bCwgc3ZnLCAnbGluZTpudGgtb2YtdHlwZSgzKScsIHsgZHVyOiAwLjMsIGF0OiAnPCcgfSk7CiAgdGwuZnJvbSh0ZXh0c1s5XSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yIH0sICc+LTAuMDUnKTsgLy8gIk11bHRpcGxlIGluZGVwZW5kZW50IHByb3RvY29scy4uLiIKICB0bC5hZGRMYWJlbCgnbmFyci0yJyk7CiAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsICdNdWx0aXBsZSBwcm90b2NvbHMgc2hhcmUgb25lIHNvY2tldCBcdTIwMTQgbGlrZSBIVFRQLzIgc3RyZWFtcyddKTsKCiAgLy8gbmFyci0zOiBGbG93IGRvdHMgYWN0aXZhdGUKICB2YXIgZG90cyA9IHN2Zy5xdWVyeVNlbGVjdG9yQWxsKCcudmctcHVsc2UnKTsKICBpZiAoZG90cy5sZW5ndGgpIHsKICAgIHRsLmNhbGwoZnVuY3Rpb24gKCkgewogICAgICBkb3RzLmZvckVhY2goZnVuY3Rpb24gKGRvdCwgaSkgewogICAgICAgIGdzYXAudG8oZG90LCB7CiAgICAgICAgICBvcGFjaXR5OiAwLjMsCiAgICAgICAgICBzY2FsZTogMS44LAogICAgICAgICAgdHJhbnNmb3JtT3JpZ2luOiAnY2VudGVyJywKICAgICAgICAgIGR1cmF0aW9uOiAwLjcsCiAgICAgICAgICByZXBlYXQ6IC0xLAogICAgICAgICAgeW95bzogdHJ1ZSwKICAgICAgICAgIGVhc2U6ICdzaW5lLmluT3V0JywKICAgICAgICAgIGRlbGF5OiBpICogMC4zNQogICAgICAgIH0pOwogICAgICB9KTsKICAgIH0pOwogIH0KICB0bC5hZGRMYWJlbCgnbmFyci0zJyk7CiAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsICdEYXRhIGZsb3dpbmcgXHUyMDE0IGNoYW5uZWxzIGFyZSBpbmRlcGVuZGVudCwgY2xvc2luZyBvbmUgZG9lcyBub3QgYWZmZWN0IG90aGVycyddKTsKICB0bC5jYWxsKHZnUnVudGltZS5jYXB0aW9uLCBbd3JhcCwgJyddLCAnPjEnKTsKfSkoKTsKICA=</div>
+</div>
+
+<!-- /wp:html -->
 
 <p>We now have an encrypted Duplex stream. One encrypted pipe between two peers. But a real P2P application needs to do many things simultaneously over that connection:</p>
 <ul>
@@ -196,7 +305,7 @@ encrypted.on('data', data =&gt; console.log('Received:', data.toString()))</code
 <li>Send custom application messages (chat, commands, metadata)</li>
 </ul>
 <p>You <em>could</em> design a single protocol that handles all of these in one stream. But that creates a monolithic protocol where changes to one concern affect everything else.</p>
-<p><a href="https://github.com/holepunchto/protomux" target="_blank">Protomux</a> solves this by multiplexing multiple independent protocol <strong>channels</strong> over the single encrypted stream. Each channel has its own message types, its own state machine, and its own lifecycle — but they all share the same underlying connection.</p>
+<p><a href="https://github.com/holepunchto/protomux" target="_blank">Protomux</a> solves this by multiplexing multiple independent protocol <strong>channels</strong> over a single framed stream — in Hyperswarm&#39;s stack, that&#39;s the encrypted Secret Stream from above. Each channel has its own message types, its own state machine, and its own lifecycle — but they all share the same underlying connection.</p>
 <blockquote class="callout-feynman">
 <p><strong>Feynman Moment:</strong> Think of Protomux like USB. A single USB cable carries power, data, and video — but each protocol runs independently. Your mouse doesn&#39;t need to know about your monitor. Similarly, Hypercore replication doesn&#39;t need to know about your chat protocol. They share a wire but live in separate channels.</p>
 </blockquote>
@@ -206,6 +315,7 @@ encrypted.on('data', data =&gt; console.log('Received:', data.toString()))</code
 <p>When two peers want to communicate over a protocol, they each create a channel with the same <strong>protocol name</strong> and <strong>id</strong>. Protomux matches channels across peers by this pair.</p>
 <div class="code-filename">protomux-channels.js</div>
 <pre><code class="language-js">const Protomux = require('protomux')
+const c = require('compact-encoding')
 
 // Create a muxer over the encrypted stream
 const mux = Protomux.from(encryptedStream)
@@ -219,8 +329,8 @@ const channel = mux.createChannel({
   onopen (handshakeData) {
     console.log('Channel opened! Peer sent:', handshakeData)
   },
-  onclose () {
-    console.log('Channel closed by peer')
+  onclose (isRemote) {
+    console.log(isRemote ? 'Channel closed by peer' : 'Channel closed locally')
   }
 })
 
@@ -238,8 +348,8 @@ channel.open(myHandshakePayload)
 // Send a message
 textMessage.send('Hello from the other side')</code></pre>
 
-<p>The pairing is <strong>symmetric</strong>: both sides must create a channel with the same protocol name and id. If Alice creates <code>{ protocol: &#39;chat&#39;, id: roomId }</code> and Bob creates the same, Protomux pairs them. If only one side creates the channel, it stays open but idle until the other side matches.</p>
-<h3 id="the-three-lifecycles">The Three Lifecycles</h3>
+<p>The pairing is <strong>symmetric</strong>: both sides must create a channel with the same protocol name and id. If Alice creates <code>{ protocol: &#39;chat&#39;, id: roomId }</code> and Bob creates the same, Protomux pairs them. If only one side opens the channel, the other side rejects it on the spot and the opener&#39;s <code>onclose</code> fires — unless that side has registered interest with <code>mux.pair({ protocol, id }, onpair)</code>, which is how Hypercore waits for replication channels it hasn&#39;t created yet.</p>
+<h3 id="the-three-phases">The Three Phases</h3>
 
 <p>Every Protomux channel has three phases:</p>
 <ol>
@@ -251,15 +361,15 @@ textMessage.send('Hello from the other side')</code></pre>
 </li>
 </ol>
 <blockquote class="callout-insight">
-<p><strong>Key Insight:</strong> Hyperswarm deduplicates connections — if you join multiple topics and discover the same peer through several of them, you still get a single connection. Protomux is what makes this work: each topic or Hypercore gets its own channel on the shared connection. Without multiplexing, connection deduplication would be impossible.</p>
+<p><strong>Key Insight:</strong> Hyperswarm deduplicates connections — if you join multiple topics and discover the same peer through several of them, you still get a single connection, keyed by that peer&#39;s public key. Hyperswarm opens no channels of its own; Protomux is what makes the deduplicated connection <em>useful</em>, because each protocol that wants the peer — every Hypercore&#39;s replication channel, your own app protocols — takes a channel on it instead of a socket of its own.</p>
 </blockquote>
 
 <h3 id="how-hypercore-uses-protomux">How Hypercore Uses Protomux</h3>
 
 <p>When you replicate a Hypercore, the replication protocol opens a Protomux channel with:</p>
 <ul>
-<li><strong>Protocol name:</strong> <code>&#39;hypercore/alpha&#39;</code></li>
-<li><strong>Channel id:</strong> The Hypercore&#39;s <strong>discoveryKey</strong> (a keyed BLAKE2b-256 hash: <code>BLAKE2b-256(key=publicKey, data=&quot;hypercore&quot;)</code> — not the public key itself, which would leak what data you&#39;re interested in)</li>
+<li><strong>Protocol name:</strong> <code>&#39;hypercore/alpha&#39;</code>, registered with <code>&#39;hypercore&#39;</code> as an alias, so a peer that opens the channel under either name pairs with the same replication channel</li>
+<li><strong>Channel id:</strong> The Hypercore&#39;s <strong>discoveryKey</strong> (a keyed BLAKE2b-256 hash: <code>BLAKE2b-256(data=ascii(&quot;hypercore&quot;), key=publicKey)</code> — the public key is the keyed-hash <em>key</em>, not the data being hashed. Using the public key directly would leak what data you&#39;re interested in.)</li>
 </ul>
 <p>The Hypercore replication protocol currently defines 10 message types on this channel:</p>
 <figure class="wp-block-table"><table>
@@ -267,16 +377,16 @@ textMessage.send('Hello from the other side')</code></pre>
 <tr><th>Message</th><th>Direction</th><th>Purpose</th></tr>
 </thead>
 <tbody>
-<tr><td>`sync`</td><td>Both</td><td>Announce local length and fork ID</td></tr>
-<tr><td>`request`</td><td>Either</td><td>Ask for a specific block</td></tr>
-<tr><td>`cancel`</td><td>Either</td><td>Cancel a pending block request</td></tr>
-<tr><td>`data`</td><td>Either</td><td>Respond with block + Merkle proof</td></tr>
-<tr><td>`noData`</td><td>Either</td><td>Indicate requested data is unavailable</td></tr>
-<tr><td>`want`</td><td>Either</td><td>Express interest in a block range</td></tr>
-<tr><td>`unwant`</td><td>Either</td><td>Cancel interest in a range</td></tr>
-<tr><td>`bitfield`</td><td>Either</td><td>Full bitfield of available blocks</td></tr>
-<tr><td>`range`</td><td>Either</td><td>Download a contiguous range</td></tr>
-<tr><td>`extension`</td><td>Either</td><td>Custom extension messages</td></tr>
+<tr><td><code>sync</code></td><td>Both</td><td>Announce local state: <code>fork</code>, <code>length</code>, <code>remoteLength</code>, and replication flags (<code>canUpgrade</code>, <code>uploading</code>, <code>downloading</code>, <code>hasManifest</code>, <code>allowPush</code>)</td></tr>
+<tr><td><code>request</code></td><td>Either</td><td>Ask for a specific block</td></tr>
+<tr><td><code>cancel</code></td><td>Either</td><td>Cancel a pending block request</td></tr>
+<tr><td><code>data</code></td><td>Either</td><td>Respond with block + Merkle proof</td></tr>
+<tr><td><code>noData</code></td><td>Either</td><td>Indicate requested data is unavailable</td></tr>
+<tr><td><code>want</code></td><td>Either</td><td>Express interest in a block range</td></tr>
+<tr><td><code>unwant</code></td><td>Either</td><td>Cancel interest in a range</td></tr>
+<tr><td><code>bitfield</code></td><td>Either</td><td>Bitfield segment of available blocks (from a given offset)</td></tr>
+<tr><td><code>range</code></td><td>Either</td><td>Announce availability (or removal) of a contiguous block range</td></tr>
+<tr><td><code>extension</code></td><td>Either</td><td>Custom extension messages</td></tr>
 </tbody>
 </table></figure>
 
@@ -330,15 +440,15 @@ const myMessage = {
 }</code></pre>
 
 <p><strong>Preencode</strong> calculates the exact byte length needed. <strong>Encode</strong> writes the data into a pre-allocated buffer. <strong>Decode</strong> reads it back.</p>
-<p>Why not just use JSON? Two reasons:</p>
+<p>Why not just use JSON?</p>
 <figure class="wp-block-table"><table>
 <thead>
 <tr><th>Property</th><th>Compact Encoding</th><th>JSON</th></tr>
 </thead>
 <tbody>
-<tr><td>Overhead</td><td>Minimal (varint lengths, raw bytes)</td><td>High (key names repeated, quotes, escaping)</td></tr>
+<tr><td>Overhead</td><td>Minimal (compact integer prefixes, raw bytes)</td><td>High (key names repeated, quotes, escaping)</td></tr>
 <tr><td>Speed</td><td>Faster decode (binary, no parsing)</td><td>Slower parse (string processing)</td></tr>
-<tr><td>Types</td><td>Native buffers, uints, fixed arrays</td><td>Everything is a string</td></tr>
+<tr><td>Types</td><td>Native buffers, uints, fixed arrays</td><td>No native binary types</td></tr>
 <tr><td>Consistency</td><td>Matches the rest of the Holepunch stack</td><td>Foreign to the protocol layer</td></tr>
 </tbody>
 </table></figure>
@@ -351,18 +461,15 @@ const myMessage = {
 
 <div class="mermaid-container"><pre class="mermaid">
 graph TD
-    A["Application writes: 'Hello'"] --> B["Protomux: Route to correct channel"]
-    B --> C["Compact Encoding: Serialize to bytes"]
-    C --> D["Protomux: Frame with channel ID + message type"]
-    D --> E["Secret Stream: Encrypt with XChaCha20-Poly1305"]
+    A["Application writes: 'Hello'"] --> B["Protomux: Encode channel ID + type + payload into one framed buffer"]
+    B --> E["Secret Stream: Encrypt with XChaCha20-Poly1305"]
     E --> F["UDX: Reliable delivery over UDP"]
     F --> G["Wire: Encrypted bytes on the network"]
 
     G --> H["UDX: Reassemble reliable stream"]
     H --> I["Secret Stream: Decrypt + verify auth tag"]
-    I --> J["Protomux: Demux to correct channel"]
-    J --> K["Compact Encoding: Deserialize from bytes"]
-    K --> L["Application receives: 'Hello'"]
+    I --> J["Protomux: Demux channel ID, decode type + payload"]
+    J --> L["Application receives: 'Hello'"]
 
     style A fill:#22272e,stroke:#539bf5,color:#e6edf3
     style L fill:#22272e,stroke:#539bf5,color:#e6edf3
@@ -370,7 +477,7 @@ graph TD
     style I fill:#22272e,stroke:#a371f7,color:#e6edf3
 </pre></div>
 
-<p><em>Figure 2: A message travels down the stack on one side and back up on the other. Encryption happens once at the stream level — individual channels don&#39;t re-encrypt.</em></p>
+<p><em>Figure 2: A message travels down the stack on one side and back up on the other. Protomux framing and compact-encoding happen in a single pass — channel ID, message type, and serialized payload are written into one buffer. Encryption happens once at the stream level — individual channels don&#39;t re-encrypt.</em></p>
 <p>Notice that encryption happens at the Secret Stream level — <em>below</em> the multiplexing. This means:</p>
 <ul>
 <li>All channels share the same encryption session (one handshake, not one per channel)</li>
@@ -389,8 +496,8 @@ graph TD
 <tr><th>What You Gain</th><th>What You Pay</th></tr>
 </thead>
 <tbody>
-<tr><td>Forward secrecy via ephemeral keys</td><td>1 extra message vs. IK pattern</td></tr>
-<tr><td>Identity hiding (static keys encrypted)</td><td>Cannot authenticate before the handshake completes</td></tr>
+<tr><td>Forward secrecy via ephemeral keys</td><td>XX costs 1 extra message vs. IK</td></tr>
+<tr><td>Identity hiding (static keys encrypted)</td><td>Mutual authentication requires all three messages to complete</td></tr>
 <tr><td>Mutual authentication without certificate authority</td><td>Must distribute public keys out-of-band for trust</td></tr>
 <tr><td>Multiplexed protocols over single connection</td><td>Channel pairing complexity</td></tr>
 <tr><td>AEAD encryption on every byte</td><td>Modest CPU overhead for encryption</td></tr>
@@ -398,7 +505,7 @@ graph TD
 </tbody>
 </table></figure>
 
-<p>The overhead is real but modest. The Noise handshake adds three messages to connection setup (typically &lt; 100ms combined). The XChaCha20-Poly1305 encryption runs at several GB/s on modern hardware. For a P2P application, the NAT traversal from Part 1 dominates the latency budget — the encryption is effectively free by comparison.</p>
+<p>The overhead is real but modest. A standalone XX handshake adds three messages (1.5 round trips) to connection setup; in Hyperswarm the two IK messages ride inside the DHT&#39;s peer-handshake request and response, so by the time the UDX stream connects the session keys already exist and encrypted frames flow immediately. The XChaCha20-Poly1305 encryption runs at hundreds of megabytes per second on a single core (measured at 0.6–0.8 GB/s on an Apple M5 through sodium-native 5.1.0 for kilobyte-and-larger writes; per-call overhead pulls it toward 0.45 GB/s once frames get down to a couple of hundred bytes) — far above what a peer&#39;s uplink delivers. For a P2P application, the NAT traversal from Part 1 dominates the latency budget — the encryption is effectively free by comparison.</p>
 <hr>
 <h2 id="in-practice-building-a-multiplexed-chat">In Practice: Building a Multiplexed Chat</h2>
 
@@ -410,8 +517,8 @@ const c = require('compact-encoding')
 const crypto = require('hypercore-crypto')
 
 const swarm = new Hyperswarm()
-// Hash the room name to get a 32-byte topic for discovery
-const topic = crypto.discoveryKey(Buffer.alloc(32).fill('heartit-chat-room'))
+// BLAKE2b hash the room name to get a 32-byte topic for discovery
+const topic = crypto.hash(Buffer.from('heartit-chat-room'))
 
 swarm.on('connection', (encryptedStream, info) =&gt; {
   // encryptedStream is already a Secret Stream (Hyperswarm wraps it)
@@ -441,21 +548,27 @@ swarm.on('connection', (encryptedStream, info) =&gt; {
   })
 })
 
-// Join the topic as both server and client
-const discovery = swarm.join(topic, { server: true, client: true })
-await discovery.flushed()
-console.log('Waiting for peers...')</code></pre>
+// Join the topic (defaults to server + client mode)
+async function main () {
+  const discovery = swarm.join(topic)
+  await discovery.flushed()
+  console.log('Waiting for peers...')
+}
 
-<p>This is ~30 lines of code for an encrypted, authenticated, peer-to-peer chat over a multiplexed connection with NAT traversal. No server, no certificate authority, no monthly bill.</p>
+main()</code></pre>
+
+<p>This is ~40 lines of code for an encrypted, authenticated, peer-to-peer chat over a multiplexed connection with NAT traversal. No server, no certificate authority, no monthly bill.</p>
 <hr>
 <h2 id="key-takeaways">Key Takeaways</h2>
 
 <ul>
-<li><p><strong>Secret Stream wraps any Duplex stream in Noise XX + XChaCha20-Poly1305 encryption.</strong> Three handshake messages establish mutual authentication and session keys. After that, libsodium&#39;s secretstream encrypts every byte with AEAD.</p>
+<li><p><strong>libudx turns the holepunched UDP path into a reliable, ordered stream.</strong> It handles retransmission, sequencing, congestion control, and flow control — doing TCP&#39;s job over UDP, because TCP holepunching is unreliable.</p>
 </li>
-<li><p><strong>Noise XX is the right pattern for peer discovery.</strong> Neither side needs to know the other&#39;s public key in advance. Both static keys are transmitted during the handshake, encrypted under ephemeral keys for identity hiding.</p>
+<li><p><strong>Secret Stream wraps the reliable stream in a Noise handshake + XChaCha20-Poly1305 encryption.</strong> The handshake (XX standalone, IK inside Hyperswarm) establishes mutual authentication and session keys. After that, libsodium&#39;s secretstream encrypts every byte with AEAD.</p>
 </li>
-<li><p><strong>Forward secrecy means compromised keys don&#39;t expose past sessions.</strong> Ephemeral keypairs are generated per handshake and discarded afterward. Recording traffic today is useless if keys leak tomorrow.</p>
+<li><p><strong>Pick the Noise pattern by who already knows whom.</strong> XX when neither side knows the other&#39;s key — both static keys are transmitted, encrypted under ephemeral keys for identity hiding. IK when the initiator already holds the responder&#39;s key, which is Hyperswarm&#39;s case: the DHT record it dialed <em>is</em> that key, so the handshake finishes in two messages.</p>
+</li>
+<li><p><strong>Forward secrecy means compromised keys don&#39;t expose past sessions.</strong> Ephemeral keypairs are generated per handshake and discarded afterward. Recording traffic today is useless if a static key leaks tomorrow — with one caveat the Noise spec spells out for IK (§7.5): the responder only gains <em>strong</em> forward secrecy once it has received a transport message from the initiator.</p>
 </li>
 <li><p><strong>Protomux multiplexes independent protocols over a single encrypted connection.</strong> Channels pair by protocol name + id. Each channel has its own message types, lifecycle, and state. Hypercore replication uses <code>hypercore/alpha</code> channels keyed by discoveryKey.</p>
 </li>
@@ -465,20 +578,37 @@ console.log('Waiting for peers...')</code></pre>
 </li>
 </ul>
 <hr>
+<h2 id="frequently-asked-questions">Frequently Asked Questions</h2>
+
+<h3 id="what-is-the-noise-protocol">What is the Noise protocol?</h3>
+
+<p>The Noise Protocol Framework is a set of patterns for building authenticated key-agreement protocols. You compose a Noise protocol by choosing a handshake pattern, a Diffie-Hellman function, a cipher, and a hash function. Hyperswarm uses Ed25519, ChaChaPoly (the IETF variant of ChaCha20-Poly1305), and BLAKE2b — with the IK pattern for DHT-brokered connections, and XX as Secret Stream&#39;s standalone default.</p>
+<h3 id="how-is-noise-different-from-tls">How is Noise different from TLS?</h3>
+
+<p>TLS relies on certificate authorities for trust — your browser trusts DigiCert, who vouches for a domain. Noise derives authentication from keypairs directly, with no certificate authority needed. You still need an out-of-band mechanism to establish <em>trust</em> in a specific keypair — but you don&#39;t need a CA to prove you&#39;re talking to its holder.</p>
+<h3 id="what-is-forward-secrecy">What is forward secrecy?</h3>
+
+<p>Forward secrecy means that compromising a long-term key doesn&#39;t expose past sessions. Ephemeral keypairs are generated per handshake and discarded afterward, so recorded traffic from today is useless even if keys leak tomorrow.</p>
+<h3 id="what-is-protomux-used-for">What is Protomux used for?</h3>
+
+<p>Protomux multiplexes independent protocol channels over a single encrypted connection. Each channel has its own message types, lifecycle, and state. This lets Hypercore replication, Autobase sync, and custom application protocols all share one connection without interference.</p>
+<hr>
 <h2 id="what-s-next">What's Next</h2>
 
 <p>We have an encrypted pipe that can carry multiple protocols. Now we need something worth transmitting.</p>
 <p>In <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3</a>, we&#39;ll build an append-only log — Hypercore — that uses a flat in-order Merkle tree to make every byte cryptographically verifiable. We&#39;ll see how a peer can download a single block out of millions and prove it hasn&#39;t been tampered with, using only a handful of hashes and one Ed25519 signature. This is the data structure that everything else in the Holepunch stack is built on.</p>
+<p>[heartit_lab title="p2p-channels" cmd="npx @heart-it/p2p-channels swordfish" desc="One encrypted socket, two protocols: type into chat while pulse ticks, and watch the exact compact-encoded bytes on the wire." repo="https://github.com/heart-IT/p2p-from-scratch-labs" note="needs Node.js 18+ · same phrase in two terminals"]</p>
 <hr>
 <h2 id="references-further-reading">References & Further Reading</h2>
 
 <ol>
-<li><a href="https://github.com/holepunchto/hyperswarm-secret-stream" target="_blank">holepunchto/hyperswarm-secret-stream — Noise XX + libsodium transport encryption</a></li>
+<li><a href="https://github.com/holepunchto/hyperswarm-secret-stream" target="_blank">holepunchto/hyperswarm-secret-stream — Noise handshake (XX standalone, IK inside Hyperswarm) + libsodium transport encryption</a></li>
 <li><a href="https://github.com/holepunchto/protomux" target="_blank">holepunchto/protomux — Protocol multiplexing over encrypted streams</a></li>
 <li><a href="https://github.com/holepunchto/compact-encoding" target="_blank">holepunchto/compact-encoding — Binary wire serialization</a></li>
 <li><a href="https://noiseprotocol.org/noise.html" target="_blank">Noise Protocol Framework — Specification</a></li>
 <li><a href="https://doc.libsodium.org/secret-key_cryptography/secretstream" target="_blank">libsodium secretstream — XChaCha20-Poly1305 AEAD streaming</a></li>
 <li><a href="https://github.com/holepunchto/noise-curve-ed" target="_blank">holepunchto/noise-curve-ed — Ed25519 Diffie-Hellman (direct, without Curve25519 conversion)</a></li>
+<li><a href="https://github.com/holepunchto/libudx" target="_blank">holepunchto/libudx — Reliable ordered UDP streams</a></li>
 <li><a href="https://github.com/holepunchto/hypercore" target="_blank">holepunchto/hypercore — Append-only log (uses Protomux for replication)</a></li>
 <li><a href="https://en.wikipedia.org/wiki/Man-in-the-middle_attack" target="_blank">Wikipedia — Man-in-the-middle attack</a></li>
 <li><a href="https://en.wikipedia.org/wiki/Authenticated_encryption" target="_blank">Wikipedia — Authenticated Encryption</a></li>
@@ -486,33 +616,21 @@ console.log('Waiting for peers...')</code></pre>
 <hr>
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <strong>Part 2: Encrypted Pipes (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
+<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: NAT Hole Punching Explained</a> | <strong>Part 2: P2P Encryption with the Noise Protocol (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Merkle Trees and Append-Only Logs</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: Building P2P Databases with Hyperbee and Hyperdrive</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Peer Discovery with Kademlia DHT</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Multi-Writer Consensus with Autobase</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: P2P Security — Threats, Defenses, and Trust</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Offline-First UX for P2P Applications</a></p>
 </blockquote>
 
 
 <!-- Mermaid.js — renders <pre class="mermaid"> blocks -->
-<script type="module">
-import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-mermaid.initialize({
-  startOnLoad: true,
-  theme: 'dark',
-  themeVariables: {
-    primaryColor: '#2d333b',
-    primaryTextColor: '#8b949e',
-    primaryBorderColor: '#373e47',
-    lineColor: '#539bf5',
-    secondaryColor: '#22272e',
-    tertiaryColor: '#1b1f24',
-    noteBkgColor: '#2d333b',
-    noteTextColor: '#8b949e',
-    noteBorderColor: '#986ee2',
-    actorBkg: '#2d333b',
-    actorBorder: '#373e47',
-    actorTextColor: '#cdd9e5',
-    actorLineColor: '#373e47',
-    signalColor: '#539bf5',
-    signalTextColor: '#8b949e',
-    sequenceNumberColor: '#1b1f24'
-  }
-});
-</script>
+<div data-vg-mod="vg-p-6" style="display:none">CmltcG9ydCBtZXJtYWlkIGZyb20gJ2h0dHBzOi8vY2RuLmpzZGVsaXZyLm5ldC9ucG0vbWVybWFpZEAxMS4xNC4wL2Rpc3QvbWVybWFpZC5lc20ubWluLm1qcyc7Cm1lcm1haWQuaW5pdGlhbGl6ZSh7CiAgc3RhcnRPbkxvYWQ6IHRydWUsCiAgdGhlbWU6ICdkYXJrJywKICB0aGVtZVZhcmlhYmxlczogewogICAgcHJpbWFyeUNvbG9yOiAnIzJkMzMzYicsCiAgICBwcmltYXJ5VGV4dENvbG9yOiAnIzhiOTQ5ZScsCiAgICBwcmltYXJ5Qm9yZGVyQ29sb3I6ICcjMzczZTQ3JywKICAgIGxpbmVDb2xvcjogJyM1MzliZjUnLAogICAgc2Vjb25kYXJ5Q29sb3I6ICcjMjIyNzJlJywKICAgIHRlcnRpYXJ5Q29sb3I6ICcjMWIxZjI0JywKICAgIG5vdGVCa2dDb2xvcjogJyMyZDMzM2InLAogICAgbm90ZVRleHRDb2xvcjogJyM4Yjk0OWUnLAogICAgbm90ZUJvcmRlckNvbG9yOiAnIzk4NmVlMicsCiAgICBhY3RvckJrZzogJyMyZDMzM2InLAogICAgYWN0b3JCb3JkZXI6ICcjMzczZTQ3JywKICAgIGFjdG9yVGV4dENvbG9yOiAnI2NkZDllNScsCiAgICBhY3RvckxpbmVDb2xvcjogJyMzNzNlNDcnLAogICAgc2lnbmFsQ29sb3I6ICcjNTM5YmY1JywKICAgIHNpZ25hbFRleHRDb2xvcjogJyM4Yjk0OWUnLAogICAgc2VxdWVuY2VOdW1iZXJDb2xvcjogJyMxYjFmMjQnCiAgfQp9KTsK</div>
+
+<!-- wp:html -->
+<!-- Visual Guide Dependencies -->
+<div data-vg-css="vg-p-0" style="display:none">Ci8qIFZpc3VhbCBHdWlkZSBFbWJlZCBTdHlsZXMg4oCUIGV4dHJhY3RlZCBmcm9tIHZpc3VhbC1ndWlkZS5odG1sICovCgovKiDilIDilIAgU2NvcGVkIGJveC1zaXppbmcgKGF2b2lkcyBicmVha2luZyBXb3JkUHJlc3MgZ2xvYmFscykg4pSA4pSAICovCi52Zy1lbWJlZCwgLnZnLWVtYmVkICosIC52Zy1lbWJlZCAqOjpiZWZvcmUsIC52Zy1lbWJlZCAqOjphZnRlciB7CiAgYm94LXNpemluZzogYm9yZGVyLWJveDsKfQoKLyog4pSA4pSAIEJhc2UgZGVzaWduIHRva2VucyAoZnJvbSBoZWFydGl0LWJsb2cuY3NzKSDilIDilIAgKi8KOnJvb3QgewogIC0tYmctY29kZTogIzE2MWExZjsKICAtLXRleHQtcHJpbWFyeTogI2NkZDllNTsKICAtLXRleHQtc2Vjb25kYXJ5OiAjOGI5NDllOwogIC0tdGV4dC1tdXRlZDogIzYzNmU3YjsKICAtLWZvbnQtc2FuczogJ1NwYWNlIEdyb3Rlc2snLCAnSW50ZXInLCAtYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsICdTZWdvZSBVSScsIHN5c3RlbS11aSwgc2Fucy1zZXJpZjsKICAtLWZvbnQtYm9keTogJ0ludGVyJywgLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCAnU2Vnb2UgVUknLCBzeXN0ZW0tdWksIHNhbnMtc2VyaWY7CiAgLS1mb250LW1vbm86ICdKZXRCcmFpbnMgTW9ubycsICdGaXJhIENvZGUnLCAnU0YgTW9ubycsICdDYXNjYWRpYSBDb2RlJywgJ0NvbnNvbGFzJywgbW9ub3NwYWNlOwogIC0tc3BhY2UtMTogNHB4OwogIC0tc3BhY2UtMjogOHB4OwogIC0tc3BhY2UtMzogMTJweDsKICAtLXNwYWNlLTQ6IDE2cHg7CiAgLS1zcGFjZS01OiAyNHB4OwogIC0tc3BhY2UtNjogMzJweDsKICAtLXNwYWNlLTc6IDQ4cHg7CiAgLS1zcGFjZS04OiA2NHB4OwogIC0tc3BhY2UtOTogOTZweDsKCiAgLyogVmlzdWFsIGd1aWRlIHRva2VucyAqLwogIC0tdmctY3lhbjogIzAwZDRmZjsKICAtLXZnLWN5YW4tZGltOiByZ2JhKDAsIDIxMiwgMjU1LCAwLjE1KTsKICAtLXZnLW1hZ2VudGE6ICNmZjAwY2M7CiAgLS12Zy1tYWdlbnRhLWRpbTogcmdiYSgyNTUsIDAsIDIwNCwgMC4xMik7CiAgLS12Zy1ncmVlbjogIzAwZmY4ODsKICAtLXZnLWdyZWVuLWRpbTogcmdiYSgwLCAyNTUsIDEzNiwgMC4xMik7CiAgLS12Zy1hbWJlcjogI2Y1YTYyMzsKICAtLXZnLWFtYmVyLWRpbTogcmdiYSgyNDUsIDE2NiwgMzUsIDAuMTIpOwogIC0tdmctcHVycGxlOiAjYTg1NWY3OwogIC0tdmctcHVycGxlLWRpbTogcmdiYSgxNjgsIDg1LCAyNDcsIDAuMTIpOwogIC0tdmctcmVkOiAjZmY2YjZiOwogIC0tdmctcmVkLWRpbTogcmdiYSgyNTUsIDEwNywgMTA3LCAwLjEyKTsKICAtLXZnLWJnOiAjMDUwODEwOwogIC0tdmctYmctY2FyZDogIzBhMGYxYTsKICAtLXZnLWJnLWNhcmQtaG92ZXI6ICMwZjE1MjU7CiAgLS12Zy1ib3JkZXI6ICMxYTIwMzU7CiAgLS12Zy1ib3JkZXItZ2xvdzogcmdiYSgwLCAyMTIsIDI1NSwgMC4yKTsKICAtLXZnLW1heC13OiAxMTAwcHg7CiAgLS12Zy1uYXYtaDogNTJweDsKfQoKCi8qIOKUgOKUgCBDYXJkcyDilIDilIAgKi8KLnZnLWRpYWdyYW0tZ3JpZCB7IGRpc3BsYXk6IGdyaWQ7IGdyaWQtdGVtcGxhdGUtY29sdW1uczogMWZyOyBnYXA6IDI0cHg7IH0KLnZnLWNhcmQgewogIGJhY2tncm91bmQ6IHZhcigtLXZnLWJnLWNhcmQpOyBib3JkZXI6IDFweCBzb2xpZCB2YXIoLS12Zy1ib3JkZXIpOwogIGJvcmRlci1yYWRpdXM6IDhweDsgb3ZlcmZsb3c6IGhpZGRlbjsKICB0cmFuc2l0aW9uOiBib3JkZXItY29sb3IgMC4zcywgYm94LXNoYWRvdyAwLjNzOwogIG9wYWNpdHk6IDA7IHRyYW5zZm9ybTogdHJhbnNsYXRlWSgyNHB4KTsgd2lsbC1jaGFuZ2U6IG9wYWNpdHksIHRyYW5zZm9ybTsKfQoudmctY2FyZDpob3ZlciB7IGJvcmRlci1jb2xvcjogdmFyKC0tdmctYm9yZGVyLWdsb3cpOyBib3gtc2hhZG93OiAwIDAgMzBweCByZ2JhKDAsMjEyLDI1NSwwLjA2KTsgfQoudmctY2FyZC12aXN1YWwgewogIHBhZGRpbmc6IDMycHggMjRweDsgZGlzcGxheTogZmxleDsgYWxpZ24taXRlbXM6IGNlbnRlcjsganVzdGlmeS1jb250ZW50OiBjZW50ZXI7CiAgbWluLWhlaWdodDogMjYwcHg7IHBvc2l0aW9uOiByZWxhdGl2ZTsgb3ZlcmZsb3c6IGhpZGRlbjsKfQoudmctY2FyZC1ib2R5IHsgcGFkZGluZzogMjBweCAyNHB4IDI0cHg7IGJvcmRlci10b3A6IDFweCBzb2xpZCB2YXIoLS12Zy1ib3JkZXIpOyB9Ci52Zy1jYXJkLXRpdGxlIHsgZm9udC1mYW1pbHk6IHZhcigtLWZvbnQtc2Fucyk7IGZvbnQtc2l6ZTogMTZweDsgZm9udC13ZWlnaHQ6IDYwMDsgY29sb3I6IHZhcigtLXRleHQtcHJpbWFyeSk7IG1hcmdpbi1ib3R0b206IDZweDsgfQoudmctY2FyZC10ZXh0IHsgZm9udC1mYW1pbHk6IHZhcigtLWZvbnQtYm9keSk7IGZvbnQtc2l6ZTogMTRweDsgY29sb3I6IHZhcigtLXRleHQtc2Vjb25kYXJ5KTsgbGluZS1oZWlnaHQ6IDEuNjsgfQoudmctY2FyZC0td2lkZSB7IGdyaWQtY29sdW1uOiAxIC8gLTE7IH0KLnZnLWNhcmQtLXdpZGUgLnZnLWNhcmQtdmlzdWFsIHsgbWluLWhlaWdodDogMzIwcHg7IH0KCi8qIOKUgOKUgCBDb2RlIOKUgOKUgCAqLwoudmctY29kZSB7CiAgYmFja2dyb3VuZDogdmFyKC0tYmctY29kZSk7IGJvcmRlcjogMXB4IHNvbGlkIHZhcigtLXZnLWJvcmRlcik7CiAgYm9yZGVyLXJhZGl1czogNnB4OyBwYWRkaW5nOiAxNnB4IDIwcHg7IGZvbnQtZmFtaWx5OiB2YXIoLS1mb250LW1vbm8pOwogIGZvbnQtc2l6ZTogMTNweDsgbGluZS1oZWlnaHQ6IDEuNjsgY29sb3I6IHZhcigtLXRleHQtc2Vjb25kYXJ5KTsKICBvdmVyZmxvdy14OiBhdXRvOyBtYXJnaW4tdG9wOiAxMnB4OyB3aGl0ZS1zcGFjZTogcHJlOwp9Ci52Zy1jb2RlIC5rdyAgeyBjb2xvcjogdmFyKC0tdmctY3lhbik7IH0KLnZnLWNvZGUgLmZuICB7IGNvbG9yOiAjNmNiNmZmOyB9Ci52Zy1jb2RlIC5zdHIgeyBjb2xvcjogdmFyKC0tdmctZ3JlZW4pOyB9Ci52Zy1jb2RlIC5jbXQgeyBjb2xvcjogdmFyKC0tdGV4dC1tdXRlZCk7IH0KLnZnLWNvZGUgLm51bSB7IGNvbG9yOiB2YXIoLS12Zy1hbWJlcik7IH0KCi8qIOKUgOKUgCBTVkcg4pSA4pSAICovCi52Zy1zdmcgeyB3aWR0aDogMTAwJTsgbWF4LXdpZHRoOiA3MDBweDsgaGVpZ2h0OiBhdXRvOyBvdmVyZmxvdzogaGlkZGVuOyB9Ci52Zy1zdmcgdGV4dCB7IGZvbnQtZmFtaWx5OiAnSmV0QnJhaW5zIE1vbm8nLCAnU0YgTW9ubycsIG1vbm9zcGFjZTsgfQoudmctcHVsc2UsIC52Zy1yaXBwbGUsIC52Zy1nbG93LWxpbmUsIC52Zy1mbG93LXJpZ2h0LCAudmctZmxvdy1kb3duLCAudmctb3JiaXQgeyBhbmltYXRpb246IG5vbmUgIWltcG9ydGFudDsgfQpub3NjcmlwdCB+IC52Zy13cmFwIC52Zy1jYXJkLCAudmctY2FyZC52Zy1uby1nc2FwIHsgb3BhY2l0eTogMSAhaW1wb3J0YW50OyB0cmFuc2Zvcm06IG5vbmUgIWltcG9ydGFudDsgfQoKLyog4pSA4pSAIExlZ2VuZCDilIDilIAgKi8KLnZnLWxlZ2VuZCB7IGRpc3BsYXk6IGZsZXg7IGZsZXgtd3JhcDogd3JhcDsgZ2FwOiAxMnB4OyBtYXJnaW4tdG9wOiAxMnB4OyB9Ci52Zy1sZWdlbmQtaXRlbSB7IGRpc3BsYXk6IGZsZXg7IGFsaWduLWl0ZW1zOiBjZW50ZXI7IGdhcDogNnB4OyBmb250LWZhbWlseTogdmFyKC0tZm9udC1tb25vKTsgZm9udC1zaXplOiAxMXB4OyBjb2xvcjogdmFyKC0tdGV4dC1tdXRlZCk7IH0KLnZnLWxlZ2VuZC1kb3QgeyB3aWR0aDogOHB4OyBoZWlnaHQ6IDhweDsgYm9yZGVyLXJhZGl1czogNTAlOyBmbGV4LXNocmluazogMDsgfQoKLyog4pSA4pSAIFJlc3BvbnNpdmUgKGVtYmVkKSDilIDilIAgKi8KQG1lZGlhIChtYXgtd2lkdGg6IDY5OXB4KSB7CiAgLnZnLWNhcmQtdmlzdWFsIHsgcGFkZGluZzogMjRweCAxNnB4OyBtaW4taGVpZ2h0OiAyMDBweDsgfQp9CgovKiDilIDilIAgRW1iZWQgd3JhcHBlciDilIDilIAgKi8KLnZnLWVtYmVkIHsKICBtYXJnaW46IDJlbSAwOwogIG1heC13aWR0aDogMTAwJTsKICBvdmVyZmxvdzogaGlkZGVuOwp9Ci52Zy1lbWJlZCAudmctY2FyZCB7CiAgb3BhY2l0eTogMDsKICB0cmFuc2Zvcm06IHRyYW5zbGF0ZVkoMjRweCk7CiAgd2lsbC1jaGFuZ2U6IG9wYWNpdHksIHRyYW5zZm9ybTsKfQoudmctZW1iZWQgLnZnLWNhcmQudmctbm8tZ3NhcCwKLnZnLWVtYmVkLnZnLW5vLWdzYXAgLnZnLWNhcmQgewogIG9wYWNpdHk6IDEgIWltcG9ydGFudDsKICB0cmFuc2Zvcm06IG5vbmUgIWltcG9ydGFudDsKfQoKCi8qIOKUgOKUgCBBbWJpZW50IGNhcHRpb25zIOKUgOKUgCAqLwoudmctY2FwdGlvbiB7CiAgcG9zaXRpb246IGFic29sdXRlOwogIGJvdHRvbTogMTBweDsKICBsZWZ0OiAxNnB4OwogIHJpZ2h0OiAxNnB4OwogIGZvbnQtZmFtaWx5OiB2YXIoLS1mb250LW1vbm8pOwogIGZvbnQtc2l6ZTogMTFweDsKICBsaW5lLWhlaWdodDogMS41OwogIGNvbG9yOiB2YXIoLS12Zy1jeWFuKTsKICBiYWNrZ3JvdW5kOiByZ2JhKDUsIDgsIDE2LCAwLjg1KTsKICBiYWNrZHJvcC1maWx0ZXI6IGJsdXIoNnB4KTsKICAtd2Via2l0LWJhY2tkcm9wLWZpbHRlcjogYmx1cig2cHgpOwogIHBhZGRpbmc6IDZweCAxMnB4OwogIGJvcmRlci1yYWRpdXM6IDRweDsKICBib3JkZXI6IDFweCBzb2xpZCByZ2JhKDAsIDIxMiwgMjU1LCAwLjEyKTsKICBvcGFjaXR5OiAwOwogIHBvaW50ZXItZXZlbnRzOiBub25lOwogIHRleHQtYWxpZ246IGNlbnRlcjsKICB6LWluZGV4OiAxMDsKfQoK</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js" integrity="sha384-g4NTh/Iv5PPU4xPyhEWqPcwtNXOvdaDI8LLnyYfyNZOjKJeYQyjzQ9X5275eBjpt" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js" integrity="sha384-Z3REaz79l2IaAZqJsSABtTbhjgOUYyV3p90XNnAPCSHg3EMTz1fouunq9WZRtj3d" crossorigin="anonymous"></script>
+<div data-vg-dep="vg-p-4" style="display:none">Ci8qKgogKiBWaXN1YWwgR3VpZGUgUnVudGltZSDigJQgc2hhcmVkIEdTQVAgaGVscGVycyBmb3IgZW1iZWRkZWQgc25pcHBldHMKICogRXh0cmFjdGVkIGZyb20gdmlzdWFsLWd1aWRlLmh0bWwKICovCihmdW5jdGlvbiAoKSB7CiAgJ3VzZSBzdHJpY3QnOwoKICAvLyBHdWFyZDogaWYgR1NBUCBmYWlsZWQgdG8gbG9hZCwgbWFrZSBhbGwgZW1iZWRzIHZpc2libGUKICBpZiAodHlwZW9mIGdzYXAgPT09ICd1bmRlZmluZWQnIHx8IHR5cGVvZiBTY3JvbGxUcmlnZ2VyID09PSAndW5kZWZpbmVkJykgewogICAgZG9jdW1lbnQucXVlcnlTZWxlY3RvckFsbCgnLnZnLWVtYmVkIC52Zy1jYXJkJykuZm9yRWFjaChmdW5jdGlvbiAoYykgewogICAgICBjLnN0eWxlLm9wYWNpdHkgPSAnMSc7CiAgICAgIGMuc3R5bGUudHJhbnNmb3JtID0gJ25vbmUnOwogICAgfSk7CiAgICB3aW5kb3cudmdSdW50aW1lID0gbnVsbDsKICAgIHJldHVybjsKICB9CgogIGdzYXAucmVnaXN0ZXJQbHVnaW4oU2Nyb2xsVHJpZ2dlcik7CgogIC8qKiBDcmVhdGUgYSBzY3JvbGwtdHJpZ2dlcmVkIHRpbWVsaW5lIGZvciBhIGNhcmQgZWxlbWVudCAqLwogIGZ1bmN0aW9uIGNhcmRUTChjYXJkKSB7CiAgICB2YXIgdGwgPSBnc2FwLnRpbWVsaW5lKHsKICAgICAgc2Nyb2xsVHJpZ2dlcjogewogICAgICAgIHRyaWdnZXI6IGNhcmQsCiAgICAgICAgc3RhcnQ6ICd0b3AgODglJywKICAgICAgICB0b2dnbGVBY3Rpb25zOiAncGxheSBub25lIG5vbmUgbm9uZScKICAgICAgfQogICAgfSk7CiAgICB0bC50byhjYXJkLCB7IG9wYWNpdHk6IDEsIHk6IDAsIGR1cmF0aW9uOiAwLjQ1LCBlYXNlOiAncG93ZXIyLm91dCcgfSk7CiAgICBjYXJkLl92Z1RpbWVsaW5lID0gdGw7CiAgICByZXR1cm4gdGw7CiAgfQoKICAvKiogU3RhZ2dlci1mYWRlIFNWRyBjaGlsZHJlbiBtYXRjaGluZyBzZWxlY3RvciBpbnNpZGUgYSBjb250YWluZXIgKi8KICBmdW5jdGlvbiBmYWRlSW4odGwsIHBhcmVudCwgc2VsLCBvcHRzKSB7CiAgICB2YXIgZWxzID0gcGFyZW50LnF1ZXJ5U2VsZWN0b3JBbGwoc2VsKTsKICAgIGlmICghZWxzLmxlbmd0aCkgcmV0dXJuOwogICAgdmFyIG8gPSBvcHRzIHx8IHt9OwogICAgdGwuZnJvbShlbHMsIHsKICAgICAgb3BhY2l0eTogMCwKICAgICAgeTogby55IHx8IDAsCiAgICAgIHg6IG8ueCB8fCAwLAogICAgICBzY2FsZTogby5zY2FsZSB8fCAxLAogICAgICBkdXJhdGlvbjogby5kdXIgfHwgMC4zLAogICAgICBzdGFnZ2VyOiBvLnN0YWdnZXIgfHwgMC4wOCwKICAgICAgZWFzZTogby5lYXNlIHx8ICdwb3dlcjIub3V0JwogICAgfSwgby5hdCB8fCAnPi0wLjE1Jyk7CiAgfQoKICAvKiogTG9vcGluZyBwdWxzZSAob3BhY2l0eSkgb24gZWxlbWVudHMg4oCUIGlkZW1wb3RlbnQgKGtpbGxzIGV4aXN0aW5nIGxvb3BzIGZpcnN0KSAqLwogIGZ1bmN0aW9uIHB1bHNlKGVscywgb3B0cykgewogICAgdmFyIG8gPSBvcHRzIHx8IHt9OwogICAgZ3NhcC5raWxsVHdlZW5zT2YoZWxzKTsKICAgIGdzYXAudG8oZWxzLCB7CiAgICAgIG9wYWNpdHk6IG8ubWluIHx8IDAuMzUsCiAgICAgIGR1cmF0aW9uOiBvLmR1ciB8fCAxLAogICAgICByZXBlYXQ6IC0xLAogICAgICB5b3lvOiB0cnVlLAogICAgICBlYXNlOiAnc2luZS5pbk91dCcsCiAgICAgIGRlbGF5OiBvLmRlbGF5IHx8IDAKICAgIH0pOwogIH0KCiAgLyoqIExvb3BpbmcgZ2xvdyBvbiBzdHJva2Utb3BhY2l0eSDigJQgaWRlbXBvdGVudCAoa2lsbHMgZXhpc3RpbmcgbG9vcHMgZmlyc3QpICovCiAgZnVuY3Rpb24gZ2xvd1N0cm9rZShlbHMsIG9wdHMpIHsKICAgIHZhciBvID0gb3B0cyB8fCB7fTsKICAgIGdzYXAua2lsbFR3ZWVuc09mKGVscyk7CiAgICBnc2FwLmZyb21UbyhlbHMsCiAgICAgIHsgYXR0cjogeyAnc3Ryb2tlLW9wYWNpdHknOiAwLjE1IH0gfSwKICAgICAgeyBhdHRyOiB7ICdzdHJva2Utb3BhY2l0eSc6IDAuOCB9LCBkdXJhdGlvbjogby5kdXIgfHwgMS41LCByZXBlYXQ6IC0xLCB5b3lvOiB0cnVlLCBlYXNlOiAnc2luZS5pbk91dCcsIGRlbGF5OiBvLmRlbGF5IHx8IDAgfQogICAgKTsKICB9CgogIC8qKiBEcmF3IGEgbGluZSBmcm9tIG5vdGhpbmcgKHN0cm9rZS1kYXNob2Zmc2V0IHRyaWNrKSAqLwogIGZ1bmN0aW9uIGRyYXdMaW5lcyh0bCwgcGFyZW50LCBzZWwsIG9wdHMpIHsKICAgIHZhciBsaW5lcyA9IHBhcmVudC5xdWVyeVNlbGVjdG9yQWxsKHNlbCk7CiAgICBpZiAoIWxpbmVzLmxlbmd0aCkgcmV0dXJuOwogICAgdmFyIG8gPSBvcHRzIHx8IHt9OwogICAgbGluZXMuZm9yRWFjaChmdW5jdGlvbiAobGluZSkgewogICAgICB2YXIgbGVuID0gbGluZS5nZXRUb3RhbExlbmd0aCA/IGxpbmUuZ2V0VG90YWxMZW5ndGgoKSA6IDEwMDsKICAgICAgZ3NhcC5zZXQobGluZSwgeyBhdHRyOiB7ICdzdHJva2UtZGFzaGFycmF5JzogbGVuLCAnc3Ryb2tlLWRhc2hvZmZzZXQnOiBsZW4gfSB9KTsKICAgIH0pOwogICAgdGwudG8obGluZXMsIHsKICAgICAgYXR0cjogeyAnc3Ryb2tlLWRhc2hvZmZzZXQnOiAwIH0sCiAgICAgIGR1cmF0aW9uOiBvLmR1ciB8fCAwLjUsCiAgICAgIHN0YWdnZXI6IG8uc3RhZ2dlciB8fCAwLjA2LAogICAgICBlYXNlOiBvLmVhc2UgfHwgJ3Bvd2VyMS5pbk91dCcKICAgIH0sIG8uYXQgfHwgJz4tMC4xJyk7CiAgfQoKICAvKiogU2hvdyBhbiBhbWJpZW50IGNhcHRpb24gaW5zaWRlIHRoZSBjYXJkIHZpc3VhbCBhcmVhLgogICAqICBVc2FnZSBmcm9tIGFuaW1hdGlvbiBzY3JpcHRzOgogICAqICAgIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnRGF0YSBibG9ja3MgYXQgZXZlbiBpbmRpY2VzLi4uJ10pOwogICAqICAgIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnJ10pOyAgLy8gY2xlYXIKICAgKi8KICBmdW5jdGlvbiBjYXB0aW9uKHdyYXAsIHRleHQpIHsKICAgIGlmICghd3JhcCkgcmV0dXJuOwogICAgLy8gU3VwcHJlc3MgY2FwdGlvbnMgd2hlbiB0aW1lbGluZSBpcyByZXZlcnNpbmcgKHNjcm9sbC1iYWNrIGRlY29uc3RydWN0aW9uKQogICAgdmFyIGNhcmQgPSB3cmFwLnF1ZXJ5U2VsZWN0b3IoJy52Zy1jYXJkJyk7CiAgICBpZiAoY2FyZCAmJiBjYXJkLl92Z1RpbWVsaW5lICYmIGNhcmQuX3ZnVGltZWxpbmUucmV2ZXJzZWQoKSkgewogICAgICAvLyBPbiByZXZlcnNlLCBqdXN0IGhpZGUgYW55IHZpc2libGUgY2FwdGlvbiBpbW1lZGlhdGVseQogICAgICB2YXIgZXhpc3RpbmcgPSB3cmFwLnF1ZXJ5U2VsZWN0b3IoJy52Zy1jYXB0aW9uJyk7CiAgICAgIGlmIChleGlzdGluZykgZ3NhcC5zZXQoZXhpc3RpbmcsIHsgb3BhY2l0eTogMCB9KTsKICAgICAgcmV0dXJuOwogICAgfQogICAgdmFyIGVsID0gd3JhcC5xdWVyeVNlbGVjdG9yKCcudmctY2FwdGlvbicpOwogICAgaWYgKCFlbCkgewogICAgICBlbCA9IGRvY3VtZW50LmNyZWF0ZUVsZW1lbnQoJ2RpdicpOwogICAgICBlbC5jbGFzc05hbWUgPSAndmctY2FwdGlvbic7CiAgICAgIHZhciB2aXN1YWwgPSB3cmFwLnF1ZXJ5U2VsZWN0b3IoJy52Zy1jYXJkLXZpc3VhbCcpOwogICAgICBpZiAodmlzdWFsKSB7CiAgICAgICAgdmlzdWFsLmFwcGVuZENoaWxkKGVsKTsKICAgICAgfSBlbHNlIHsKICAgICAgICByZXR1cm47CiAgICAgIH0KICAgIH0KICAgIGlmICghdGV4dCkgewogICAgICBnc2FwLnRvKGVsLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjI1IH0pOwogICAgICByZXR1cm47CiAgICB9CiAgICAvLyBJZiBhbHJlYWR5IHNob3dpbmcgdGV4dCwgY3Jvc3NmYWRlCiAgICBpZiAoZWwudGV4dENvbnRlbnQgJiYgZWwuc3R5bGUub3BhY2l0eSAhPT0gJzAnKSB7CiAgICAgIGdzYXAudG8oZWwsIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMTUsIG9uQ29tcGxldGU6IGZ1bmN0aW9uICgpIHsKICAgICAgICBlbC50ZXh0Q29udGVudCA9IHRleHQ7CiAgICAgICAgZ3NhcC50byhlbCwgeyBvcGFjaXR5OiAxLCBkdXJhdGlvbjogMC4yNSB9KTsKICAgICAgfX0pOwogICAgfSBlbHNlIHsKICAgICAgZWwudGV4dENvbnRlbnQgPSB0ZXh0OwogICAgICBnc2FwLnRvKGVsLCB7IG9wYWNpdHk6IDEsIGR1cmF0aW9uOiAwLjMgfSk7CiAgICB9CiAgfQoKICB3aW5kb3cudmdSdW50aW1lID0gewogICAgY2FyZFRMOiBjYXJkVEwsCiAgICBmYWRlSW46IGZhZGVJbiwKICAgIHB1bHNlOiBwdWxzZSwKICAgIGdsb3dTdHJva2U6IGdsb3dTdHJva2UsCiAgICBkcmF3TGluZXM6IGRyYXdMaW5lcywKICAgIGNhcHRpb246IGNhcHRpb24KICB9Owp9KSgpOwoK</div>
+<div data-vg-css="vg-p-1" style="display:none">Ci8qIOKUgOKUgCBWaXN1YWwgR3VpZGUgQ29kZSBOYXJyYXRvciDilIDilIAgKi8KLnZnLW5hcnJhdG9yLWNvbnRyb2xzIHsKICBkaXNwbGF5OiBmbGV4OwogIGFsaWduLWl0ZW1zOiBjZW50ZXI7CiAgZ2FwOiAxMHB4OwogIHBhZGRpbmc6IDhweCAwIDRweDsKfQoudmctbmFycmF0b3ItcGxheSB7CiAgYmFja2dyb3VuZDogbm9uZTsKICBib3JkZXI6IDFweCBzb2xpZCB2YXIoLS12Zy1ib3JkZXIpOwogIGJvcmRlci1yYWRpdXM6IDRweDsKICBjb2xvcjogdmFyKC0tdmctY3lhbik7CiAgZm9udC1mYW1pbHk6IHZhcigtLWZvbnQtbW9ubyk7CiAgZm9udC1zaXplOiAxMXB4OwogIHBhZGRpbmc6IDRweCAxMnB4OwogIGN1cnNvcjogcG9pbnRlcjsKICB0cmFuc2l0aW9uOiBhbGwgMC4yczsKICBkaXNwbGF5OiBmbGV4OwogIGFsaWduLWl0ZW1zOiBjZW50ZXI7CiAgZ2FwOiA1cHg7CiAgd2hpdGUtc3BhY2U6IG5vd3JhcDsKfQoudmctbmFycmF0b3ItcGxheTpob3ZlciB7CiAgYm9yZGVyLWNvbG9yOiB2YXIoLS12Zy1ib3JkZXItZ2xvdyk7CiAgYm94LXNoYWRvdzogMCAwIDEycHggcmdiYSgwLCAyMTIsIDI1NSwgMC4xKTsKfQoudmctbmFycmF0b3ItcGxheWluZyB7CiAgYm9yZGVyLWNvbG9yOiB2YXIoLS12Zy1jeWFuKTsKICBiYWNrZ3JvdW5kOiB2YXIoLS12Zy1jeWFuLWRpbSk7Cn0KLnZnLW5hcnJhdG9yLWljb24geyBmb250LXNpemU6IDEwcHg7IH0KCi52Zy1uYXJyYXRvci1zdGF0dXMgewogIGZvbnQtZmFtaWx5OiB2YXIoLS1mb250LW1vbm8pOwogIGZvbnQtc2l6ZTogMTFweDsKICBjb2xvcjogdmFyKC0tdGV4dC1tdXRlZCk7CiAgb3ZlcmZsb3c6IGhpZGRlbjsKICB0ZXh0LW92ZXJmbG93OiBlbGxpcHNpczsKICB3aGl0ZS1zcGFjZTogbm93cmFwOwp9CgovKiBMaW5lIHdyYXBwaW5nICovCi52Zy1jb2RlLWxpbmUgewogIGRpc3BsYXk6IGJsb2NrOwogIHBhZGRpbmc6IDFweCA2cHg7CiAgbWFyZ2luOiAwIC02cHg7CiAgYm9yZGVyLXJhZGl1czogM3B4OwogIGJvcmRlci1sZWZ0OiAycHggc29saWQgdHJhbnNwYXJlbnQ7CiAgdHJhbnNpdGlvbjogYmFja2dyb3VuZCAwLjE1cywgYm9yZGVyLWNvbG9yIDAuMTVzOwp9Ci52Zy1jb2RlLWxpbmUtbmFycmF0ZWQgewogIGN1cnNvcjogcG9pbnRlcjsKfQoudmctY29kZS1saW5lLW5hcnJhdGVkOmhvdmVyIHsKICBiYWNrZ3JvdW5kOiByZ2JhKDAsIDIxMiwgMjU1LCAwLjA1KTsKICBib3JkZXItbGVmdC1jb2xvcjogcmdiYSgwLCAyMTIsIDI1NSwgMC4yKTsKfQoudmctY29kZS1saW5lLWFjdGl2ZSB7CiAgYmFja2dyb3VuZDogcmdiYSgwLCAyMTIsIDI1NSwgMC4xKSAhaW1wb3J0YW50OwogIGJvcmRlci1sZWZ0LWNvbG9yOiB2YXIoLS12Zy1jeWFuKSAhaW1wb3J0YW50Owp9Cgo=</div>
+<div data-vg-dep="vg-p-5" style="display:none">Ci8qKgogKiBWaXN1YWwgR3VpZGUgQ29kZSBOYXJyYXRvcgogKgogKiBCaW5kcyBjb2RlIGxpbmVzIHRvIGRpYWdyYW0gYW5pbWF0aW9uIHN0ZXBzLiBDbGlja2luZyBhIG5hcnJhdGVkIGNvZGUgbGluZQogKiBqdW1wcyB0aGUgZGlhZ3JhbSB0byB0aGF0IHN0YXRlLiBBICJQbGF5IiBidXR0b24gYXV0by1hZHZhbmNlcyB0aHJvdWdoIGFsbAogKiBzdGVwcywgaGlnaGxpZ2h0aW5nIGVhY2ggY29kZSBsaW5lIHdoaWxlIHRoZSBTVkcgYW5pbWF0ZXMuCiAqCiAqIFNldHVwOiBhZGQgZGF0YS12Zy1uYXJyYXRlIEpTT04gdG8gYSAudmctY29kZSBlbGVtZW50IGluc2lkZSBhIC52Zy1lbWJlZDoKICoKICogICA8ZGl2IGNsYXNzPSJ2Zy1jb2RlIiBkYXRhLXZnLW5hcnJhdGU9J1sKICogICAgIHsibGluZSI6IDAsICJsYWJlbCI6ICJuYXJyLTAiLCAiZGVzYyI6ICJDcmVhdGUgYSBIeXBlcmNvcmUifSwKICogICAgIHsibGluZSI6IDEsICJsYWJlbCI6ICJuYXJyLTEiLCAiZGVzYyI6ICJBcHBlbmQgYmxvY2sgMCJ9CiAqICAgXSc+CiAqCiAqIFRoZSBhbmltYXRpb24gc2NyaXB0IG11c3QgYWRkIG1hdGNoaW5nIGxhYmVsczogdGwuYWRkTGFiZWwoJ25hcnItMCcsIC4uLikKICogVGhlIHJ1bnRpbWUgbXVzdCBzdG9yZSB0aGUgdGltZWxpbmU6IGNhcmQuX3ZnVGltZWxpbmUgKGRvbmUgYnkgdmdSdW50aW1lLmNhcmRUTCkKICovCihmdW5jdGlvbiAoKSB7CiAgJ3VzZSBzdHJpY3QnOwoKICBpZiAodHlwZW9mIGdzYXAgPT09ICd1bmRlZmluZWQnKSByZXR1cm47CgogIC8vIFdhaXQgZm9yIGFuaW1hdGlvbiBzY3JpcHRzIHRvIGNyZWF0ZSB0aW1lbGluZXMKICBzZXRUaW1lb3V0KGluaXROYXJyYXRvcnMsIDE1MCk7CgogIGZ1bmN0aW9uIGluaXROYXJyYXRvcnMgKCkgewogICAgdmFyIGNvZGVCbG9ja3MgPSBkb2N1bWVudC5xdWVyeVNlbGVjdG9yQWxsKCcudmctY29kZVtkYXRhLXZnLW5hcnJhdGVdJyk7CiAgICBjb2RlQmxvY2tzLmZvckVhY2goc2V0dXBOYXJyYXRvcik7CiAgfQoKICBmdW5jdGlvbiBzZXR1cE5hcnJhdG9yIChjb2RlRWwpIHsKICAgIHZhciBlbWJlZCA9IGNvZGVFbC5jbG9zZXN0KCcudmctZW1iZWQnKTsKICAgIGlmICghZW1iZWQpIHJldHVybjsKICAgIHZhciBjYXJkID0gZW1iZWQucXVlcnlTZWxlY3RvcignLnZnLWNhcmQnKTsKICAgIGlmICghY2FyZCB8fCAhY2FyZC5fdmdUaW1lbGluZSkgcmV0dXJuOwoKICAgIHZhciB0bCA9IGNhcmQuX3ZnVGltZWxpbmU7CiAgICB2YXIgbmFycmF0aW9uOwogICAgdHJ5IHsgbmFycmF0aW9uID0gSlNPTi5wYXJzZShjb2RlRWwuZ2V0QXR0cmlidXRlKCdkYXRhLXZnLW5hcnJhdGUnKSk7IH0gY2F0Y2ggKGUpIHsgcmV0dXJuOyB9CiAgICBpZiAoIW5hcnJhdGlvbiB8fCAhbmFycmF0aW9uLmxlbmd0aCkgcmV0dXJuOwoKICAgIC8vIFZlcmlmeSBhdCBsZWFzdCBvbmUgbGFiZWwgZXhpc3RzIGluIHRoZSB0aW1lbGluZQogICAgdmFyIGhhc0xhYmVscyA9IG5hcnJhdGlvbi5zb21lKGZ1bmN0aW9uIChzKSB7IHJldHVybiB0bC5sYWJlbHNbcy5sYWJlbF0gIT09IHVuZGVmaW5lZDsgfSk7CiAgICBpZiAoIWhhc0xhYmVscykgcmV0dXJuOwoKICAgIC8vIOKUgOKUgCBXcmFwIGNvZGUgbGluZXMg4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSACiAgICB2YXIgaHRtbCA9IGNvZGVFbC5pbm5lckhUTUw7CiAgICB2YXIgbGluZXMgPSBodG1sLnNwbGl0KCdcbicpOwogICAgdmFyIG5hcnJhdGVkTGluZVNldCA9IHt9OwogICAgbmFycmF0aW9uLmZvckVhY2goZnVuY3Rpb24gKHMpIHsgbmFycmF0ZWRMaW5lU2V0W3MubGluZV0gPSB0cnVlOyB9KTsKCiAgICBjb2RlRWwuaW5uZXJIVE1MID0gbGluZXMubWFwKGZ1bmN0aW9uIChsaW5lLCBpKSB7CiAgICAgIHZhciBjbHMgPSAndmctY29kZS1saW5lJyArIChuYXJyYXRlZExpbmVTZXRbaV0gPyAnIHZnLWNvZGUtbGluZS1uYXJyYXRlZCcgOiAnJyk7CiAgICAgIHJldHVybiAnPHNwYW4gY2xhc3M9IicgKyBjbHMgKyAnIiBkYXRhLWxpbmUtaWR4PSInICsgaSArICciPicgKyAobGluZSB8fCAnICcpICsgJzwvc3Bhbj4nOwogICAgfSkuam9pbignXG4nKTsKCiAgICAvLyDilIDilIAgSW5qZWN0IGNvbnRyb2xzIOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgAogICAgdmFyIGNvbnRyb2xzID0gZG9jdW1lbnQuY3JlYXRlRWxlbWVudCgnZGl2Jyk7CiAgICBjb250cm9scy5jbGFzc05hbWUgPSAndmctbmFycmF0b3ItY29udHJvbHMnOwoKICAgIHZhciBwbGF5QnRuID0gZG9jdW1lbnQuY3JlYXRlRWxlbWVudCgnYnV0dG9uJyk7CiAgICBwbGF5QnRuLmNsYXNzTmFtZSA9ICd2Zy1uYXJyYXRvci1wbGF5JzsKICAgIHBsYXlCdG4uaW5uZXJIVE1MID0gJzxzcGFuIGNsYXNzPSJ2Zy1uYXJyYXRvci1pY29uIj5cdTI1QjY8L3NwYW4+IE5hcnJhdGUnOwoKICAgIHZhciBzdGF0dXMgPSBkb2N1bWVudC5jcmVhdGVFbGVtZW50KCdzcGFuJyk7CiAgICBzdGF0dXMuY2xhc3NOYW1lID0gJ3ZnLW5hcnJhdG9yLXN0YXR1cyc7CgogICAgY29udHJvbHMuYXBwZW5kQ2hpbGQocGxheUJ0bik7CiAgICBjb250cm9scy5hcHBlbmRDaGlsZChzdGF0dXMpOwogICAgY29kZUVsLnBhcmVudE5vZGUuaW5zZXJ0QmVmb3JlKGNvbnRyb2xzLCBjb2RlRWwpOwoKICAgIC8vIOKUgOKUgCBTdGF0ZSDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIAKICAgIHZhciBjdXJyZW50U3RlcCA9IC0xOwogICAgdmFyIHBsYXlpbmcgPSBmYWxzZTsKICAgIHZhciBzdGVwVGltZXIgPSBudWxsOwoKICAgIGZ1bmN0aW9uIGhpZ2hsaWdodExpbmUgKGxpbmVJZHgpIHsKICAgICAgY29kZUVsLnF1ZXJ5U2VsZWN0b3JBbGwoJy52Zy1jb2RlLWxpbmUtYWN0aXZlJykuZm9yRWFjaChmdW5jdGlvbiAoZWwpIHsKICAgICAgICBlbC5jbGFzc0xpc3QucmVtb3ZlKCd2Zy1jb2RlLWxpbmUtYWN0aXZlJyk7CiAgICAgIH0pOwogICAgICBpZiAobGluZUlkeCA8IDApIHJldHVybjsKICAgICAgdmFyIGVsID0gY29kZUVsLnF1ZXJ5U2VsZWN0b3IoJ1tkYXRhLWxpbmUtaWR4PSInICsgbGluZUlkeCArICciXScpOwogICAgICBpZiAoIWVsKSByZXR1cm47CiAgICAgIGVsLmNsYXNzTGlzdC5hZGQoJ3ZnLWNvZGUtbGluZS1hY3RpdmUnKTsKICAgICAgLy8gU2Nyb2xsIGludG8gdmlldyB3aXRoaW4gdGhlIGNvZGUgYmxvY2sgaWYgbmVlZGVkCiAgICAgIHZhciBlbFRvcCA9IGVsLm9mZnNldFRvcCAtIGNvZGVFbC5vZmZzZXRUb3A7CiAgICAgIGlmIChlbFRvcCA8IGNvZGVFbC5zY3JvbGxUb3AgfHwgZWxUb3AgKyBlbC5vZmZzZXRIZWlnaHQgPiBjb2RlRWwuc2Nyb2xsVG9wICsgY29kZUVsLmNsaWVudEhlaWdodCkgewogICAgICAgIGNvZGVFbC5zY3JvbGxUb3AgPSBNYXRoLm1heCgwLCBlbFRvcCAtIDIwKTsKICAgICAgfQogICAgfQoKICAgIGZ1bmN0aW9uIGdvVG9TdGVwIChpZHgpIHsKICAgICAgaWYgKGlkeCA8IDAgfHwgaWR4ID49IG5hcnJhdGlvbi5sZW5ndGgpIHJldHVybjsKICAgICAgY3VycmVudFN0ZXAgPSBpZHg7CiAgICAgIHZhciBzdGVwID0gbmFycmF0aW9uW2lkeF07CiAgICAgIGhpZ2hsaWdodExpbmUoc3RlcC5saW5lKTsKICAgICAgc3RhdHVzLnRleHRDb250ZW50ID0gc3RlcC5kZXNjIHx8ICcnOwogICAgICBpZiAodGwubGFiZWxzW3N0ZXAubGFiZWxdICE9PSB1bmRlZmluZWQpIHsKICAgICAgICB0bC50d2VlblRvKHRsLmxhYmVsc1tzdGVwLmxhYmVsXSArIDAuMDAxLCB7IGR1cmF0aW9uOiAwLjUsIGVhc2U6ICdwb3dlcjIuaW5PdXQnIH0pOwogICAgICB9CiAgICB9CgogICAgZnVuY3Rpb24gcmVzZXRUb1N0YXJ0ICgpIHsKICAgICAgY3VycmVudFN0ZXAgPSAtMTsKICAgICAgaGlnaGxpZ2h0TGluZSgtMSk7CiAgICAgIHN0YXR1cy50ZXh0Q29udGVudCA9ICcnOwogICAgICAvLyBTZWVrIGJhY2sgdG8ganVzdCBhZnRlciBjYXJkIHJldmVhbCAoMC40NXMpIOKAlCBTVkcgZWxlbWVudHMgcmV0dXJuIHRvIGluaXRpYWwgc3RhdGUKICAgICAgdGwucGF1c2UoKTsKICAgICAgLy8gS2VlcCBjYXJkIHZpc2libGUKICAgICAgZ3NhcC5zZXQoY2FyZCwgeyBvcGFjaXR5OiAxLCB5OiAwIH0pOwogICAgICB0bC5zZWVrKDAuNDYpOwogICAgfQoKICAgIGZ1bmN0aW9uIGF1dG9BZHZhbmNlICgpIHsKICAgICAgaWYgKCFwbGF5aW5nKSByZXR1cm47CiAgICAgIGN1cnJlbnRTdGVwKys7CiAgICAgIGlmIChjdXJyZW50U3RlcCA+PSBuYXJyYXRpb24ubGVuZ3RoKSB7CiAgICAgICAgLy8gRG9uZQogICAgICAgIHBsYXlpbmcgPSBmYWxzZTsKICAgICAgICBwbGF5QnRuLmlubmVySFRNTCA9ICc8c3BhbiBjbGFzcz0idmctbmFycmF0b3ItaWNvbiI+XHUyMUJBPC9zcGFuPiBSZXBsYXknOwogICAgICAgIHBsYXlCdG4uY2xhc3NMaXN0LnJlbW92ZSgndmctbmFycmF0b3ItcGxheWluZycpOwogICAgICAgIHN0YXR1cy50ZXh0Q29udGVudCA9ICdkb25lJzsKICAgICAgICByZXR1cm47CiAgICAgIH0KICAgICAgZ29Ub1N0ZXAoY3VycmVudFN0ZXApOwogICAgICAvLyBBZHZhbmNlIGRlbGF5OiBmaXJzdCBzdGVwIHNob3J0ZXIsIHN1YnNlcXVlbnQgbG9uZ2VyIGZvciByZWFkaW5nCiAgICAgIHZhciBkZWxheSA9IGN1cnJlbnRTdGVwID09PSAwID8gMTQwMCA6IDIwMDA7CiAgICAgIHN0ZXBUaW1lciA9IHNldFRpbWVvdXQoYXV0b0FkdmFuY2UsIGRlbGF5KTsKICAgIH0KCiAgICAvLyDilIDilIAgUGxheSAvIFBhdXNlIC8gUmVwbGF5IOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgAogICAgcGxheUJ0bi5hZGRFdmVudExpc3RlbmVyKCdjbGljaycsIGZ1bmN0aW9uICgpIHsKICAgICAgaWYgKHBsYXlpbmcpIHsKICAgICAgICAvLyBQYXVzZQogICAgICAgIHBsYXlpbmcgPSBmYWxzZTsKICAgICAgICBjbGVhclRpbWVvdXQoc3RlcFRpbWVyKTsKICAgICAgICBwbGF5QnRuLmlubmVySFRNTCA9ICc8c3BhbiBjbGFzcz0idmctbmFycmF0b3ItaWNvbiI+XHUyNUI2PC9zcGFuPiBSZXN1bWUnOwogICAgICAgIHBsYXlCdG4uY2xhc3NMaXN0LnJlbW92ZSgndmctbmFycmF0b3ItcGxheWluZycpOwogICAgICB9IGVsc2UgewogICAgICAgIHBsYXlpbmcgPSB0cnVlOwogICAgICAgIHBsYXlCdG4uaW5uZXJIVE1MID0gJzxzcGFuIGNsYXNzPSJ2Zy1uYXJyYXRvci1pY29uIj5cdTIzRjg8L3NwYW4+IFBhdXNlJzsKICAgICAgICBwbGF5QnRuLmNsYXNzTGlzdC5hZGQoJ3ZnLW5hcnJhdG9yLXBsYXlpbmcnKTsKICAgICAgICBpZiAoY3VycmVudFN0ZXAgPj0gbmFycmF0aW9uLmxlbmd0aCAtIDEpIHsKICAgICAgICAgIC8vIFJlc3RhcnQKICAgICAgICAgIHJlc2V0VG9TdGFydCgpOwogICAgICAgIH0KICAgICAgICBhdXRvQWR2YW5jZSgpOwogICAgICB9CiAgICB9KTsKCiAgICAvLyDilIDilIAgTGluZSBjbGljazoganVtcCB0byBzdGVwIOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgAogICAgbmFycmF0aW9uLmZvckVhY2goZnVuY3Rpb24gKHN0ZXAsIGlkeCkgewogICAgICB2YXIgZWwgPSBjb2RlRWwucXVlcnlTZWxlY3RvcignW2RhdGEtbGluZS1pZHg9IicgKyBzdGVwLmxpbmUgKyAnIl0nKTsKICAgICAgaWYgKCFlbCkgcmV0dXJuOwogICAgICBlbC5hZGRFdmVudExpc3RlbmVyKCdjbGljaycsIGZ1bmN0aW9uICgpIHsKICAgICAgICAvLyBTdG9wIGF1dG8tcGxheSBpZiBydW5uaW5nCiAgICAgICAgcGxheWluZyA9IGZhbHNlOwogICAgICAgIGNsZWFyVGltZW91dChzdGVwVGltZXIpOwogICAgICAgIHBsYXlCdG4uaW5uZXJIVE1MID0gJzxzcGFuIGNsYXNzPSJ2Zy1uYXJyYXRvci1pY29uIj5cdTI1QjY8L3NwYW4+IE5hcnJhdGUnOwogICAgICAgIHBsYXlCdG4uY2xhc3NMaXN0LnJlbW92ZSgndmctbmFycmF0b3ItcGxheWluZycpOwogICAgICAgIGdvVG9TdGVwKGlkeCk7CiAgICAgIH0pOwogICAgfSk7CiAgfQp9KSgpOwoK</div>
+<!-- /wp:html -->
+
+<script>!function(){var d=document,b=atob,r=function(q,t){d.querySelectorAll(q).forEach(function(e){var s=d.createElement(t||`script`);s.textContent=b(e.textContent);e.parentNode.replaceChild(s,e)})};r(`[data-vg-css]`,`style`);r(`[data-vg-dep]`);r(`[data-vg-anim]`);d.querySelectorAll(`[data-vg-mod]`).forEach(function(e){var s=d.createElement(`script`);s.type=`module`;s.textContent=b(e.textContent);e.parentNode.replaceChild(s,e)})}()</script>

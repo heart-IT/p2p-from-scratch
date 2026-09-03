@@ -1,19 +1,4 @@
-<!--
-  WORDPRESS IMPORT INSTRUCTIONS
-  ==============================
-  1. Create a new Post in WordPress
-  2. Switch to the Code Editor (⋮ menu > Code editor)
-  3. Select ALL text below this comment block and paste
-  4. Switch back to Visual Editor to verify
-
-  Plugins required:
-  - Prismatic (syntax highlighting)
-
-  Mermaid diagrams are loaded via CDN (no plugin needed).
-  The <script> tag at the bottom handles rendering.
--->
-
-<h1 id="p2p-from-scratch-part-3-append-only-truth">P2P from Scratch — Part 3: Append-Only Truth</h1>
+<h1 id="p2p-from-scratch-part-3-merkle-trees-and-append-only-logs">P2P from Scratch — Part 3: Merkle Trees and Append-Only Logs</h1>
 
 <blockquote>
 <p>&quot;The first principle is that you must not fool yourself — and you are the easiest person to fool.&quot;
@@ -21,22 +6,29 @@
 </blockquote>
 
 <p><strong>Excerpt:</strong> You have an encrypted pipe between two peers. Now you need something worth sending through it. Hypercore is an append-only log where every byte is cryptographically verifiable — a peer can download a single block out of millions and prove it hasn&#39;t been tampered with, using only a handful of hashes and one signature. This post explains the data structure that everything else in the Holepunch stack is built on.</p>
+<!-- meta-description: How Hypercore uses a flat Merkle tree to make every byte of an append-only log cryptographically verifiable. Sparse replication explained. -->
+<!-- meta-labs: p2p-append-only -->
+
 
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <strong>Part 3: Append-Only Truth (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
+<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: NAT Hole Punching Explained</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: P2P Encryption with the Noise Protocol</a> | <strong>Part 3: Merkle Trees and Append-Only Logs (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: Building P2P Databases with Hyperbee and Hyperdrive</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Peer Discovery with Kademlia DHT</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Multi-Writer Consensus with Autobase</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: P2P Security — Threats, Defenses, and Trust</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Offline-First UX for P2P Applications</a></p>
 </blockquote>
 
 <hr>
+<blockquote>
+<p><strong>Verified against:</strong> hypercore 11.35.2 · hypercore-crypto 3.7.0 · flat-tree 1.13.0 — checked 2026-09-03. Every constant, default and byte count in this post is asserted in <a href="https://github.com/heart-IT/p2p-from-scratch-labs/tree/main/verify"><code>verify/</code></a>, which installs whatever Holepunch publishes today and fails if the stack has moved.</p>
+</blockquote>
+
 <h2 id="quick-recap">Quick Recap</h2>
 
-<p>In <a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1</a>, we punched through NATs to establish a UDP path. In <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2</a>, we wrapped that path in Noise XX encryption and multiplexed independent protocols over it with Protomux. Now we need data worth sending through the pipe.</p>
+<p>In <a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1</a>, we punched through NATs to establish a UDP path. In <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2</a>, we wrapped that path in a Noise-authenticated encrypted stream and multiplexed independent protocols over it with Protomux. Now we need data worth sending through the pipe.</p>
 <hr>
-<h2 id="the-problem-trust-without-a-server">The Problem: Trust Without a Server</h2>
+<h2 id="verifying-data-without-a-server-why-merkle-trees-matter">Verifying Data Without a Server: Why Merkle Trees Matter</h2>
 
 <p>In a client-server world, you trust data because you trust the server. You ask a database for row 42, and you believe the response because the server is yours (or belongs to a company you trust). The connection is encrypted with TLS, the server has a certificate, and that&#39;s the end of the story.</p>
 <p>In peer-to-peer, there&#39;s no server. A stranger on the Internet sends you a chunk of data and claims it&#39;s block 42 of some log. Why should you believe them?</p>
-<p>You can&#39;t trust the peer — they might be compromised, malicious, or simply buggy. You can&#39;t trust the network — someone might have tampered with the data in transit. You need a way to verify the data <em>itself</em>, independent of who sent it to you.</p>
+<p>You can&#39;t trust the peer — they might be compromised, malicious, or simply buggy. You can&#39;t trust the network — someone might have tampered with the data in transit. You need a way to verify the data <em>itself</em>, independent of who sent it to you. That is what a Merkle tree gives you: a cryptographic structure that lets you verify any piece of data without trusting who sent it.</p>
 <p>This is what <a href="https://github.com/holepunchto/hypercore" target="_blank">Hypercore</a> provides: an append-only log where every block is bound to a cryptographic proof chain that terminates in a single Ed25519 signature. If the proof checks out, the data is authentic — regardless of which peer delivered it.</p>
 <blockquote class="callout-insight">
 <p><strong>Key Insight:</strong> The trust model is inverted compared to client-server. In HTTPS, you trust the <em>channel</em> (TLS certificate) and therefore trust the data. In Hypercore, you trust the <em>data</em> (Merkle proof + signature) regardless of the channel. A block verified by its proof is equally trustworthy whether it came from the original author, a mirror, or a stranger&#39;s cache.</p>
@@ -45,11 +37,54 @@
 <hr>
 <h2 id="append-only-why-immutability-matters">Append-Only: Why Immutability Matters</h2>
 
+<!-- wp:html -->
+<div class="vg-embed" data-vg-snippet="hypercore/append-only-log">
+  <div class="vg-card">
+          <div class="vg-card-visual">
+            <svg class="vg-svg" viewBox="0 0 420 220" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="20"  y="120" width="50" height="60" rx="4" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.6"/>
+              <rect x="80"  y="120" width="50" height="60" rx="4" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.6"/>
+              <rect x="140" y="120" width="50" height="60" rx="4" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.6"/>
+              <rect x="200" y="120" width="50" height="60" rx="4" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.6"/>
+              <rect x="260" y="120" width="50" height="60" rx="4" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.6"/>
+              <rect x="320" y="120" width="50" height="60" rx="4" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.5" stroke-dasharray="4 3" class="vg-pulse"/>
+              <text x="45"  y="155" text-anchor="middle" fill="#00d4ff" font-size="13" font-weight="500" style="font-size:13px;font-weight:500">0</text>
+              <text x="105" y="155" text-anchor="middle" fill="#00d4ff" font-size="13" font-weight="500" style="font-size:13px;font-weight:500">1</text>
+              <text x="165" y="155" text-anchor="middle" fill="#00d4ff" font-size="13" font-weight="500" style="font-size:13px;font-weight:500">2</text>
+              <text x="225" y="155" text-anchor="middle" fill="#00d4ff" font-size="13" font-weight="500" style="font-size:13px;font-weight:500">3</text>
+              <text x="285" y="155" text-anchor="middle" fill="#00d4ff" font-size="13" font-weight="500" style="font-size:13px;font-weight:500">4</text>
+              <text x="345" y="155" text-anchor="middle" fill="#636e7b" font-size="13" font-weight="500" style="font-size:13px;font-weight:500">5</text>
+              <line x1="370" y1="150" x2="400" y2="150" stroke="#00d4ff" stroke-width="1.5" stroke-opacity="0.5"/>
+              <polygon points="400,145 410,150 400,155" fill="#00d4ff" fill-opacity="0.5"/>
+              <text x="210" y="30" text-anchor="middle" fill="#cdd9e5" font-size="14" font-weight="600" style="font-size:14px;font-weight:600">Append-Only Log</text>
+              <text x="210" y="50" text-anchor="middle" fill="#636e7b" font-size="12" style="font-size:12px">Blocks can only be added, never modified</text>
+              <text x="45"  y="200" text-anchor="middle" fill="#636e7b" font-size="10" style="font-size:10px">sealed</text>
+              <text x="105" y="200" text-anchor="middle" fill="#636e7b" font-size="10" style="font-size:10px">sealed</text>
+              <text x="165" y="200" text-anchor="middle" fill="#636e7b" font-size="10" style="font-size:10px">sealed</text>
+              <text x="225" y="200" text-anchor="middle" fill="#636e7b" font-size="10" style="font-size:10px">sealed</text>
+              <text x="285" y="200" text-anchor="middle" fill="#636e7b" font-size="10" style="font-size:10px">sealed</text>
+              <text x="345" y="200" text-anchor="middle" fill="#00d4ff" font-size="10" class="vg-pulse" style="font-size:10px">writing</text>
+            </svg>
+          </div>
+          <div class="vg-card-body">
+            <div class="vg-card-title">Append-Only Log</div>
+            <div class="vg-card-text">Data is written as sequential blocks — like entries in a ledger. Once written, a block is immutable: its position and content are permanently fixed. <strong>Why append-only?</strong> Because immutability enables verification. If blocks could be edited, you'd need to re-download and re-verify everything after every change. With append-only, a peer can verify any block independently, and new blocks don't invalidate old ones. This is what makes sparse replication possible.</div>
+            <div class="vg-code" data-vg-narrate='[{"line":0,"label":"narr-0","desc":"Create a Hypercore backed by local storage"},{"line":1,"label":"narr-1","desc":"Append \u0027hello\u0027 — sealed as block 0"},{"line":2,"label":"narr-2","desc":"Append \u0027world\u0027 — sealed as block 1"},{"line":3,"label":"narr-3","desc":"Read block 0 back — verified via Merkle proof"}]'><span class="kw">const</span> core = <span class="kw">new</span> <span class="fn">Hypercore</span>(<span class="str">'./storage'</span>)
+<span class="kw">await</span> core.<span class="fn">append</span>(<span class="str">'hello'</span>)  <span class="cmt">// block 0</span>
+<span class="kw">await</span> core.<span class="fn">append</span>(<span class="str">'world'</span>)  <span class="cmt">// block 1</span>
+<span class="kw">await</span> core.<span class="fn">get</span>(<span class="num">0</span>)            <span class="cmt">// → 'hello'</span></div>
+          </div>
+        </div>
+  <div data-vg-anim="vg-p-3" style="display:none">CiAgKGZ1bmN0aW9uKCkgewogIGlmICghd2luZG93LnZnUnVudGltZSkgcmV0dXJuOwogIHZhciB3cmFwID0gZG9jdW1lbnQucXVlcnlTZWxlY3RvcignW2RhdGEtdmctc25pcHBldD0iaHlwZXJjb3JlL2FwcGVuZC1vbmx5LWxvZyJdJyk7CiAgaWYgKCF3cmFwKSByZXR1cm47CiAgdmFyIGNhcmQgPSB3cmFwLnF1ZXJ5U2VsZWN0b3IoJy52Zy1jYXJkJyk7CiAgdmFyIHN2ZyA9IGNhcmQucXVlcnlTZWxlY3RvcignLnZnLXN2ZycpOwogIGlmICghc3ZnKSB7IGlmICh0eXBlb2YgZ3NhcCAhPT0gJ3VuZGVmaW5lZCcpIGdzYXAuc2V0KGNhcmQsIHsgb3BhY2l0eTogMSwgeTogMCB9KTsgcmV0dXJuOyB9CiAgdmFyIHRsID0gdmdSdW50aW1lLmNhcmRUTChjYXJkKTsKICB2YXIgYmxvY2tzID0gc3ZnLnF1ZXJ5U2VsZWN0b3JBbGwoJ3JlY3QnKTsKICB2YXIgdGV4dHMgPSBzdmcucXVlcnlTZWxlY3RvckFsbCgndGV4dCcpOwogIC8vIHRleHRzOiAwLTU9YmxvY2sgbGFiZWxzLCA2PXRpdGxlLCA3PXN1YnRpdGxlLCA4LTEyPXNlYWxlZCwgMTM9d3JpdGluZwoKICAvLyBuYXJyLTA6IFN0cnVjdHVyZSDigJQgdGl0bGUgKyBzdWJ0aXRsZQogIHRsLmZyb20odGV4dHNbNl0sIHsgb3BhY2l0eTogMCwgeTogLTEwLCBkdXJhdGlvbjogMC4zIH0sICc+Jyk7CiAgdGwuZnJvbSh0ZXh0c1s3XSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yNSB9LCAnPicpOwogIHRsLmFkZExhYmVsKCduYXJyLTAnKTsKICB0bC5jYWxsKHZnUnVudGltZS5jYXB0aW9uLCBbd3JhcCwgJ0FuIGFwcGVuZC1vbmx5IGxvZyBcdTIwMTQgYmxvY2tzIGNhbiBvbmx5IGJlIGFkZGVkLCBuZXZlciBtb2RpZmllZCddKTsKCiAgLy8gbmFyci0xOiBCbG9jayAwCiAgdGwuZnJvbShibG9ja3NbMF0sIHsgb3BhY2l0eTogMCwgc2NhbGVZOiAwLCB0cmFuc2Zvcm1PcmlnaW46ICdib3R0b20nLCBkdXJhdGlvbjogMC4zNSwgZWFzZTogJ2JhY2sub3V0KDEuNCknIH0sICc+Jyk7CiAgdGwuZnJvbSh0ZXh0c1swXSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yIH0sICc+Jyk7CiAgdGwuZnJvbSh0ZXh0c1s4XSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yIH0sICc+Jyk7CiAgdGwuYWRkTGFiZWwoJ25hcnItMScpOwogIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnQmxvY2sgMCBhcHBlbmRlZCBhbmQgc2VhbGVkIFx1MjAxNCBpbW11dGFibGUgZnJvbSB0aGlzIHBvaW50IG9uJ10pOwoKICAvLyBuYXJyLTI6IEJsb2NrIDEKICB0bC5mcm9tKGJsb2Nrc1sxXSwgeyBvcGFjaXR5OiAwLCBzY2FsZVk6IDAsIHRyYW5zZm9ybU9yaWdpbjogJ2JvdHRvbScsIGR1cmF0aW9uOiAwLjM1LCBlYXNlOiAnYmFjay5vdXQoMS40KScgfSwgJz4nKTsKICB0bC5mcm9tKHRleHRzWzFdLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjIgfSwgJz4nKTsKICB0bC5mcm9tKHRleHRzWzldLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjIgfSwgJz4nKTsKICB0bC5hZGRMYWJlbCgnbmFyci0yJyk7CiAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsICdCbG9jayAxIGFwcGVuZGVkIFx1MjAxNCBwcmV2aW91cyBibG9ja3Mgc3RheSB1bnRvdWNoZWQnXSk7CgogIC8vIG5hcnItMzogUmVtYWluaW5nIGJsb2NrcyArIGFycm93ICsgcHVsc2UKICB0bC5mcm9tKEFycmF5LnByb3RvdHlwZS5zbGljZS5jYWxsKGJsb2NrcywgMiksIHsgb3BhY2l0eTogMCwgc2NhbGVZOiAwLCB0cmFuc2Zvcm1PcmlnaW46ICdib3R0b20nLCBkdXJhdGlvbjogMC4yNSwgc3RhZ2dlcjogMC4wNiwgZWFzZTogJ2JhY2sub3V0KDEuNCknIH0sICc+Jyk7CiAgdGwuZnJvbShBcnJheS5wcm90b3R5cGUuc2xpY2UuY2FsbCh0ZXh0cywgMiwgNiksIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMTUsIHN0YWdnZXI6IDAuMDMgfSwgJz4nKTsKICB0bC5mcm9tKEFycmF5LnByb3RvdHlwZS5zbGljZS5jYWxsKHRleHRzLCAxMCksIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMTUsIHN0YWdnZXI6IDAuMDMgfSwgJz4nKTsKICB0bC5mcm9tKHN2Zy5xdWVyeVNlbGVjdG9yQWxsKCdsaW5lLCBwb2x5Z29uJyksIHsgb3BhY2l0eTogMCwgeDogLTEwLCBkdXJhdGlvbjogMC4yNSB9LCAnPicpOwogIHZhciBwdWxzRWxzID0gc3ZnLnF1ZXJ5U2VsZWN0b3JBbGwoJy52Zy1wdWxzZScpOwogIGlmIChwdWxzRWxzLmxlbmd0aCkgdGwuY2FsbChmdW5jdGlvbiAoKSB7IHZnUnVudGltZS5wdWxzZShwdWxzRWxzKTsgfSk7CiAgdGwuYWRkTGFiZWwoJ25hcnItMycpOwogIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnTG9nIGdyb3dzIGZvcndhcmQgXHUyMDE0IG5ldyBibG9ja3MgbmV2ZXIgaW52YWxpZGF0ZSBvbGQgcHJvb2ZzJ10pOwogIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnJ10sICc+MScpOwp9KSgpOwogIA==</div>
+</div>
+
+<!-- /wp:html -->
+
 <p>A Hypercore is a log. You can append new blocks to the end. You cannot modify or delete existing blocks.</p>
 <p>This seems limiting — but it&#39;s the foundation of everything that follows. If history is immutable, then:</p>
 <ul>
 <li><strong>Verification is permanent.</strong> Once you&#39;ve verified block 42, it will never change. You can cache it, share it, replicate it — the proof remains valid forever.</li>
-<li><strong>Replication is simple.</strong> Two peers compare their lengths and fork IDs. If forks match, whoever has more blocks sends the difference. There are no merge conflicts, no version vectors, no three-way diffs.</li>
+<li><strong>Replication is simple.</strong> Two peers compare their lengths and fork IDs. If forks match, the peer that&#39;s behind knows exactly which blocks it&#39;s missing and pulls whichever of them it wants. There are no merge conflicts, no version vectors, no three-way diffs.</li>
 <li><strong>Auditability is free.</strong> The full history of every change is preserved. You don&#39;t need a separate audit log — the data structure <em>is</em> the audit log.</li>
 </ul>
 <p>State changes are expressed as new facts appended to the log, not as mutations of existing entries. If you want to &quot;update&quot; a record, you append a new block that supersedes the old one. Higher layers (like Hyperbee, which we&#39;ll cover in Part 4) project the current state from this history.</p>
@@ -70,8 +105,58 @@
 <hr>
 <h2 id="the-data-structure-a-flat-in-order-merkle-tree">The Data Structure: A Flat In-Order Merkle Tree</h2>
 
+<!-- wp:html -->
+<div class="vg-embed" data-vg-mode="stepper" data-vg-snippet="hypercore/flat-merkle-tree" data-vg-steps='["Data blocks at even indices","Parent hashes at odd indices","Edges connect the tree","Flat array storage","Verification path for block 4"]'>
+  <div class="vg-card">
+          <div class="vg-card-visual">
+            <svg class="vg-svg" viewBox="0 0 420 280" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <text x="210" y="20" text-anchor="middle" fill="#cdd9e5" font-size="13" font-weight="600" style="font-size:13px;font-weight:600">Flat Tree (In-Place Merkle Tree)</text>
+              <text x="210" y="38" text-anchor="middle" fill="#636e7b" font-size="10" style="font-size:10px">Leaves at even indices, parents at odd indices</text>
+              <rect x="15"  y="160" width="44" height="36" rx="4" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.6"/>
+              <rect x="125" y="160" width="44" height="36" rx="4" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.6"/>
+              <rect x="235" y="160" width="44" height="36" rx="4" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.6"/>
+              <rect x="345" y="160" width="44" height="36" rx="4" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.6"/>
+              <text x="37"  y="175" text-anchor="middle" fill="#00d4ff" font-size="9" font-weight="500" style="font-size:9px;font-weight:500">data</text>
+              <text x="147" y="175" text-anchor="middle" fill="#00d4ff" font-size="9" font-weight="500" style="font-size:9px;font-weight:500">data</text>
+              <text x="257" y="175" text-anchor="middle" fill="#00d4ff" font-size="9" font-weight="500" style="font-size:9px;font-weight:500">data</text>
+              <text x="367" y="175" text-anchor="middle" fill="#00d4ff" font-size="9" font-weight="500" style="font-size:9px;font-weight:500">data</text>
+              <text x="37"  y="189" text-anchor="middle" fill="#636e7b" font-size="9" style="font-size:9px">idx 0</text>
+              <text x="147" y="189" text-anchor="middle" fill="#636e7b" font-size="9" style="font-size:9px">idx 2</text>
+              <text x="257" y="189" text-anchor="middle" fill="#636e7b" font-size="9" style="font-size:9px">idx 4</text>
+              <text x="367" y="189" text-anchor="middle" fill="#636e7b" font-size="9" style="font-size:9px">idx 6</text>
+              <circle cx="92"  cy="120" r="16" fill="#0a1628" stroke="#a855f7" stroke-width="1.5"/>
+              <circle cx="312" cy="120" r="16" fill="#0a1628" stroke="#a855f7" stroke-width="1.5"/>
+              <text x="92"  y="115" text-anchor="middle" fill="#a855f7" font-size="9" style="font-size:9px">hash</text>
+              <text x="92"  y="128" text-anchor="middle" fill="#636e7b" font-size="8" style="font-size:8px">idx 1</text>
+              <text x="312" y="115" text-anchor="middle" fill="#a855f7" font-size="9" style="font-size:9px">hash</text>
+              <text x="312" y="128" text-anchor="middle" fill="#636e7b" font-size="8" style="font-size:8px">idx 5</text>
+              <line x1="37"  y1="160" x2="80"  y2="132" stroke="#a855f7" stroke-opacity="0.25" stroke-width="1"/>
+              <line x1="147" y1="160" x2="104" y2="132" stroke="#a855f7" stroke-opacity="0.25" stroke-width="1"/>
+              <line x1="257" y1="160" x2="300" y2="132" stroke="#a855f7" stroke-opacity="0.25" stroke-width="1"/>
+              <line x1="367" y1="160" x2="324" y2="132" stroke="#a855f7" stroke-opacity="0.25" stroke-width="1"/>
+              <circle cx="202" cy="70" r="18" fill="#0a1628" stroke="#ff00cc" stroke-width="1.5"/>
+              <text x="202" y="66" text-anchor="middle" fill="#ff00cc" font-size="9" style="font-size:9px">root</text>
+              <text x="202" y="79" text-anchor="middle" fill="#636e7b" font-size="8" style="font-size:8px">idx 3</text>
+              <line x1="92"  y1="104" x2="188" y2="80" stroke="#ff00cc" stroke-opacity="0.25" stroke-width="1"/>
+              <line x1="312" y1="104" x2="216" y2="80" stroke="#ff00cc" stroke-opacity="0.25" stroke-width="1"/>
+              <circle cx="257" cy="178" r="26" fill="none" stroke="#00ff88" stroke-width="1.5" stroke-opacity="0.4" stroke-dasharray="4 3" class="vg-pulse"/>
+              <text x="210" y="220" text-anchor="middle" fill="#00ff88" font-size="10" style="font-size:10px">To verify block at idx 4: need idx 6 (sibling) + idx 1 (uncle)</text>
+              <rect x="40" y="240" width="340" height="28" rx="4" fill="#ff00cc" fill-opacity="0.05" stroke="#ff00cc" stroke-opacity="0.15"/>
+              <text x="210" y="258" text-anchor="middle" fill="#ff00cc" font-size="9" style="font-size:9px">Flat array — O(1) lookup via bit math</text>
+            </svg>
+          </div>
+          <div class="vg-card-body">
+            <div class="vg-card-title">Flat Merkle Tree</div>
+            <div class="vg-card-text">Hypercore uses a <strong>flat tree</strong> — all nodes stored in one sequential array, not a pointer-based binary tree. Data blocks at even indices (0, 2, 4...), parent hashes at odd indices (1, 3, 5...). <strong>How verification works:</strong> To prove block 4 is authentic, the sender provides: (1) block 4's data, (2) sibling at idx 6, (3) uncle hash at idx 1. The verifier hashes block 4, combines with sibling 6 to get parent at idx 5, combines with uncle 1 to recompute root at idx 3, and checks it against the signed root. Only 2 hashes needed — not the entire log. Parent/child lookups use bit arithmetic (no pointers), making this extremely cache-friendly.</div>
+          </div>
+        </div>
+  <div data-vg-anim="vg-p-4" style="display:none">CiAgKGZ1bmN0aW9uKCkgewogIGlmICghd2luZG93LnZnUnVudGltZSkgcmV0dXJuOwogIHZhciB3cmFwID0gZG9jdW1lbnQucXVlcnlTZWxlY3RvcignW2RhdGEtdmctc25pcHBldD0iaHlwZXJjb3JlL2ZsYXQtbWVya2xlLXRyZWUiXScpOwogIGlmICghd3JhcCkgcmV0dXJuOwogIHZhciBjYXJkID0gd3JhcC5xdWVyeVNlbGVjdG9yKCcudmctY2FyZCcpOwogIHZhciBzdmcgPSBjYXJkLnF1ZXJ5U2VsZWN0b3IoJy52Zy1zdmcnKTsKICBpZiAoIXN2ZykgeyBpZiAodHlwZW9mIGdzYXAgIT09ICd1bmRlZmluZWQnKSBnc2FwLnNldChjYXJkLCB7IG9wYWNpdHk6IDEsIHk6IDAgfSk7IHJldHVybjsgfQogIHZhciB0bCA9IHZnUnVudGltZS5jYXJkVEwoY2FyZCk7CgogIC8vIOKUgOKUgCBFbGVtZW50IGludmVudG9yeSDilIDilIAKICAvLyBSZWN0czogWzAtM10gbGVhZiBibG9ja3MsIFs0XSBpbmZvIGJveAogIC8vIENpcmNsZXM6IFswXSBwYXJlbnQgaWR4MSwgWzFdIHBhcmVudCBpZHg1LCBbMl0gcm9vdCBpZHgzLCBbM10gdmVyaWZ5ICgudmctcHVsc2UpCiAgLy8gTGluZXM6IFswLTNdIGxlYWbihpJwYXJlbnQsIFs0LTVdIHBhcmVudOKGknJvb3QKICAvLyBUZXh0czogWzBdIHRpdGxlLCBbMV0gc3VidGl0bGUsIFsyLTVdICJkYXRhIiB4NCwgWzYtOV0gImlkeCAwLzIvNC82IiwKICAvLyAgICAgICAgWzEwLTExXSBoYXNoL2lkeDEsIFsxMi0xM10gaGFzaC9pZHg1LCBbMTQtMTVdIHJvb3QvaWR4MywKICAvLyAgICAgICAgWzE2XSB2ZXJpZnkgZXhwbGFuYXRpb24sIFsxN10gaW5mbyBib3ggdGV4dAogIHZhciByZWN0cyA9IHN2Zy5xdWVyeVNlbGVjdG9yQWxsKCdyZWN0Jyk7CiAgdmFyIGNpcmNsZXMgPSBzdmcucXVlcnlTZWxlY3RvckFsbCgnY2lyY2xlJyk7CiAgdmFyIGxpbmVzID0gc3ZnLnF1ZXJ5U2VsZWN0b3JBbGwoJ2xpbmUnKTsKICB2YXIgdGV4dHMgPSBzdmcucXVlcnlTZWxlY3RvckFsbCgndGV4dCcpOwoKICAvLyDilIDilIAgTGFiZWwgcGxhY2VtZW50OiBjb250ZW50IEJFRk9SRSBsYWJlbCDilIDilIAKICAvLyBUaGUgc3RlcHBlciB0d2VlbnMgVE8gYSBsYWJlbCwgc28gdGhlIGxhYmVsIG11c3QgYmUgcGxhY2VkCiAgLy8gQUZURVIgdGhlIGNvbnRlbnQgaXQgZGVzY3JpYmVzLiBBcnJpdmluZyBhdCBzdGVwLU4gbWVhbnMKICAvLyBzdGVwLU4ncyBjb250ZW50IGlzIGZ1bGx5IHZpc2libGUuCgogIC8vIFByZS1zdGVwOiB0aXRsZSArIHN1YnRpdGxlIChhbHdheXMgdmlzaWJsZSkKICB0bC5mcm9tKHRleHRzWzBdLCB7IG9wYWNpdHk6IDAsIHk6IC04LCBkdXJhdGlvbjogMC4yNSB9LCAnPicpOwogIHRsLmZyb20odGV4dHNbMV0sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiB9LCAnPicpOwoKICAvLyBzdGVwLTAgY29udGVudDogbGVhZiBibG9ja3Mgd2l0aCBsYWJlbHMg4oaSIHRoZW4gbGFiZWwKICB0bC5mcm9tKFtyZWN0c1swXSwgcmVjdHNbMV0sIHJlY3RzWzJdLCByZWN0c1szXV0sIHsgb3BhY2l0eTogMCwgeTogMTIsIGR1cmF0aW9uOiAwLjMsIHN0YWdnZXI6IDAuMDgsIGVhc2U6ICdiYWNrLm91dCgxLjQpJyB9LCAnPicpOwogIHRsLmZyb20oW3RleHRzWzJdLCB0ZXh0c1szXSwgdGV4dHNbNF0sIHRleHRzWzVdXSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yLCBzdGFnZ2VyOiAwLjA2IH0sICc+LTAuMTUnKTsKICB0bC5mcm9tKFt0ZXh0c1s2XSwgdGV4dHNbN10sIHRleHRzWzhdLCB0ZXh0c1s5XV0sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiwgc3RhZ2dlcjogMC4wNiB9LCAnPi0wLjEnKTsKICB0bC5hZGRMYWJlbCgnc3RlcC0wJyk7CiAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsICdEYXRhIGJsb2NrcyBhdCBldmVuIGluZGljZXMgXHUyMDE0IHRoZSBsZWF2ZXMgb2YgdGhlIHRyZWUnXSk7CgogIC8vIHN0ZXAtMSBjb250ZW50OiBwYXJlbnQgKyByb290IG5vZGVzIHdpdGggbGFiZWxzIOKGkiB0aGVuIGxhYmVsCiAgdGwuZnJvbShbY2lyY2xlc1swXSwgY2lyY2xlc1sxXV0sIHsgb3BhY2l0eTogMCwgc2NhbGU6IDAuNCwgdHJhbnNmb3JtT3JpZ2luOiAnY2VudGVyJywgZHVyYXRpb246IDAuMzUsIHN0YWdnZXI6IDAuMTIsIGVhc2U6ICdiYWNrLm91dCgxLjYpJyB9LCAnPicpOwogIHRsLmZyb20oW3RleHRzWzEwXSwgdGV4dHNbMTFdLCB0ZXh0c1sxMl0sIHRleHRzWzEzXV0sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiwgc3RhZ2dlcjogMC4wNSB9LCAnPi0wLjE1Jyk7CiAgdGwuZnJvbShjaXJjbGVzWzJdLCB7IG9wYWNpdHk6IDAsIHNjYWxlOiAwLjQsIHRyYW5zZm9ybU9yaWdpbjogJ2NlbnRlcicsIGR1cmF0aW9uOiAwLjM1LCBlYXNlOiAnYmFjay5vdXQoMS42KScgfSwgJz4nKTsKICB0bC5mcm9tKFt0ZXh0c1sxNF0sIHRleHRzWzE1XV0sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiwgc3RhZ2dlcjogMC4wNSB9LCAnPi0wLjE1Jyk7CiAgdGwuYWRkTGFiZWwoJ3N0ZXAtMScpOwogIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnUGFyZW50IGhhc2hlcyBhdCBvZGQgaW5kaWNlcyBcdTIwMTQgZWFjaCBjb21iaW5lcyB0d28gY2hpbGRyZW4nXSk7CgogIC8vIHN0ZXAtMiBjb250ZW50OiBlZGdlcyDihpIgdGhlbiBsYWJlbAogIHZnUnVudGltZS5kcmF3TGluZXModGwsIHN2ZywgJ2xpbmUnLCB7IGR1cjogMC4zLCBzdGFnZ2VyOiAwLjA1LCBhdDogJz4nIH0pOwogIHRsLmFkZExhYmVsKCdzdGVwLTInKTsKICB0bC5jYWxsKHZnUnVudGltZS5jYXB0aW9uLCBbd3JhcCwgJ0VkZ2VzIGNvbm5lY3QgcGFyZW50cyB0byBjaGlsZHJlbiBcdTIwMTQgYSBjb21wbGV0ZSBiaW5hcnkgdHJlZSddKTsKCiAgLy8gc3RlcC0zIGNvbnRlbnQ6IGluZm8gYm94IOKGkiB0aGVuIGxhYmVsCiAgdGwuZnJvbShyZWN0c1s0XSwgeyBvcGFjaXR5OiAwLCB5OiA4LCBkdXJhdGlvbjogMC4zIH0sICc+Jyk7CiAgdGwuZnJvbSh0ZXh0c1sxN10sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMjUgfSwgJz4tMC4xJyk7CiAgdGwuYWRkTGFiZWwoJ3N0ZXAtMycpOwogIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnU3RvcmVkIGFzIGEgZmxhdCBhcnJheSBcdTIwMTQgbm8gcG9pbnRlcnMsIE8oMSkgcGFyZW50L2NoaWxkIGxvb2t1cCddKTsKCiAgLy8gc3RlcC00IGNvbnRlbnQ6IHZlcmlmaWNhdGlvbiBwYXRoIOKGkiB0aGVuIGxhYmVsCiAgdmFyIHZlcmlmeUNpcmNsZSA9IHN2Zy5xdWVyeVNlbGVjdG9yKCcudmctcHVsc2UnKTsKICBpZiAodmVyaWZ5Q2lyY2xlKSB7CiAgICB0bC5mcm9tKHZlcmlmeUNpcmNsZSwgeyBvcGFjaXR5OiAwLCBzY2FsZTogMCwgdHJhbnNmb3JtT3JpZ2luOiAnY2VudGVyJywgZHVyYXRpb246IDAuNCwgZWFzZTogJ2JhY2sub3V0KDIpJyB9LCAnPicpOwogICAgdGwuY2FsbChmdW5jdGlvbiAoKSB7IHZnUnVudGltZS5wdWxzZShbdmVyaWZ5Q2lyY2xlXSwgeyBkdXI6IDEuMiB9KTsgfSk7CiAgfQogIHRsLmZyb20odGV4dHNbMTZdLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjI1IH0sICc+Jyk7CiAgdGwuYWRkTGFiZWwoJ3N0ZXAtNCcpOwogIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnVmVyaWZ5IGJsb2NrIDQ6IG5lZWQgc2libGluZyBpZHggNiArIHVuY2xlIGlkeCAxIFx1MjAxNCBqdXN0IDIgaGFzaGVzJ10pOwogIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnJ10sICc+MS41Jyk7Cn0pKCk7CiAg</div>
+</div>
+
+<!-- /wp:html -->
+
 <p>Hypercore needs to let a peer verify any individual block without downloading the entire log. The classic solution is a Merkle tree — a binary tree of hashes where each parent is the hash of its children. To verify a leaf, you only need the hashes along the path from that leaf to the root.</p>
-<p>But Hypercore&#39;s tree isn&#39;t a standard Merkle tree. It uses a <strong>flat in-order tree</strong> — a scheme from <a href="https://www.rfc-editor.org/rfc/rfc7574" target="_blank">RFC 7574</a> (the Peer-to-Peer Streaming Peer Protocol) that maps a binary tree onto a flat array using a clever indexing scheme.</p>
+<p>But Hypercore&#39;s tree isn&#39;t a standard Merkle tree. It uses a <strong>flat in-order tree</strong> — an indexing scheme equivalent to the bin-number layout used in <a href="https://www.rfc-editor.org/rfc/rfc7574" target="_blank">RFC 7574</a> (the Peer-to-Peer Streaming Peer Protocol), which maps a binary tree onto a flat array using pure bit arithmetic.</p>
 <h3 id="the-layout">The Layout</h3>
 
 <pre><code>Block:    0     1     2     3     4
@@ -94,14 +179,14 @@ Index:  [ 0 ] [ 2 ] [ 4 ] [ 6 ] [ 8 ]       ← Leaves (even indices)
 <tr><th>Index</th><th>Binary</th><th>Trailing 1-bits</th><th>Depth</th><th>Role</th></tr>
 </thead>
 <tbody>
-<tr><td>0</td><td>`000`</td><td>0</td><td>0</td><td>Leaf (block 0)</td></tr>
-<tr><td>1</td><td>`001`</td><td>1</td><td>1</td><td>Parent of [0, 2]</td></tr>
-<tr><td>2</td><td>`010`</td><td>0</td><td>0</td><td>Leaf (block 1)</td></tr>
-<tr><td>3</td><td>`011`</td><td>2</td><td>2</td><td>Parent of [1, 5]</td></tr>
-<tr><td>4</td><td>`100`</td><td>0</td><td>0</td><td>Leaf (block 2)</td></tr>
-<tr><td>5</td><td>`101`</td><td>1</td><td>1</td><td>Parent of [4, 6]</td></tr>
-<tr><td>6</td><td>`110`</td><td>0</td><td>0</td><td>Leaf (block 3)</td></tr>
-<tr><td>7</td><td>`111`</td><td>3</td><td>3</td><td>Root of a full 8-leaf tree (indices 0–14)</td></tr>
+<tr><td>0</td><td><code>000</code></td><td>0</td><td>0</td><td>Leaf (block 0)</td></tr>
+<tr><td>1</td><td><code>001</code></td><td>1</td><td>1</td><td>Parent of [0, 2]</td></tr>
+<tr><td>2</td><td><code>010</code></td><td>0</td><td>0</td><td>Leaf (block 1)</td></tr>
+<tr><td>3</td><td><code>011</code></td><td>2</td><td>2</td><td>Parent of [1, 5]</td></tr>
+<tr><td>4</td><td><code>100</code></td><td>0</td><td>0</td><td>Leaf (block 2)</td></tr>
+<tr><td>5</td><td><code>101</code></td><td>1</td><td>1</td><td>Parent of [4, 6]</td></tr>
+<tr><td>6</td><td><code>110</code></td><td>0</td><td>0</td><td>Leaf (block 3)</td></tr>
+<tr><td>7</td><td><code>111</code></td><td>3</td><td>3</td><td>Root of a full 8-leaf tree (indices 0–14)</td></tr>
 </tbody>
 </table></figure>
 
@@ -120,10 +205,10 @@ Index:  [ 0 ] [ 2 ] [ 4 ] [ 6 ] [ 8 ]       ← Leaves (even indices)
 <tr><th>Operation</th><th>Formula</th></tr>
 </thead>
 <tbody>
-<tr><td>Parent</td><td>`(depth + 1, floor(offset / 2))`</td></tr>
-<tr><td>Left child</td><td>`(depth − 1, offset × 2)`</td></tr>
-<tr><td>Right child</td><td>`(depth − 1, offset × 2 + 1)`</td></tr>
-<tr><td>Sibling</td><td>`(depth, offset ± 1)` — toggle the parity</td></tr>
+<tr><td>Parent</td><td><code>(depth + 1, floor(offset / 2))</code></td></tr>
+<tr><td>Left child</td><td><code>(depth − 1, offset × 2)</code></td></tr>
+<tr><td>Right child</td><td><code>(depth − 1, offset × 2 + 1)</code></td></tr>
+<tr><td>Sibling</td><td><code>(depth, offset ± 1)</code> — toggle the parity</td></tr>
 </tbody>
 </table></figure>
 
@@ -161,7 +246,7 @@ Index:  [ 0 ] [ 2 ] [ 4 ] [ 6 ] [ 8 ]       ← Leaves (even indices)
 <hr>
 <h2 id="root-peaks-and-bagging">Root Peaks and Bagging</h2>
 
-<p>Here&#39;s where Hypercore diverges from a textbook Merkle tree. A classic Merkle tree has exactly one root — but that&#39;s only possible when the number of leaves is a power of 2.</p>
+<p>Here&#39;s where Hypercore diverges from a textbook Merkle tree. A classic Merkle tree has exactly one root — but a <em>perfectly balanced</em> one is only possible when the number of leaves is a power of 2.</p>
 <p>Hypercore is append-only. Its length changes with every append. After 5 appends, there are 5 leaves — not a power of 2. The tree can&#39;t form a single balanced root.</p>
 <p>Instead, Hypercore decomposes the leaf count into powers of 2 and maintains a <strong>separate root for each complete subtree</strong>. These roots are called <strong>peaks</strong> (like in a Merkle Mountain Range).</p>
 <p>For 5 leaves (binary: <code>101</code> = 4 + 1):</p>
@@ -213,13 +298,52 @@ graph TD
 </pre></div>
 
 <p><em>Figure 1: Bagging the peaks for 5 blocks. The block count (binary 101 = 4 + 1) produces two complete subtrees with root peaks at indices 3 and 8. Both peaks feed into a single BLAKE2b tree hash, which is then signed.</em></p>
-<p>This is why appending a block is cheap — only the peaks change. Adding block 5 would create a new leaf, merge two peaks into one, and produce a new tree hash and signature. The rest of the tree stays untouched.</p>
+<p>This is why appending a block is cheap — only the rightmost spine of the tree changes. A new leaf is added, and one new internal node is written for each pair of peaks that gets merged. The rest of the tree stays untouched. Adding the 6th block (index 5) to a 5-block log creates a new leaf at flat index 10 and a new parent at index 9, merging the lone peak at 8 with the new leaf — the peak at index 3 is never touched.</p>
 <blockquote class="callout-insight">
 <p><strong>Key Insight:</strong> The <code>0x02</code> root type prefix is the third domain separator. With three prefixes — <code>0x00</code> for leaves, <code>0x01</code> for parents, <code>0x02</code> for the tree hash — no valid hash at one level can be confused with a hash at another level. This domain separation prevents structural ambiguity attacks where a leaf could be misinterpreted as a parent or vice versa, even if hash outputs happen to overlap across node types.</p>
 </blockquote>
 
 <hr>
 <h2 id="the-signature-binding-it-all-together">The Signature: Binding It All Together</h2>
+
+<!-- wp:html -->
+<div class="vg-embed" data-vg-snippet="hypercore/keys-identity">
+  <div class="vg-card">
+          <div class="vg-card-visual">
+            <svg class="vg-svg" viewBox="0 0 420 280" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <text x="210" y="20" text-anchor="middle" fill="#cdd9e5" font-size="13" font-weight="600" style="font-size:13px;font-weight:600">Keys &amp; Identity</text>
+              <rect x="140" y="38" width="140" height="32" rx="4" fill="#0a1628" stroke="#00ff88" stroke-opacity="0.4"/>
+              <text x="210" y="58" text-anchor="middle" fill="#00ff88" font-size="10" style="font-size:10px">Ed25519 Keypair</text>
+              <line x1="175" y1="70" x2="90" y2="95" stroke="#636e7b" stroke-opacity="0.3"/>
+              <line x1="245" y1="70" x2="330" y2="95" stroke="#636e7b" stroke-opacity="0.3"/>
+              <rect x="30" y="98" width="120" height="50" rx="5" fill="#ff6b6b" fill-opacity="0.06" stroke="#ff6b6b" stroke-opacity="0.3"/>
+              <text x="90" y="118" text-anchor="middle" fill="#ff6b6b" font-size="11" font-weight="500" style="font-size:11px;font-weight:500">Secret Key</text>
+              <text x="90" y="135" text-anchor="middle" fill="#636e7b" font-size="9" style="font-size:9px">Never leaves writer</text>
+              <rect x="270" y="98" width="120" height="50" rx="5" fill="#00d4ff" fill-opacity="0.06" stroke="#00d4ff" stroke-opacity="0.3"/>
+              <text x="330" y="118" text-anchor="middle" fill="#00d4ff" font-size="11" font-weight="500" style="font-size:11px;font-weight:500">Public Key</text>
+              <text x="330" y="135" text-anchor="middle" fill="#636e7b" font-size="9" style="font-size:9px">32-byte identity</text>
+              <line x1="330" y1="148" x2="330" y2="170" stroke="#f5a623" stroke-opacity="0.4" stroke-width="1"/>
+              <rect x="260" y="173" width="140" height="28" rx="4" fill="#f5a623" fill-opacity="0.06" stroke="#f5a623" stroke-opacity="0.3"/>
+              <text x="330" y="191" text-anchor="middle" fill="#f5a623" font-size="10" style="font-size:10px">BLAKE2b(publicKey)</text>
+              <line x1="330" y1="201" x2="330" y2="215" stroke="#f5a623" stroke-opacity="0.4" stroke-width="1"/>
+              <rect x="250" y="218" width="160" height="45" rx="5" fill="#f5a623" fill-opacity="0.06" stroke="#f5a623" stroke-opacity="0.4"/>
+              <text x="330" y="237" text-anchor="middle" fill="#f5a623" font-size="11" font-weight="500" style="font-size:11px;font-weight:500">Discovery Key</text>
+              <text x="330" y="254" text-anchor="middle" fill="#636e7b" font-size="8" style="font-size:8px">Hides identity on DHT</text>
+              <text x="90" y="175" text-anchor="middle" fill="#636e7b" font-size="9" style="font-size:9px">sign(block)</text>
+              <text x="90" y="192" text-anchor="middle" fill="#636e7b" font-size="9" style="font-size:9px">↓</text>
+              <text x="90" y="209" text-anchor="middle" fill="#00ff88" font-size="9" style="font-size:9px">Only the writer</text>
+              <text x="90" y="224" text-anchor="middle" fill="#00ff88" font-size="9" style="font-size:9px">can append</text>
+            </svg>
+          </div>
+          <div class="vg-card-body">
+            <div class="vg-card-title">Keys: Public vs Discovery</div>
+            <div class="vg-card-text">Every Hypercore has an Ed25519 keypair. The <strong>public key</strong> is the core's identity — used to verify signatures and request data. The <strong>discovery key</strong> is a BLAKE2b hash of the public key — this is what gets announced on the DHT. This separation prevents passive network observers from learning which public keys are being exchanged on the network.</div>
+          </div>
+        </div>
+  <div data-vg-anim="vg-p-5" style="display:none">CiAgKGZ1bmN0aW9uKCkgewogIGlmICghd2luZG93LnZnUnVudGltZSkgcmV0dXJuOwogIHZhciB3cmFwID0gZG9jdW1lbnQucXVlcnlTZWxlY3RvcignW2RhdGEtdmctc25pcHBldD0iaHlwZXJjb3JlL2tleXMtaWRlbnRpdHkiXScpOwogIGlmICghd3JhcCkgcmV0dXJuOwogIHZhciBjYXJkID0gd3JhcC5xdWVyeVNlbGVjdG9yKCcudmctY2FyZCcpOwogIHZhciBzdmcgPSBjYXJkLnF1ZXJ5U2VsZWN0b3IoJy52Zy1zdmcnKTsKICBpZiAoIXN2ZykgeyBpZiAodHlwZW9mIGdzYXAgIT09ICd1bmRlZmluZWQnKSBnc2FwLnNldChjYXJkLCB7IG9wYWNpdHk6IDEsIHk6IDAgfSk7IHJldHVybjsgfQogIHZhciB0bCA9IHZnUnVudGltZS5jYXJkVEwoY2FyZCk7CiAgdmFyIHJlY3RzID0gc3ZnLnF1ZXJ5U2VsZWN0b3JBbGwoJ3JlY3QnKTsKICB2YXIgbGluZXMgPSBzdmcucXVlcnlTZWxlY3RvckFsbCgnbGluZScpOwogIHZhciB0ZXh0cyA9IHN2Zy5xdWVyeVNlbGVjdG9yQWxsKCd0ZXh0Jyk7CgogIC8vIFBoYXNlIDE6IFRpdGxlICsgS2V5cGFpciBib3ggKyBsYWJlbAogIHRsLmZyb20odGV4dHNbMF0sIHsgb3BhY2l0eTogMCwgeTogMTIsIGR1cmF0aW9uOiAwLjMgfSwgJz4nKTsKICB0bC5mcm9tKHJlY3RzWzBdLCB7IG9wYWNpdHk6IDAsIHk6IDEyLCBkdXJhdGlvbjogMC4zIH0sICc+Jyk7CiAgdGwuZnJvbSh0ZXh0c1sxXSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yIH0sICc+Jyk7CgogIC8vIFBoYXNlIDI6IEJyYW5jaCBsaW5lcyArIFNlY3JldCBLZXkgKGxlZnQpICsgUHVibGljIEtleSAocmlnaHQpICsgY2FwdGlvbgogIHRsLmZyb20obGluZXNbMF0sIHsgb3BhY2l0eTogMCwgZHJhd1NWRzogJzAlJywgZHVyYXRpb246IDAuNCB9LCAnPicpOwogIHRsLmZyb20obGluZXNbMV0sIHsgb3BhY2l0eTogMCwgZHJhd1NWRzogJzAlJywgZHVyYXRpb246IDAuNCB9LCAnPCcpOwogIHRsLmZyb20ocmVjdHNbMV0sIHsgb3BhY2l0eTogMCwgeTogMTIsIGR1cmF0aW9uOiAwLjMgfSwgJz4nKTsKICB0bC5mcm9tKHRleHRzWzJdLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjIgfSwgJz4nKTsKICB0bC5mcm9tKHRleHRzWzNdLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjIgfSwgJz4nKTsKICB0bC5mcm9tKHJlY3RzWzJdLCB7IG9wYWNpdHk6IDAsIHk6IDEyLCBkdXJhdGlvbjogMC4zIH0sICc+Jyk7CiAgdGwuZnJvbSh0ZXh0c1s0XSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yIH0sICc+Jyk7CiAgdGwuZnJvbSh0ZXh0c1s1XSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yIH0sICc+Jyk7CiAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsICdFZDI1NTE5IGtleXBhaXIgXHUyMDE0IHNlY3JldCBrZXkgc2lnbnMsIHB1YmxpYyBrZXkgdmVyaWZpZXMnXSk7CgogIC8vIFBoYXNlIDM6IERlcml2YXRpb24gbGluZXMgKyBCTEFLRTJiIGJveC9sYWJlbCArIERpc2NvdmVyeSBLZXkgYm94L2xhYmVscyArIGNhcHRpb24KICB0bC5mcm9tKGxpbmVzWzJdLCB7IG9wYWNpdHk6IDAsIGRyYXdTVkc6ICcwJScsIGR1cmF0aW9uOiAwLjQgfSwgJz4nKTsKICB0bC5mcm9tKHJlY3RzWzNdLCB7IG9wYWNpdHk6IDAsIHk6IDEyLCBkdXJhdGlvbjogMC4zIH0sICc+Jyk7CiAgdGwuZnJvbSh0ZXh0c1s2XSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yIH0sICc+Jyk7CiAgdGwuZnJvbShsaW5lc1szXSwgeyBvcGFjaXR5OiAwLCBkcmF3U1ZHOiAnMCUnLCBkdXJhdGlvbjogMC40IH0sICc+Jyk7CiAgdGwuZnJvbShyZWN0c1s0XSwgeyBvcGFjaXR5OiAwLCB5OiAxMiwgZHVyYXRpb246IDAuMyB9LCAnPicpOwogIHRsLmZyb20odGV4dHNbN10sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiB9LCAnPicpOwogIHRsLmZyb20odGV4dHNbOF0sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiB9LCAnPicpOwogIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnRGlzY292ZXJ5IGtleSA9IEJMQUtFMmIocHVibGljS2V5KSBcdTIwMTQgaGlkZXMgdGhlIHJlYWwgaWRlbnRpdHkgb24gdGhlIERIVCddKTsKCiAgLy8gUGhhc2UgNDogTGVmdC1zaWRlIHNpZ25pbmcgYW5ub3RhdGlvbnMgKyBjYXB0aW9uIGNsZWFyCiAgdGwuZnJvbSh0ZXh0c1s5XSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yIH0sICc+Jyk7CiAgdGwuZnJvbSh0ZXh0c1sxMF0sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiB9LCAnPicpOwogIHRsLmZyb20odGV4dHNbMTFdLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjIgfSwgJz4nKTsKICB0bC5mcm9tKHRleHRzWzEyXSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yIH0sICc+Jyk7CiAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsICcnXSwgJz4xJyk7Cn0pKCk7CiAg</div>
+</div>
+
+<!-- /wp:html -->
 
 <p>The tree hash commits to every block in the log. But the tree hash alone doesn&#39;t prove <em>who</em> created the log. For that, Hypercore signs the tree hash with an Ed25519 key.</p>
 <p>The signed message is exactly <strong>112 bytes</strong>:</p>
@@ -228,32 +352,113 @@ graph TD
 <tr><th>Offset</th><th>Size</th><th>Content</th></tr>
 </thead>
 <tbody>
-<tr><td>0</td><td>32 bytes</td><td>**Namespace** — a 32-byte constant specific to Hypercore signatures, derived from the protocol namespace rules</td></tr>
-<tr><td>32</td><td>32 bytes</td><td>**Manifest hash** — identifies the Hypercore's signing and encryption scheme</td></tr>
-<tr><td>64</td><td>32 bytes</td><td>**Tree hash** — the bagged root peaks from above</td></tr>
-<tr><td>96</td><td>8 bytes</td><td>**Length** — the block count as uint64 LE</td></tr>
-<tr><td>104</td><td>8 bytes</td><td>**Fork** — the fork counter as uint64 LE</td></tr>
+<tr><td>0</td><td>32 bytes</td><td><strong>Namespace</strong> — a 32-byte constant specific to Hypercore signatures, derived from the protocol namespace rules</td></tr>
+<tr><td>32</td><td>32 bytes</td><td><strong>Manifest hash</strong> — identifies the Hypercore&#39;s signing scheme (hash function, signer set, quorum, prologue). Block encryption is layered separately and is not covered by this hash.</td></tr>
+<tr><td>64</td><td>32 bytes</td><td><strong>Tree hash</strong> — the bagged root peaks from above</td></tr>
+<tr><td>96</td><td>8 bytes</td><td><strong>Length</strong> — the block count as uint64 LE</td></tr>
+<tr><td>104</td><td>8 bytes</td><td><strong>Fork</strong> — the fork counter as uint64 LE</td></tr>
 </tbody>
 </table></figure>
 
 <pre><code>signature = Ed25519_sign( namespace || manifestHash || treeHash || length || fork, secretKey )</code></pre>
 
 <p>The <strong>namespace</strong> prevents cross-protocol attacks — a signature from a different protocol can&#39;t be replayed as a Hypercore signature. The <strong>manifest hash</strong> binds the signature to a specific Hypercore configuration. The <strong>length</strong> and <strong>fork</strong> counter tie the signature to a specific point in the log&#39;s history.</p>
+<blockquote>
+<p><strong>Note:</strong> The 112-byte layout above is what every new core signs — manifests default to version 1 (a version 2 exists and is picked automatically when a manifest carries linked cores or <code>userData</code>; the signed layout doesn&#39;t change). A shorter legacy layout still exists for <em>compat</em> cores, whose key is the raw Ed25519 public key rather than a manifest hash: they drop the manifest hash and sign an 80-byte buffer (namespace, tree hash, length, fork).</p>
+</blockquote>
+
 <blockquote class="callout-gotcha">
-<p><strong>Gotcha:</strong> The fork counter is critical for truncation safety. If a Hypercore owner truncates the log (removes blocks from the end), the fork counter increments monotonically. Any peer holding pre-truncation data can detect that the log was forked by comparing fork counters. Without this, an attacker could truncate a log, append different data, and re-sign — creating an alternative history that passes verification.</p>
+<p><strong>Gotcha:</strong> The fork counter is critical for truncation safety. If a Hypercore owner truncates the log (removes blocks from the end), the fork counter moves — by default it increments by one. Any peer holding pre-truncation data can detect that the log was forked by comparing fork counters. Without this, an attacker could truncate a log, append different data, and re-sign — creating an alternative history that passes verification.</p>
 </blockquote>
 
 <hr>
 <h2 id="sparse-replication-download-only-what-you-need">Sparse Replication: Download Only What You Need</h2>
 
-<p>This is where the Merkle tree pays off. A peer doesn&#39;t need to download all million blocks to verify block 42. They need:</p>
+<!-- wp:html -->
+<div class="vg-embed" data-vg-snippet="hypercore/sparse-replication">
+  <div class="vg-card">
+          <div class="vg-card-visual">
+            <svg class="vg-svg" viewBox="0 0 420 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <text x="210" y="25" text-anchor="middle" fill="#cdd9e5" font-size="13" font-weight="600" style="font-size:13px;font-weight:600">Sparse Replication</text>
+              <text x="210" y="45" text-anchor="middle" fill="#636e7b" font-size="11" style="font-size:11px">Download only the blocks you need</text>
+  
+              <!-- Full log (top) — Source -->
+              <text x="30" y="80" fill="#636e7b" font-size="10" style="font-size:10px">Source:</text>
+              <rect x="80" y="65" width="32" height="30" rx="3" fill="#00d4ff" fill-opacity="0.15" stroke="#00d4ff" stroke-opacity="0.4"/>
+              <text x="96" y="84" text-anchor="middle" fill="#00d4ff" font-size="10" style="font-size:10px">0</text>
+              <rect x="120" y="65" width="32" height="30" rx="3" fill="#00d4ff" fill-opacity="0.15" stroke="#00d4ff" stroke-opacity="0.4"/>
+              <text x="136" y="84" text-anchor="middle" fill="#00d4ff" font-size="10" style="font-size:10px">1</text>
+              <rect x="160" y="65" width="32" height="30" rx="3" fill="#00d4ff" fill-opacity="0.15" stroke="#00d4ff" stroke-opacity="0.4"/>
+              <text x="176" y="84" text-anchor="middle" fill="#00d4ff" font-size="10" style="font-size:10px">2</text>
+              <rect x="200" y="65" width="32" height="30" rx="3" fill="#00d4ff" fill-opacity="0.15" stroke="#00d4ff" stroke-opacity="0.4"/>
+              <text x="216" y="84" text-anchor="middle" fill="#00d4ff" font-size="10" style="font-size:10px">3</text>
+              <rect x="240" y="65" width="32" height="30" rx="3" fill="#00d4ff" fill-opacity="0.15" stroke="#00d4ff" stroke-opacity="0.4"/>
+              <text x="256" y="84" text-anchor="middle" fill="#00d4ff" font-size="10" style="font-size:10px">4</text>
+              <rect x="280" y="65" width="32" height="30" rx="3" fill="#00d4ff" fill-opacity="0.15" stroke="#00d4ff" stroke-opacity="0.4"/>
+              <text x="296" y="84" text-anchor="middle" fill="#00d4ff" font-size="10" style="font-size:10px">5</text>
+              <rect x="320" y="65" width="32" height="30" rx="3" fill="#00d4ff" fill-opacity="0.15" stroke="#00d4ff" stroke-opacity="0.4"/>
+              <text x="336" y="84" text-anchor="middle" fill="#00d4ff" font-size="10" style="font-size:10px">6</text>
+              <rect x="360" y="65" width="32" height="30" rx="3" fill="#00d4ff" fill-opacity="0.15" stroke="#00d4ff" stroke-opacity="0.4"/>
+              <text x="376" y="84" text-anchor="middle" fill="#00d4ff" font-size="10" style="font-size:10px">7</text>
+  
+              <!-- Sparse log (bottom) — Local: downloaded=[0,2,5,7] -->
+              <text x="30" y="150" fill="#636e7b" font-size="10" style="font-size:10px">Local:</text>
+              <!-- idx 0 — downloaded -->
+              <rect x="80" y="135" width="32" height="30" rx="3" fill="rgba(0,255,136,0.15)" stroke="#00ff88" stroke-opacity="0.6"/>
+              <text x="96" y="154" text-anchor="middle" fill="#00ff88" font-size="10" style="font-size:10px">0</text>
+              <!-- idx 1 — missing -->
+              <rect x="120" y="135" width="32" height="30" rx="3" fill="transparent" stroke="#2a3a55" stroke-opacity="0.4" stroke-dasharray="4 3"/>
+              <text x="136" y="154" text-anchor="middle" fill="#2a3a55" font-size="10" style="font-size:10px">·</text>
+              <!-- idx 2 — downloaded -->
+              <rect x="160" y="135" width="32" height="30" rx="3" fill="rgba(0,255,136,0.15)" stroke="#00ff88" stroke-opacity="0.6"/>
+              <text x="176" y="154" text-anchor="middle" fill="#00ff88" font-size="10" style="font-size:10px">2</text>
+              <!-- idx 3 — missing -->
+              <rect x="200" y="135" width="32" height="30" rx="3" fill="transparent" stroke="#2a3a55" stroke-opacity="0.4" stroke-dasharray="4 3"/>
+              <text x="216" y="154" text-anchor="middle" fill="#2a3a55" font-size="10" style="font-size:10px">·</text>
+              <!-- idx 4 — missing -->
+              <rect x="240" y="135" width="32" height="30" rx="3" fill="transparent" stroke="#2a3a55" stroke-opacity="0.4" stroke-dasharray="4 3"/>
+              <text x="256" y="154" text-anchor="middle" fill="#2a3a55" font-size="10" style="font-size:10px">·</text>
+              <!-- idx 5 — downloaded -->
+              <rect x="280" y="135" width="32" height="30" rx="3" fill="rgba(0,255,136,0.15)" stroke="#00ff88" stroke-opacity="0.6"/>
+              <text x="296" y="154" text-anchor="middle" fill="#00ff88" font-size="10" style="font-size:10px">5</text>
+              <!-- idx 6 — missing -->
+              <rect x="320" y="135" width="32" height="30" rx="3" fill="transparent" stroke="#2a3a55" stroke-opacity="0.4" stroke-dasharray="4 3"/>
+              <text x="336" y="154" text-anchor="middle" fill="#2a3a55" font-size="10" style="font-size:10px">·</text>
+              <!-- idx 7 — downloaded -->
+              <rect x="360" y="135" width="32" height="30" rx="3" fill="rgba(0,255,136,0.15)" stroke="#00ff88" stroke-opacity="0.6"/>
+              <text x="376" y="154" text-anchor="middle" fill="#00ff88" font-size="10" style="font-size:10px">7</text>
+  
+              <!-- Download arrows for downloaded blocks: 0, 2, 5, 7 -->
+              <line x1="96"  y1="95" x2="96"  y2="132" stroke="#00ff88" stroke-opacity="0.3" stroke-width="1" stroke-dasharray="3 3"/>
+              <line x1="176" y1="95" x2="176" y2="132" stroke="#00ff88" stroke-opacity="0.3" stroke-width="1" stroke-dasharray="3 3"/>
+              <line x1="296" y1="95" x2="296" y2="132" stroke="#00ff88" stroke-opacity="0.3" stroke-width="1" stroke-dasharray="3 3"/>
+              <line x1="376" y1="95" x2="376" y2="132" stroke="#00ff88" stroke-opacity="0.3" stroke-width="1" stroke-dasharray="3 3"/>
+  
+              <text x="210" y="190" text-anchor="middle" fill="#00ff88" font-size="10" style="font-size:10px">4 of 8 blocks downloaded — still fully verifiable</text>
+            </svg>
+          </div>
+          <div class="vg-card-body">
+            <div class="vg-card-title">Sparse Download</div>
+            <div class="vg-card-text">Thanks to the Merkle tree, peers can download any subset of blocks and verify each one independently. No need to download the entire log first.</div>
+          </div>
+        </div>
+  <div data-vg-anim="vg-p-6" style="display:none">CiAgKGZ1bmN0aW9uKCkgewogIGlmICghd2luZG93LnZnUnVudGltZSkgcmV0dXJuOwogIHZhciB3cmFwID0gZG9jdW1lbnQucXVlcnlTZWxlY3RvcignW2RhdGEtdmctc25pcHBldD0iaHlwZXJjb3JlL3NwYXJzZS1yZXBsaWNhdGlvbiJdJyk7CiAgaWYgKCF3cmFwKSByZXR1cm47CiAgdmFyIGNhcmQgPSB3cmFwLnF1ZXJ5U2VsZWN0b3IoJy52Zy1jYXJkJyk7CiAgdmFyIHN2ZyA9IGNhcmQucXVlcnlTZWxlY3RvcignLnZnLXN2ZycpOwogIGlmICghc3ZnKSB7IGlmICh0eXBlb2YgZ3NhcCAhPT0gJ3VuZGVmaW5lZCcpIGdzYXAuc2V0KGNhcmQsIHsgb3BhY2l0eTogMSwgeTogMCB9KTsgcmV0dXJuOyB9CiAgdmFyIHRsID0gdmdSdW50aW1lLmNhcmRUTChjYXJkKTsKICAgIHZhciBhbGxSZWN0cyA9IHN2Zy5xdWVyeVNlbGVjdG9yQWxsKCdyZWN0Jyk7CiAgICB2YXIgYWxsVGV4dHMgPSBzdmcucXVlcnlTZWxlY3RvckFsbCgndGV4dCcpOwogICAgdmFyIGFsbExpbmVzID0gc3ZnLnF1ZXJ5U2VsZWN0b3JBbGwoJ2xpbmUnKTsKICAgIHZhciBzb3VyY2VSZWN0cyA9IEFycmF5LnByb3RvdHlwZS5zbGljZS5jYWxsKGFsbFJlY3RzLCAwLCA4KTsKICAgIHZhciBsb2NhbFJlY3RzID0gQXJyYXkucHJvdG90eXBlLnNsaWNlLmNhbGwoYWxsUmVjdHMsIDgsIDE2KTsKICAgIC8vIFBoYXNlIDE6IFRpdGxlICsgc3VidGl0bGUgKyAiU291cmNlOiIgbGFiZWwgKyBzb3VyY2UgcmVjdHMgd2l0aCBudW1iZXIgbGFiZWxzCiAgICBnc2FwLnNldChhbGxUZXh0cywgeyBvcGFjaXR5OiAwIH0pOwogICAgZ3NhcC5zZXQoYWxsUmVjdHMsIHsgb3BhY2l0eTogMCB9KTsKICAgIGdzYXAuc2V0KGFsbExpbmVzLCB7IG9wYWNpdHk6IDAgfSk7CiAgICB0bC50byhbYWxsVGV4dHNbMF0sIGFsbFRleHRzWzFdXSwgeyBvcGFjaXR5OiAxLCBkdXJhdGlvbjogMC4zLCBzdGFnZ2VyOiAwLjA4IH0sIDAuMyk7CiAgICB0bC50byhhbGxUZXh0c1syXSwgeyBvcGFjaXR5OiAxLCBkdXJhdGlvbjogMC4yIH0sICc+Jyk7CiAgICB0bC5mcm9tKHNvdXJjZVJlY3RzLCB7IHk6IC04LCBkdXJhdGlvbjogMC4yLCBzdGFnZ2VyOiAwLjA0IH0sICc+Jyk7CiAgICB0bC50byhzb3VyY2VSZWN0cywgeyBvcGFjaXR5OiAxLCBkdXJhdGlvbjogMC4yLCBzdGFnZ2VyOiAwLjA0IH0sICc8Jyk7CiAgICB0bC50byhbYWxsVGV4dHNbM10sIGFsbFRleHRzWzRdLCBhbGxUZXh0c1s1XSwgYWxsVGV4dHNbNl0sIGFsbFRleHRzWzddLCBhbGxUZXh0c1s4XSwgYWxsVGV4dHNbOV0sIGFsbFRleHRzWzEwXV0sIHsgb3BhY2l0eTogMSwgZHVyYXRpb246IDAuMiwgc3RhZ2dlcjogMC4wNCB9LCAnPCcpOwogICAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsICdTb3VyY2UgcGVlciBoYXMgYWxsIDggYmxvY2tzJ10pOwogICAgLy8gUGhhc2UgMjogRG93bmxvYWQgYXJyb3dzCiAgICB0bC50byhhbGxMaW5lcywgeyBvcGFjaXR5OiAxLCBkdXJhdGlvbjogMC4wMSB9LCAnPjAuMScpOwogICAgdmdSdW50aW1lLmRyYXdMaW5lcyh0bCwgc3ZnLCAnbGluZScsIHsgZHVyOiAwLjM1LCBzdGFnZ2VyOiAwLjA4LCBhdDogJzwnIH0pOwogICAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsICdPbmx5IGJsb2NrcyAwLCAyLCA1LCA3IGRvd25sb2FkZWQgXHUyMDE0IGVhY2ggaW5kZXBlbmRlbnRseSB2ZXJpZmlhYmxlJ10pOwogICAgLy8gUGhhc2UgMzogIkxvY2FsOiIgbGFiZWwgKyBsb2NhbCByZWN0cyB3aXRoIHRoZWlyIGxhYmVscwogICAgdGwudG8oYWxsVGV4dHNbMTFdLCB7IG9wYWNpdHk6IDEsIGR1cmF0aW9uOiAwLjIgfSwgJz4nKTsKICAgIHRsLmZyb20obG9jYWxSZWN0cywgeyB5OiA4LCBkdXJhdGlvbjogMC4yLCBzdGFnZ2VyOiAwLjA0IH0sICc+Jyk7CiAgICB0bC50byhsb2NhbFJlY3RzLCB7IG9wYWNpdHk6IDEsIGR1cmF0aW9uOiAwLjIsIHN0YWdnZXI6IDAuMDQgfSwgJzwnKTsKICAgIHRsLnRvKFthbGxUZXh0c1sxMl0sIGFsbFRleHRzWzEzXSwgYWxsVGV4dHNbMTRdLCBhbGxUZXh0c1sxNV0sIGFsbFRleHRzWzE2XSwgYWxsVGV4dHNbMTddLCBhbGxUZXh0c1sxOF0sIGFsbFRleHRzWzE5XV0sIHsgb3BhY2l0eTogMSwgZHVyYXRpb246IDAuMiwgc3RhZ2dlcjogMC4wNCB9LCAnPCcpOwogICAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsICc0IG9mIDggYmxvY2tzIFx1MjAxNCBzcGFyc2UgYnV0IGZ1bGx5IHZlcmlmaWVkIHZpYSBNZXJrbGUgcHJvb2ZzJ10pOwogICAgLy8gUGhhc2UgNDogRm9vdGVyIHRleHQgKyBjYXB0aW9uIGNsZWFyCiAgICB0bC50byhhbGxUZXh0c1syMF0sIHsgb3BhY2l0eTogMSwgZHVyYXRpb246IDAuMyB9LCAnPicpOwogICAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsICcnXSwgJz4xJyk7Cn0pKCk7CiAg</div>
+</div>
+
+<!-- /wp:html -->
+
+<p>This is where the Merkle tree pays off. A peer doesn&#39;t need to download all million blocks to verify block 42. What ships on the wire depends on whether the receiver is also extending its verified length.</p>
+<p><strong>Every block proof carries:</strong></p>
 <ol>
-<li><strong>Block 42&#39;s data</strong> (to compute the leaf hash)</li>
-<li><strong>The uncle hashes</strong> — one sibling hash at each level from the leaf up to a root peak</li>
-<li><strong>The root peaks</strong> (if not already known)</li>
-<li><strong>The Ed25519 signature</strong> over the bagged root hash</li>
+<li><strong>Block 42&#39;s data</strong> (<code>block.value</code> — to compute the leaf hash)</li>
+<li><strong>The sibling hashes</strong> along the path from the leaf to a sub-root the receiver already trusts (<code>block.nodes</code>)</li>
 </ol>
-<p>The verification walks upward from the leaf:</p>
+<p><strong>Upgrade proofs additionally carry</strong> (only when the receiver is extending its verified length):</p>
+<ol start="3">
+<li><strong>The new root peaks</strong> the receiver doesn&#39;t yet have, plus any siblings needed to re-bag existing peaks (<code>upgrade.nodes</code>). If the responder&#39;s signed length runs past the range the receiver asked for, the extra peaks up to that signed length ride along in <code>upgrade.additionalNodes</code> — the signature covers the responder&#39;s full length, so the receiver needs them to check it.</li>
+<li><strong>The signature</strong> over the 112-byte signable that embeds the new bagged tree hash (<code>upgrade.signature</code> — a 68-byte envelope around the 64-byte Ed25519 signature, because a manifest can name more than one signer)</li>
+</ol>
+<p>Steady-state sparse replication (block within already-verified length) skips items 3 and 4 entirely — the receiver already has a trusted sub-root and verifies <code>block.nodes</code> against it. The verification walks upward from the leaf:</p>
 
 <div class="mermaid-container"><pre class="mermaid">
 graph BT
@@ -287,7 +492,7 @@ graph BT
 <tbody>
 <tr><td>0–7</td><td>8</td><td>3</td></tr>
 <tr><td>8–11</td><td>4</td><td>2</td></tr>
-<tr><td>12</td><td>1</td><td>0 (it *is* the root)</td></tr>
+<tr><td>12</td><td>1</td><td>0 (it <em>is</em> the root)</td></tr>
 </tbody>
 </table></figure>
 
@@ -303,11 +508,11 @@ graph BT
 <p>When a Hypercore is truncated:</p>
 <ol>
 <li>The blocks beyond the new length are removed</li>
-<li>The <strong>fork counter increments</strong> monotonically (0 → 1 → 2 → ...)</li>
+<li>The <strong>fork counter</strong> defaults to incrementing by one on each truncate (0 → 1 → 2 → ...). Callers can override it via <code>truncate(length, { fork })</code> — nothing enforces that the new value is higher, or even different.</li>
 <li>The fork counter is included in the signed message (the 8 bytes at offset 104)</li>
 <li>New data can be appended after the truncation point</li>
 </ol>
-<p>Any peer holding pre-truncation data can detect the fork by comparing the fork counter in the signature. If the counter doesn&#39;t match what they expect, they know the log&#39;s history was rewritten from that point forward.</p>
+<p>Any peer holding pre-truncation data can detect the fork by comparing the fork counter the writer announces in <code>sync</code>. That announcement is an unsigned wire field, so anyone can <em>claim</em> any fork — but a claim is only worth acting on once a proof backs it, and the signature covers the fork, so a bogus announcement can never be proved. If the counter doesn&#39;t match what they expect, they know the log&#39;s history was rewritten from that point forward.</p>
 <div class="code-filename">fork-detection.js</div>
 <pre><code class="language-js">const core = store.get({ key: remoteKey })
 await core.ready()
@@ -321,7 +526,7 @@ core.on('truncate', (ancestors, forkId) =&gt; {
 })</code></pre>
 
 <blockquote class="callout-gotcha">
-<p><strong>Gotcha:</strong> Fork detection is about <em>detecting</em> history rewriting, not preventing it. The Hypercore owner holds the Ed25519 secret key and can always truncate and re-sign. The protection is for <em>peers</em>: they can detect that the log they cached is no longer consistent with the current signed state. Applications must decide how to handle forks — ignore them, alert the user, or reject the peer.</p>
+<p><strong>Gotcha:</strong> Fork detection is about <em>detecting</em> history rewriting, not preventing it. The Hypercore owner holds the Ed25519 secret key and can always truncate and re-sign. The protection is for <em>peers</em>: they can detect that the log they cached is no longer consistent with the current signed state. By default a reading core follows the writer onto the new fork automatically — it fetches a fork proof, truncates its own copy back to the shared ancestors, and emits <code>&#39;truncate&#39;</code>; pass <code>allowFork: false</code> to stay on the old history instead. Either way, the application must react: invalidate anything derived from the discarded blocks, alert the user, or both.</p>
 </blockquote>
 
 <hr>
@@ -334,42 +539,43 @@ core.on('truncate', (ancestors, forkId) =&gt; {
 <tr><th>Index</th><th>Message</th><th>Purpose</th></tr>
 </thead>
 <tbody>
-<tr><td>0</td><td>`sync`</td><td>Announce local length and fork ID</td></tr>
-<tr><td>1</td><td>`request`</td><td>Ask for a specific block (with proof)</td></tr>
-<tr><td>2</td><td>`cancel`</td><td>Cancel a pending request</td></tr>
-<tr><td>3</td><td>`data`</td><td>Respond with block data + Merkle proof</td></tr>
-<tr><td>4</td><td>`noData`</td><td>Indicate requested data is unavailable</td></tr>
-<tr><td>5</td><td>`want`</td><td>Express interest in a block range</td></tr>
-<tr><td>6</td><td>`unwant`</td><td>Cancel interest in a range</td></tr>
-<tr><td>7</td><td>`bitfield`</td><td>Full bitfield of locally available blocks</td></tr>
-<tr><td>8</td><td>`range`</td><td>Download a contiguous range</td></tr>
-<tr><td>9</td><td>`extension`</td><td>Custom application-defined messages</td></tr>
+<tr><td>0</td><td><code>sync</code></td><td>Announce local state: <code>fork</code>, <code>length</code>, <code>remoteLength</code>, and replication flags (<code>canUpgrade</code>, <code>uploading</code>, <code>downloading</code>, <code>hasManifest</code>, <code>allowPush</code>)</td></tr>
+<tr><td>1</td><td><code>request</code></td><td>Ask for a specific block (with proof)</td></tr>
+<tr><td>2</td><td><code>cancel</code></td><td>Cancel a pending request</td></tr>
+<tr><td>3</td><td><code>data</code></td><td>Respond with block data + Merkle proof</td></tr>
+<tr><td>4</td><td><code>noData</code></td><td>Indicate requested data is unavailable</td></tr>
+<tr><td>5</td><td><code>want</code></td><td>Express interest in a block range</td></tr>
+<tr><td>6</td><td><code>unwant</code></td><td>Cancel interest in a range</td></tr>
+<tr><td>7</td><td><code>bitfield</code></td><td>Bitfield segment of available blocks (from a given offset)</td></tr>
+<tr><td>8</td><td><code>range</code></td><td>Announce availability (or removal) of a contiguous block range</td></tr>
+<tr><td>9</td><td><code>extension</code></td><td>Custom application-defined messages</td></tr>
 </tbody>
 </table></figure>
 
 <p>A typical replication exchange:</p>
 <ol>
-<li>Both peers send <code>sync</code> — announcing their length and fork ID</li>
-<li>Peers exchange <code>bitfield</code> or <code>want</code>/<code>unwant</code> to communicate which blocks they have and need</li>
+<li>Both peers send <code>sync</code> — announcing their length, fork ID, the length they last saw from the peer, and replication flags</li>
+<li>Peers exchange <code>bitfield</code> segments and <code>range</code> announcements to communicate which blocks they have; <code>want</code>/<code>unwant</code> to express interest</li>
 <li>One peer sends <code>request</code> for specific blocks</li>
 <li>The other responds with <code>data</code> — containing the block value <em>and</em> the Merkle proof (uncle hashes)</li>
 <li>The requester verifies the proof locally before accepting the block</li>
 </ol>
 <p>The discovery key (a hash of the Hypercore&#39;s public key) is used for the channel id instead of the public key itself. This prevents a network observer from learning <em>which</em> Hypercore is being replicated — they see the discovery key, but can&#39;t reverse it to the public key without already knowing it.</p>
 <blockquote class="callout-term">
-<p><strong>Terminology:</strong> The <strong>discovery key</strong> is <code>BLAKE2b-256(key=publicKey, data=&quot;hypercore&quot;)</code> — a keyed BLAKE2b hash where the Hypercore&#39;s public key is the hash key parameter (libsodium&#39;s <code>crypto_generichash</code> key argument) and the string <code>&quot;hypercore&quot;</code> is the data being hashed. It&#39;s a one-way derivation: knowing the discovery key doesn&#39;t reveal the public key (which allows verification and replication). Peers use the discovery key to find each other via the DHT, but only peers who already know the public key can actually verify and replicate the data. This separates <em>findability</em> from <em>access</em>.</p>
+<p><strong>Terminology:</strong> The <strong>discovery key</strong> is <code>BLAKE2b-256(data=&quot;hypercore&quot;, key=publicKey)</code> — a keyed BLAKE2b hash where the Hypercore&#39;s public key is the hash key parameter (libsodium&#39;s <code>crypto_generichash</code> key argument) and the string <code>&quot;hypercore&quot;</code> is the data being hashed. It&#39;s a one-way derivation: knowing the discovery key doesn&#39;t reveal the public key (which allows verification and replication). Peers use the discovery key to find each other via the DHT, but only peers who already know the public key can actually verify and replicate the data. This separates <em>findability</em> from <em>access</em>.</p>
 </blockquote>
 
 <hr>
 <h2 id="in-practice-creating-and-verifying-a-hypercore">In Practice: Creating and Verifying a Hypercore</h2>
 
 <div class="code-filename">hypercore-demo.js</div>
-<pre><code class="language-js">const Hypercore = require('hypercore')
-const Corestore = require('corestore')
+<pre><code class="language-js">const Corestore = require('corestore')
 
 const store = new Corestore('./my-storage')
 
-// Create a new Hypercore (generates Ed25519 keypair)
+// Open Hypercore &quot;my-log&quot; — keypair is deterministically derived
+// from the corestore's primaryKey + namespace + name (same name → same core,
+// even after process restart or on another machine with the same primaryKey)
 const core = store.get({ name: 'my-log' })
 await core.ready()
 
@@ -397,7 +603,7 @@ console.log('Block 1:', block.toString())  // &quot;World&quot;
 <ol>
 <li>Checks if block 1 is in local storage</li>
 <li>If not, requests it from connected peers (with Merkle proof)</li>
-<li>Verifies: leaf hash → uncle path → root peak → bagged tree hash → Ed25519 signature</li>
+<li>Verifies: leaf hash → uncle path → a root peak it already trusts (and, when the proof also extends its verified length, → bagged tree hash → Ed25519 signature)</li>
 <li>Stores the verified block locally</li>
 <li>Returns the data</li>
 </ol>
@@ -412,13 +618,13 @@ console.log('Block 1:', block.toString())  // &quot;World&quot;
 <tbody>
 <tr><td>Every block independently verifiable</td><td>Storage overhead for Merkle tree nodes (one hash per block + internal nodes)</td></tr>
 <tr><td>Sparse replication (download only what you need)</td><td>Hypercore stores tree nodes locally to generate proofs for peers</td></tr>
-<tr><td>Immutable history — verified once, trusted forever</td><td>Can't edit or delete without truncation + fork</td></tr>
+<tr><td>Immutable history — verified once, trusted forever</td><td>Can&#39;t edit or delete without truncation + fork</td></tr>
 <tr><td>Single-writer simplicity (one keypair = one log)</td><td>Multi-writer requires a layer on top (Autobase, Part 6)</td></tr>
-<tr><td>Replication is just "compare lengths, send difference"</td><td>First sync includes the full Merkle proof chain, not just raw data</td></tr>
+<tr><td>Replication is just &quot;compare lengths, pull the difference&quot;</td><td>A block arrives with whatever Merkle nodes you are still missing — sometimes none — and the signature that vouches for it came earlier, on the length advance</td></tr>
 </tbody>
 </table></figure>
 
-<p>The storage overhead is modest. Each node is a 32-byte hash plus an 8-byte size — 40 bytes. For a log with N blocks, the tree contains roughly 2N total nodes (N leaves + up to N−1 internal nodes). So the tree metadata roughly doubles relative to the leaf hashes, but for most applications, the data blocks themselves dominate.</p>
+<p>The storage overhead is modest. Each node is stored as one RocksDB row: the key carries the node index, and the value carries the index again, the byte-size of the subtree below it (both compact-encoding uints, 1–9 bytes each) and the 32-byte hash — 34–50 bytes of value plus a 4–12-byte key. For a log with N blocks, the tree contains roughly 2N total nodes (N leaves + up to N−1 internal nodes). So the tree metadata roughly doubles relative to the leaf hashes, but for most applications, the data blocks themselves dominate.</p>
 <hr>
 <h2 id="key-takeaways">Key Takeaways</h2>
 
@@ -433,14 +639,27 @@ console.log('Block 1:', block.toString())  // &quot;World&quot;
 </li>
 <li><p><strong>Sparse proofs are small.</strong> Verifying one block requires at most <code>floor(log₂(N))</code> uncle hashes — a few hundred bytes regardless of log size. This is what makes partial replication practical.</p>
 </li>
-<li><p><strong>Fork IDs protect against history rewriting.</strong> Truncation increments a monotonic fork counter embedded in the signature. Peers can detect when a log&#39;s history has changed.</p>
+<li><p><strong>Fork IDs protect against history rewriting.</strong> Truncation bumps a fork counter embedded in the signed message. Peers can detect when a log&#39;s history has changed.</p>
 </li>
 </ul>
+<hr>
+<h2 id="frequently-asked-questions">Frequently Asked Questions</h2>
+
+<h3 id="what-is-a-merkle-tree">What is a Merkle tree?</h3>
+
+<p>A Merkle tree is a hash-based data structure where every leaf is hashed, and pairs of hashes are combined up to a single root hash. This allows efficient verification of any individual piece of data by checking only the hash path from that piece to the root, rather than re-hashing the entire dataset.</p>
+<h3 id="how-does-sparse-replication-work">How does sparse replication work?</h3>
+
+<p>Sparse replication lets a peer download individual blocks from a dataset without downloading the whole thing. Each block comes with a Merkle proof (a handful of uncle hashes) that chains up to a signed root. The verifier checks the proof locally, confirming the block is authentic without needing any other blocks.</p>
+<h3 id="what-is-an-append-only-log">What is an append-only log?</h3>
+
+<p>An append-only log is a data structure where entries can only be added at the end, never modified or deleted. This immutability makes verification permanent, replication simple (compare lengths and pull the difference), and auditability free. Hypercore uses this as the foundation for all higher-level data structures.</p>
 <hr>
 <h2 id="what-s-next">What's Next</h2>
 
 <p>We have a verified, append-only log. But a log is just a sequence of blocks — you can append and read by index, and that&#39;s it. Most applications need richer access patterns: sorted key-value lookups, file systems, range queries.</p>
 <p>In <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4</a>, we&#39;ll see how Hyperbee maps a B-tree onto Hypercore&#39;s sequential blocks to create a sparse-friendly sorted key-value store, and how Hyperdrive combines a Hyperbee (metadata) with Hyperblobs (content) to build a distributed file system. We&#39;ll also look at Corestore — the component that manages multiple Hypercores with deterministic key derivation from a single master seed.</p>
+<p>[heartit_lab title="p2p-append-only" cmd="npx @heart-it/p2p-append-only" desc="Watch the Merkle root move with every append — then rewrite history and see the fork id call you out." repo="https://github.com/heart-IT/p2p-from-scratch-labs" note="needs Node.js 18+ · runs entirely on your machine"]</p>
 <hr>
 <h2 id="references-further-reading">References & Further Reading</h2>
 
@@ -458,33 +677,23 @@ console.log('Block 1:', block.toString())  // &quot;World&quot;
 <hr>
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <strong>Part 3: Append-Only Truth (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
+<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: NAT Hole Punching Explained</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: P2P Encryption with the Noise Protocol</a> | <strong>Part 3: Merkle Trees and Append-Only Logs (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: Building P2P Databases with Hyperbee and Hyperdrive</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Peer Discovery with Kademlia DHT</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Multi-Writer Consensus with Autobase</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: P2P Security — Threats, Defenses, and Trust</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Offline-First UX for P2P Applications</a></p>
 </blockquote>
 
 
 <!-- Mermaid.js — renders <pre class="mermaid"> blocks -->
-<script type="module">
-import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-mermaid.initialize({
-  startOnLoad: true,
-  theme: 'dark',
-  themeVariables: {
-    primaryColor: '#2d333b',
-    primaryTextColor: '#8b949e',
-    primaryBorderColor: '#373e47',
-    lineColor: '#539bf5',
-    secondaryColor: '#22272e',
-    tertiaryColor: '#1b1f24',
-    noteBkgColor: '#2d333b',
-    noteTextColor: '#8b949e',
-    noteBorderColor: '#986ee2',
-    actorBkg: '#2d333b',
-    actorBorder: '#373e47',
-    actorTextColor: '#cdd9e5',
-    actorLineColor: '#373e47',
-    signalColor: '#539bf5',
-    signalTextColor: '#8b949e',
-    sequenceNumberColor: '#1b1f24'
-  }
-});
-</script>
+<div data-vg-mod="vg-p-10" style="display:none">CmltcG9ydCBtZXJtYWlkIGZyb20gJ2h0dHBzOi8vY2RuLmpzZGVsaXZyLm5ldC9ucG0vbWVybWFpZEAxMS4xNC4wL2Rpc3QvbWVybWFpZC5lc20ubWluLm1qcyc7Cm1lcm1haWQuaW5pdGlhbGl6ZSh7CiAgc3RhcnRPbkxvYWQ6IHRydWUsCiAgdGhlbWU6ICdkYXJrJywKICB0aGVtZVZhcmlhYmxlczogewogICAgcHJpbWFyeUNvbG9yOiAnIzJkMzMzYicsCiAgICBwcmltYXJ5VGV4dENvbG9yOiAnIzhiOTQ5ZScsCiAgICBwcmltYXJ5Qm9yZGVyQ29sb3I6ICcjMzczZTQ3JywKICAgIGxpbmVDb2xvcjogJyM1MzliZjUnLAogICAgc2Vjb25kYXJ5Q29sb3I6ICcjMjIyNzJlJywKICAgIHRlcnRpYXJ5Q29sb3I6ICcjMWIxZjI0JywKICAgIG5vdGVCa2dDb2xvcjogJyMyZDMzM2InLAogICAgbm90ZVRleHRDb2xvcjogJyM4Yjk0OWUnLAogICAgbm90ZUJvcmRlckNvbG9yOiAnIzk4NmVlMicsCiAgICBhY3RvckJrZzogJyMyZDMzM2InLAogICAgYWN0b3JCb3JkZXI6ICcjMzczZTQ3JywKICAgIGFjdG9yVGV4dENvbG9yOiAnI2NkZDllNScsCiAgICBhY3RvckxpbmVDb2xvcjogJyMzNzNlNDcnLAogICAgc2lnbmFsQ29sb3I6ICcjNTM5YmY1JywKICAgIHNpZ25hbFRleHRDb2xvcjogJyM4Yjk0OWUnLAogICAgc2VxdWVuY2VOdW1iZXJDb2xvcjogJyMxYjFmMjQnCiAgfQp9KTsK</div>
+
+<!-- wp:html -->
+<!-- Visual Guide Dependencies -->
+<div data-vg-css="vg-p-0" style="display:none">Ci8qIFZpc3VhbCBHdWlkZSBFbWJlZCBTdHlsZXMg4oCUIGV4dHJhY3RlZCBmcm9tIHZpc3VhbC1ndWlkZS5odG1sICovCgovKiDilIDilIAgU2NvcGVkIGJveC1zaXppbmcgKGF2b2lkcyBicmVha2luZyBXb3JkUHJlc3MgZ2xvYmFscykg4pSA4pSAICovCi52Zy1lbWJlZCwgLnZnLWVtYmVkICosIC52Zy1lbWJlZCAqOjpiZWZvcmUsIC52Zy1lbWJlZCAqOjphZnRlciB7CiAgYm94LXNpemluZzogYm9yZGVyLWJveDsKfQoKLyog4pSA4pSAIEJhc2UgZGVzaWduIHRva2VucyAoZnJvbSBoZWFydGl0LWJsb2cuY3NzKSDilIDilIAgKi8KOnJvb3QgewogIC0tYmctY29kZTogIzE2MWExZjsKICAtLXRleHQtcHJpbWFyeTogI2NkZDllNTsKICAtLXRleHQtc2Vjb25kYXJ5OiAjOGI5NDllOwogIC0tdGV4dC1tdXRlZDogIzYzNmU3YjsKICAtLWZvbnQtc2FuczogJ1NwYWNlIEdyb3Rlc2snLCAnSW50ZXInLCAtYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsICdTZWdvZSBVSScsIHN5c3RlbS11aSwgc2Fucy1zZXJpZjsKICAtLWZvbnQtYm9keTogJ0ludGVyJywgLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCAnU2Vnb2UgVUknLCBzeXN0ZW0tdWksIHNhbnMtc2VyaWY7CiAgLS1mb250LW1vbm86ICdKZXRCcmFpbnMgTW9ubycsICdGaXJhIENvZGUnLCAnU0YgTW9ubycsICdDYXNjYWRpYSBDb2RlJywgJ0NvbnNvbGFzJywgbW9ub3NwYWNlOwogIC0tc3BhY2UtMTogNHB4OwogIC0tc3BhY2UtMjogOHB4OwogIC0tc3BhY2UtMzogMTJweDsKICAtLXNwYWNlLTQ6IDE2cHg7CiAgLS1zcGFjZS01OiAyNHB4OwogIC0tc3BhY2UtNjogMzJweDsKICAtLXNwYWNlLTc6IDQ4cHg7CiAgLS1zcGFjZS04OiA2NHB4OwogIC0tc3BhY2UtOTogOTZweDsKCiAgLyogVmlzdWFsIGd1aWRlIHRva2VucyAqLwogIC0tdmctY3lhbjogIzAwZDRmZjsKICAtLXZnLWN5YW4tZGltOiByZ2JhKDAsIDIxMiwgMjU1LCAwLjE1KTsKICAtLXZnLW1hZ2VudGE6ICNmZjAwY2M7CiAgLS12Zy1tYWdlbnRhLWRpbTogcmdiYSgyNTUsIDAsIDIwNCwgMC4xMik7CiAgLS12Zy1ncmVlbjogIzAwZmY4ODsKICAtLXZnLWdyZWVuLWRpbTogcmdiYSgwLCAyNTUsIDEzNiwgMC4xMik7CiAgLS12Zy1hbWJlcjogI2Y1YTYyMzsKICAtLXZnLWFtYmVyLWRpbTogcmdiYSgyNDUsIDE2NiwgMzUsIDAuMTIpOwogIC0tdmctcHVycGxlOiAjYTg1NWY3OwogIC0tdmctcHVycGxlLWRpbTogcmdiYSgxNjgsIDg1LCAyNDcsIDAuMTIpOwogIC0tdmctcmVkOiAjZmY2YjZiOwogIC0tdmctcmVkLWRpbTogcmdiYSgyNTUsIDEwNywgMTA3LCAwLjEyKTsKICAtLXZnLWJnOiAjMDUwODEwOwogIC0tdmctYmctY2FyZDogIzBhMGYxYTsKICAtLXZnLWJnLWNhcmQtaG92ZXI6ICMwZjE1MjU7CiAgLS12Zy1ib3JkZXI6ICMxYTIwMzU7CiAgLS12Zy1ib3JkZXItZ2xvdzogcmdiYSgwLCAyMTIsIDI1NSwgMC4yKTsKICAtLXZnLW1heC13OiAxMTAwcHg7CiAgLS12Zy1uYXYtaDogNTJweDsKfQoKCi8qIOKUgOKUgCBDYXJkcyDilIDilIAgKi8KLnZnLWRpYWdyYW0tZ3JpZCB7IGRpc3BsYXk6IGdyaWQ7IGdyaWQtdGVtcGxhdGUtY29sdW1uczogMWZyOyBnYXA6IDI0cHg7IH0KLnZnLWNhcmQgewogIGJhY2tncm91bmQ6IHZhcigtLXZnLWJnLWNhcmQpOyBib3JkZXI6IDFweCBzb2xpZCB2YXIoLS12Zy1ib3JkZXIpOwogIGJvcmRlci1yYWRpdXM6IDhweDsgb3ZlcmZsb3c6IGhpZGRlbjsKICB0cmFuc2l0aW9uOiBib3JkZXItY29sb3IgMC4zcywgYm94LXNoYWRvdyAwLjNzOwogIG9wYWNpdHk6IDA7IHRyYW5zZm9ybTogdHJhbnNsYXRlWSgyNHB4KTsgd2lsbC1jaGFuZ2U6IG9wYWNpdHksIHRyYW5zZm9ybTsKfQoudmctY2FyZDpob3ZlciB7IGJvcmRlci1jb2xvcjogdmFyKC0tdmctYm9yZGVyLWdsb3cpOyBib3gtc2hhZG93OiAwIDAgMzBweCByZ2JhKDAsMjEyLDI1NSwwLjA2KTsgfQoudmctY2FyZC12aXN1YWwgewogIHBhZGRpbmc6IDMycHggMjRweDsgZGlzcGxheTogZmxleDsgYWxpZ24taXRlbXM6IGNlbnRlcjsganVzdGlmeS1jb250ZW50OiBjZW50ZXI7CiAgbWluLWhlaWdodDogMjYwcHg7IHBvc2l0aW9uOiByZWxhdGl2ZTsgb3ZlcmZsb3c6IGhpZGRlbjsKfQoudmctY2FyZC1ib2R5IHsgcGFkZGluZzogMjBweCAyNHB4IDI0cHg7IGJvcmRlci10b3A6IDFweCBzb2xpZCB2YXIoLS12Zy1ib3JkZXIpOyB9Ci52Zy1jYXJkLXRpdGxlIHsgZm9udC1mYW1pbHk6IHZhcigtLWZvbnQtc2Fucyk7IGZvbnQtc2l6ZTogMTZweDsgZm9udC13ZWlnaHQ6IDYwMDsgY29sb3I6IHZhcigtLXRleHQtcHJpbWFyeSk7IG1hcmdpbi1ib3R0b206IDZweDsgfQoudmctY2FyZC10ZXh0IHsgZm9udC1mYW1pbHk6IHZhcigtLWZvbnQtYm9keSk7IGZvbnQtc2l6ZTogMTRweDsgY29sb3I6IHZhcigtLXRleHQtc2Vjb25kYXJ5KTsgbGluZS1oZWlnaHQ6IDEuNjsgfQoudmctY2FyZC0td2lkZSB7IGdyaWQtY29sdW1uOiAxIC8gLTE7IH0KLnZnLWNhcmQtLXdpZGUgLnZnLWNhcmQtdmlzdWFsIHsgbWluLWhlaWdodDogMzIwcHg7IH0KCi8qIOKUgOKUgCBDb2RlIOKUgOKUgCAqLwoudmctY29kZSB7CiAgYmFja2dyb3VuZDogdmFyKC0tYmctY29kZSk7IGJvcmRlcjogMXB4IHNvbGlkIHZhcigtLXZnLWJvcmRlcik7CiAgYm9yZGVyLXJhZGl1czogNnB4OyBwYWRkaW5nOiAxNnB4IDIwcHg7IGZvbnQtZmFtaWx5OiB2YXIoLS1mb250LW1vbm8pOwogIGZvbnQtc2l6ZTogMTNweDsgbGluZS1oZWlnaHQ6IDEuNjsgY29sb3I6IHZhcigtLXRleHQtc2Vjb25kYXJ5KTsKICBvdmVyZmxvdy14OiBhdXRvOyBtYXJnaW4tdG9wOiAxMnB4OyB3aGl0ZS1zcGFjZTogcHJlOwp9Ci52Zy1jb2RlIC5rdyAgeyBjb2xvcjogdmFyKC0tdmctY3lhbik7IH0KLnZnLWNvZGUgLmZuICB7IGNvbG9yOiAjNmNiNmZmOyB9Ci52Zy1jb2RlIC5zdHIgeyBjb2xvcjogdmFyKC0tdmctZ3JlZW4pOyB9Ci52Zy1jb2RlIC5jbXQgeyBjb2xvcjogdmFyKC0tdGV4dC1tdXRlZCk7IH0KLnZnLWNvZGUgLm51bSB7IGNvbG9yOiB2YXIoLS12Zy1hbWJlcik7IH0KCi8qIOKUgOKUgCBTVkcg4pSA4pSAICovCi52Zy1zdmcgeyB3aWR0aDogMTAwJTsgbWF4LXdpZHRoOiA3MDBweDsgaGVpZ2h0OiBhdXRvOyBvdmVyZmxvdzogaGlkZGVuOyB9Ci52Zy1zdmcgdGV4dCB7IGZvbnQtZmFtaWx5OiAnSmV0QnJhaW5zIE1vbm8nLCAnU0YgTW9ubycsIG1vbm9zcGFjZTsgfQoudmctcHVsc2UsIC52Zy1yaXBwbGUsIC52Zy1nbG93LWxpbmUsIC52Zy1mbG93LXJpZ2h0LCAudmctZmxvdy1kb3duLCAudmctb3JiaXQgeyBhbmltYXRpb246IG5vbmUgIWltcG9ydGFudDsgfQpub3NjcmlwdCB+IC52Zy13cmFwIC52Zy1jYXJkLCAudmctY2FyZC52Zy1uby1nc2FwIHsgb3BhY2l0eTogMSAhaW1wb3J0YW50OyB0cmFuc2Zvcm06IG5vbmUgIWltcG9ydGFudDsgfQoKLyog4pSA4pSAIExlZ2VuZCDilIDilIAgKi8KLnZnLWxlZ2VuZCB7IGRpc3BsYXk6IGZsZXg7IGZsZXgtd3JhcDogd3JhcDsgZ2FwOiAxMnB4OyBtYXJnaW4tdG9wOiAxMnB4OyB9Ci52Zy1sZWdlbmQtaXRlbSB7IGRpc3BsYXk6IGZsZXg7IGFsaWduLWl0ZW1zOiBjZW50ZXI7IGdhcDogNnB4OyBmb250LWZhbWlseTogdmFyKC0tZm9udC1tb25vKTsgZm9udC1zaXplOiAxMXB4OyBjb2xvcjogdmFyKC0tdGV4dC1tdXRlZCk7IH0KLnZnLWxlZ2VuZC1kb3QgeyB3aWR0aDogOHB4OyBoZWlnaHQ6IDhweDsgYm9yZGVyLXJhZGl1czogNTAlOyBmbGV4LXNocmluazogMDsgfQoKLyog4pSA4pSAIFJlc3BvbnNpdmUgKGVtYmVkKSDilIDilIAgKi8KQG1lZGlhIChtYXgtd2lkdGg6IDY5OXB4KSB7CiAgLnZnLWNhcmQtdmlzdWFsIHsgcGFkZGluZzogMjRweCAxNnB4OyBtaW4taGVpZ2h0OiAyMDBweDsgfQp9CgovKiDilIDilIAgRW1iZWQgd3JhcHBlciDilIDilIAgKi8KLnZnLWVtYmVkIHsKICBtYXJnaW46IDJlbSAwOwogIG1heC13aWR0aDogMTAwJTsKICBvdmVyZmxvdzogaGlkZGVuOwp9Ci52Zy1lbWJlZCAudmctY2FyZCB7CiAgb3BhY2l0eTogMDsKICB0cmFuc2Zvcm06IHRyYW5zbGF0ZVkoMjRweCk7CiAgd2lsbC1jaGFuZ2U6IG9wYWNpdHksIHRyYW5zZm9ybTsKfQoudmctZW1iZWQgLnZnLWNhcmQudmctbm8tZ3NhcCwKLnZnLWVtYmVkLnZnLW5vLWdzYXAgLnZnLWNhcmQgewogIG9wYWNpdHk6IDEgIWltcG9ydGFudDsKICB0cmFuc2Zvcm06IG5vbmUgIWltcG9ydGFudDsKfQoKCi8qIOKUgOKUgCBBbWJpZW50IGNhcHRpb25zIOKUgOKUgCAqLwoudmctY2FwdGlvbiB7CiAgcG9zaXRpb246IGFic29sdXRlOwogIGJvdHRvbTogMTBweDsKICBsZWZ0OiAxNnB4OwogIHJpZ2h0OiAxNnB4OwogIGZvbnQtZmFtaWx5OiB2YXIoLS1mb250LW1vbm8pOwogIGZvbnQtc2l6ZTogMTFweDsKICBsaW5lLWhlaWdodDogMS41OwogIGNvbG9yOiB2YXIoLS12Zy1jeWFuKTsKICBiYWNrZ3JvdW5kOiByZ2JhKDUsIDgsIDE2LCAwLjg1KTsKICBiYWNrZHJvcC1maWx0ZXI6IGJsdXIoNnB4KTsKICAtd2Via2l0LWJhY2tkcm9wLWZpbHRlcjogYmx1cig2cHgpOwogIHBhZGRpbmc6IDZweCAxMnB4OwogIGJvcmRlci1yYWRpdXM6IDRweDsKICBib3JkZXI6IDFweCBzb2xpZCByZ2JhKDAsIDIxMiwgMjU1LCAwLjEyKTsKICBvcGFjaXR5OiAwOwogIHBvaW50ZXItZXZlbnRzOiBub25lOwogIHRleHQtYWxpZ246IGNlbnRlcjsKICB6LWluZGV4OiAxMDsKfQoK</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js" integrity="sha384-g4NTh/Iv5PPU4xPyhEWqPcwtNXOvdaDI8LLnyYfyNZOjKJeYQyjzQ9X5275eBjpt" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js" integrity="sha384-Z3REaz79l2IaAZqJsSABtTbhjgOUYyV3p90XNnAPCSHg3EMTz1fouunq9WZRtj3d" crossorigin="anonymous"></script>
+<div data-vg-dep="vg-p-7" style="display:none">Ci8qKgogKiBWaXN1YWwgR3VpZGUgUnVudGltZSDigJQgc2hhcmVkIEdTQVAgaGVscGVycyBmb3IgZW1iZWRkZWQgc25pcHBldHMKICogRXh0cmFjdGVkIGZyb20gdmlzdWFsLWd1aWRlLmh0bWwKICovCihmdW5jdGlvbiAoKSB7CiAgJ3VzZSBzdHJpY3QnOwoKICAvLyBHdWFyZDogaWYgR1NBUCBmYWlsZWQgdG8gbG9hZCwgbWFrZSBhbGwgZW1iZWRzIHZpc2libGUKICBpZiAodHlwZW9mIGdzYXAgPT09ICd1bmRlZmluZWQnIHx8IHR5cGVvZiBTY3JvbGxUcmlnZ2VyID09PSAndW5kZWZpbmVkJykgewogICAgZG9jdW1lbnQucXVlcnlTZWxlY3RvckFsbCgnLnZnLWVtYmVkIC52Zy1jYXJkJykuZm9yRWFjaChmdW5jdGlvbiAoYykgewogICAgICBjLnN0eWxlLm9wYWNpdHkgPSAnMSc7CiAgICAgIGMuc3R5bGUudHJhbnNmb3JtID0gJ25vbmUnOwogICAgfSk7CiAgICB3aW5kb3cudmdSdW50aW1lID0gbnVsbDsKICAgIHJldHVybjsKICB9CgogIGdzYXAucmVnaXN0ZXJQbHVnaW4oU2Nyb2xsVHJpZ2dlcik7CgogIC8qKiBDcmVhdGUgYSBzY3JvbGwtdHJpZ2dlcmVkIHRpbWVsaW5lIGZvciBhIGNhcmQgZWxlbWVudCAqLwogIGZ1bmN0aW9uIGNhcmRUTChjYXJkKSB7CiAgICB2YXIgdGwgPSBnc2FwLnRpbWVsaW5lKHsKICAgICAgc2Nyb2xsVHJpZ2dlcjogewogICAgICAgIHRyaWdnZXI6IGNhcmQsCiAgICAgICAgc3RhcnQ6ICd0b3AgODglJywKICAgICAgICB0b2dnbGVBY3Rpb25zOiAncGxheSBub25lIG5vbmUgbm9uZScKICAgICAgfQogICAgfSk7CiAgICB0bC50byhjYXJkLCB7IG9wYWNpdHk6IDEsIHk6IDAsIGR1cmF0aW9uOiAwLjQ1LCBlYXNlOiAncG93ZXIyLm91dCcgfSk7CiAgICBjYXJkLl92Z1RpbWVsaW5lID0gdGw7CiAgICByZXR1cm4gdGw7CiAgfQoKICAvKiogU3RhZ2dlci1mYWRlIFNWRyBjaGlsZHJlbiBtYXRjaGluZyBzZWxlY3RvciBpbnNpZGUgYSBjb250YWluZXIgKi8KICBmdW5jdGlvbiBmYWRlSW4odGwsIHBhcmVudCwgc2VsLCBvcHRzKSB7CiAgICB2YXIgZWxzID0gcGFyZW50LnF1ZXJ5U2VsZWN0b3JBbGwoc2VsKTsKICAgIGlmICghZWxzLmxlbmd0aCkgcmV0dXJuOwogICAgdmFyIG8gPSBvcHRzIHx8IHt9OwogICAgdGwuZnJvbShlbHMsIHsKICAgICAgb3BhY2l0eTogMCwKICAgICAgeTogby55IHx8IDAsCiAgICAgIHg6IG8ueCB8fCAwLAogICAgICBzY2FsZTogby5zY2FsZSB8fCAxLAogICAgICBkdXJhdGlvbjogby5kdXIgfHwgMC4zLAogICAgICBzdGFnZ2VyOiBvLnN0YWdnZXIgfHwgMC4wOCwKICAgICAgZWFzZTogby5lYXNlIHx8ICdwb3dlcjIub3V0JwogICAgfSwgby5hdCB8fCAnPi0wLjE1Jyk7CiAgfQoKICAvKiogTG9vcGluZyBwdWxzZSAob3BhY2l0eSkgb24gZWxlbWVudHMg4oCUIGlkZW1wb3RlbnQgKGtpbGxzIGV4aXN0aW5nIGxvb3BzIGZpcnN0KSAqLwogIGZ1bmN0aW9uIHB1bHNlKGVscywgb3B0cykgewogICAgdmFyIG8gPSBvcHRzIHx8IHt9OwogICAgZ3NhcC5raWxsVHdlZW5zT2YoZWxzKTsKICAgIGdzYXAudG8oZWxzLCB7CiAgICAgIG9wYWNpdHk6IG8ubWluIHx8IDAuMzUsCiAgICAgIGR1cmF0aW9uOiBvLmR1ciB8fCAxLAogICAgICByZXBlYXQ6IC0xLAogICAgICB5b3lvOiB0cnVlLAogICAgICBlYXNlOiAnc2luZS5pbk91dCcsCiAgICAgIGRlbGF5OiBvLmRlbGF5IHx8IDAKICAgIH0pOwogIH0KCiAgLyoqIExvb3BpbmcgZ2xvdyBvbiBzdHJva2Utb3BhY2l0eSDigJQgaWRlbXBvdGVudCAoa2lsbHMgZXhpc3RpbmcgbG9vcHMgZmlyc3QpICovCiAgZnVuY3Rpb24gZ2xvd1N0cm9rZShlbHMsIG9wdHMpIHsKICAgIHZhciBvID0gb3B0cyB8fCB7fTsKICAgIGdzYXAua2lsbFR3ZWVuc09mKGVscyk7CiAgICBnc2FwLmZyb21UbyhlbHMsCiAgICAgIHsgYXR0cjogeyAnc3Ryb2tlLW9wYWNpdHknOiAwLjE1IH0gfSwKICAgICAgeyBhdHRyOiB7ICdzdHJva2Utb3BhY2l0eSc6IDAuOCB9LCBkdXJhdGlvbjogby5kdXIgfHwgMS41LCByZXBlYXQ6IC0xLCB5b3lvOiB0cnVlLCBlYXNlOiAnc2luZS5pbk91dCcsIGRlbGF5OiBvLmRlbGF5IHx8IDAgfQogICAgKTsKICB9CgogIC8qKiBEcmF3IGEgbGluZSBmcm9tIG5vdGhpbmcgKHN0cm9rZS1kYXNob2Zmc2V0IHRyaWNrKSAqLwogIGZ1bmN0aW9uIGRyYXdMaW5lcyh0bCwgcGFyZW50LCBzZWwsIG9wdHMpIHsKICAgIHZhciBsaW5lcyA9IHBhcmVudC5xdWVyeVNlbGVjdG9yQWxsKHNlbCk7CiAgICBpZiAoIWxpbmVzLmxlbmd0aCkgcmV0dXJuOwogICAgdmFyIG8gPSBvcHRzIHx8IHt9OwogICAgbGluZXMuZm9yRWFjaChmdW5jdGlvbiAobGluZSkgewogICAgICB2YXIgbGVuID0gbGluZS5nZXRUb3RhbExlbmd0aCA/IGxpbmUuZ2V0VG90YWxMZW5ndGgoKSA6IDEwMDsKICAgICAgZ3NhcC5zZXQobGluZSwgeyBhdHRyOiB7ICdzdHJva2UtZGFzaGFycmF5JzogbGVuLCAnc3Ryb2tlLWRhc2hvZmZzZXQnOiBsZW4gfSB9KTsKICAgIH0pOwogICAgdGwudG8obGluZXMsIHsKICAgICAgYXR0cjogeyAnc3Ryb2tlLWRhc2hvZmZzZXQnOiAwIH0sCiAgICAgIGR1cmF0aW9uOiBvLmR1ciB8fCAwLjUsCiAgICAgIHN0YWdnZXI6IG8uc3RhZ2dlciB8fCAwLjA2LAogICAgICBlYXNlOiBvLmVhc2UgfHwgJ3Bvd2VyMS5pbk91dCcKICAgIH0sIG8uYXQgfHwgJz4tMC4xJyk7CiAgfQoKICAvKiogU2hvdyBhbiBhbWJpZW50IGNhcHRpb24gaW5zaWRlIHRoZSBjYXJkIHZpc3VhbCBhcmVhLgogICAqICBVc2FnZSBmcm9tIGFuaW1hdGlvbiBzY3JpcHRzOgogICAqICAgIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnRGF0YSBibG9ja3MgYXQgZXZlbiBpbmRpY2VzLi4uJ10pOwogICAqICAgIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnJ10pOyAgLy8gY2xlYXIKICAgKi8KICBmdW5jdGlvbiBjYXB0aW9uKHdyYXAsIHRleHQpIHsKICAgIGlmICghd3JhcCkgcmV0dXJuOwogICAgLy8gU3VwcHJlc3MgY2FwdGlvbnMgd2hlbiB0aW1lbGluZSBpcyByZXZlcnNpbmcgKHNjcm9sbC1iYWNrIGRlY29uc3RydWN0aW9uKQogICAgdmFyIGNhcmQgPSB3cmFwLnF1ZXJ5U2VsZWN0b3IoJy52Zy1jYXJkJyk7CiAgICBpZiAoY2FyZCAmJiBjYXJkLl92Z1RpbWVsaW5lICYmIGNhcmQuX3ZnVGltZWxpbmUucmV2ZXJzZWQoKSkgewogICAgICAvLyBPbiByZXZlcnNlLCBqdXN0IGhpZGUgYW55IHZpc2libGUgY2FwdGlvbiBpbW1lZGlhdGVseQogICAgICB2YXIgZXhpc3RpbmcgPSB3cmFwLnF1ZXJ5U2VsZWN0b3IoJy52Zy1jYXB0aW9uJyk7CiAgICAgIGlmIChleGlzdGluZykgZ3NhcC5zZXQoZXhpc3RpbmcsIHsgb3BhY2l0eTogMCB9KTsKICAgICAgcmV0dXJuOwogICAgfQogICAgdmFyIGVsID0gd3JhcC5xdWVyeVNlbGVjdG9yKCcudmctY2FwdGlvbicpOwogICAgaWYgKCFlbCkgewogICAgICBlbCA9IGRvY3VtZW50LmNyZWF0ZUVsZW1lbnQoJ2RpdicpOwogICAgICBlbC5jbGFzc05hbWUgPSAndmctY2FwdGlvbic7CiAgICAgIHZhciB2aXN1YWwgPSB3cmFwLnF1ZXJ5U2VsZWN0b3IoJy52Zy1jYXJkLXZpc3VhbCcpOwogICAgICBpZiAodmlzdWFsKSB7CiAgICAgICAgdmlzdWFsLmFwcGVuZENoaWxkKGVsKTsKICAgICAgfSBlbHNlIHsKICAgICAgICByZXR1cm47CiAgICAgIH0KICAgIH0KICAgIGlmICghdGV4dCkgewogICAgICBnc2FwLnRvKGVsLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjI1IH0pOwogICAgICByZXR1cm47CiAgICB9CiAgICAvLyBJZiBhbHJlYWR5IHNob3dpbmcgdGV4dCwgY3Jvc3NmYWRlCiAgICBpZiAoZWwudGV4dENvbnRlbnQgJiYgZWwuc3R5bGUub3BhY2l0eSAhPT0gJzAnKSB7CiAgICAgIGdzYXAudG8oZWwsIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMTUsIG9uQ29tcGxldGU6IGZ1bmN0aW9uICgpIHsKICAgICAgICBlbC50ZXh0Q29udGVudCA9IHRleHQ7CiAgICAgICAgZ3NhcC50byhlbCwgeyBvcGFjaXR5OiAxLCBkdXJhdGlvbjogMC4yNSB9KTsKICAgICAgfX0pOwogICAgfSBlbHNlIHsKICAgICAgZWwudGV4dENvbnRlbnQgPSB0ZXh0OwogICAgICBnc2FwLnRvKGVsLCB7IG9wYWNpdHk6IDEsIGR1cmF0aW9uOiAwLjMgfSk7CiAgICB9CiAgfQoKICB3aW5kb3cudmdSdW50aW1lID0gewogICAgY2FyZFRMOiBjYXJkVEwsCiAgICBmYWRlSW46IGZhZGVJbiwKICAgIHB1bHNlOiBwdWxzZSwKICAgIGdsb3dTdHJva2U6IGdsb3dTdHJva2UsCiAgICBkcmF3TGluZXM6IGRyYXdMaW5lcywKICAgIGNhcHRpb246IGNhcHRpb24KICB9Owp9KSgpOwoK</div>
+<div data-vg-css="vg-p-1" style="display:none">Ci8qIOKUgOKUgCBWaXN1YWwgR3VpZGUgU3RlcHBlciBVSSDilIDilIAgKi8KLnZnLXN0ZXBwZXIgewogIGRpc3BsYXk6IGZsZXg7CiAgYWxpZ24taXRlbXM6IGNlbnRlcjsKICBqdXN0aWZ5LWNvbnRlbnQ6IHNwYWNlLWJldHdlZW47CiAgcGFkZGluZzogMTJweCAxNnB4OwogIGJvcmRlci10b3A6IDFweCBzb2xpZCB2YXIoLS12Zy1ib3JkZXIpOwogIGJhY2tncm91bmQ6IHZhcigtLXZnLWJnLWNhcmQpOwogIGZvbnQtZmFtaWx5OiB2YXIoLS1mb250LW1vbm8pOwp9Cgoudmctc3RlcHBlci10ZXh0IHsKICBmbGV4OiAxOwogIHRleHQtYWxpZ246IGNlbnRlcjsKICBmb250LXNpemU6IDEycHg7CiAgY29sb3I6IHZhcigtLXRleHQtc2Vjb25kYXJ5KTsKICBsaW5lLWhlaWdodDogMS41OwogIHBhZGRpbmc6IDAgMTJweDsKfQoKLnZnLXN0ZXBwZXItbGFiZWwgewogIGNvbG9yOiB2YXIoLS12Zy1jeWFuKTsKICBmb250LXNpemU6IDExcHg7CiAgZm9udC13ZWlnaHQ6IDYwMDsKICBkaXNwbGF5OiBibG9jazsKICBtYXJnaW4tYm90dG9tOiAycHg7Cn0KCi52Zy1zdGVwcGVyLWJ0biB7CiAgYmFja2dyb3VuZDogbm9uZTsKICBib3JkZXI6IDFweCBzb2xpZCB2YXIoLS12Zy1ib3JkZXIpOwogIGJvcmRlci1yYWRpdXM6IDRweDsKICBjb2xvcjogdmFyKC0tdGV4dC1zZWNvbmRhcnkpOwogIGZvbnQtZmFtaWx5OiB2YXIoLS1mb250LW1vbm8pOwogIGZvbnQtc2l6ZTogMTJweDsKICBwYWRkaW5nOiA2cHggMTRweDsKICBjdXJzb3I6IHBvaW50ZXI7CiAgdHJhbnNpdGlvbjogY29sb3IgMC4ycywgYm9yZGVyLWNvbG9yIDAuMnM7CiAgZmxleC1zaHJpbms6IDA7Cn0KLnZnLXN0ZXBwZXItYnRuOmhvdmVyIHsKICBjb2xvcjogdmFyKC0tdmctY3lhbik7CiAgYm9yZGVyLWNvbG9yOiB2YXIoLS12Zy1ib3JkZXItZ2xvdyk7Cn0KLnZnLXN0ZXBwZXItYnRuOmRpc2FibGVkIHsKICBvcGFjaXR5OiAwLjM7CiAgY3Vyc29yOiBkZWZhdWx0Owp9Ci52Zy1zdGVwcGVyLWJ0bjpkaXNhYmxlZDpob3ZlciB7CiAgY29sb3I6IHZhcigtLXRleHQtc2Vjb25kYXJ5KTsKICBib3JkZXItY29sb3I6IHZhcigtLXZnLWJvcmRlcik7Cn0KCi52Zy1zdGVwcGVyLWRvdHMgewogIGRpc3BsYXk6IGZsZXg7CiAgZ2FwOiA2cHg7CiAganVzdGlmeS1jb250ZW50OiBjZW50ZXI7CiAgbWFyZ2luLXRvcDogNnB4Owp9Ci52Zy1zdGVwcGVyLWRvdCB7CiAgd2lkdGg6IDZweDsKICBoZWlnaHQ6IDZweDsKICBib3JkZXItcmFkaXVzOiA1MCU7CiAgYmFja2dyb3VuZDogdmFyKC0tdmctYm9yZGVyKTsKICB0cmFuc2l0aW9uOiBiYWNrZ3JvdW5kIDAuMnM7Cn0KLnZnLXN0ZXBwZXItZG90LmFjdGl2ZSB7CiAgYmFja2dyb3VuZDogdmFyKC0tdmctY3lhbik7Cn0KCkBtZWRpYSAobWF4LXdpZHRoOiA0ODBweCkgewogIC52Zy1zdGVwcGVyIHsgcGFkZGluZzogMTBweCAxMnB4OyB9CiAgLnZnLXN0ZXBwZXItYnRuIHsgcGFkZGluZzogNXB4IDEwcHg7IGZvbnQtc2l6ZTogMTFweDsgfQogIC52Zy1zdGVwcGVyLXRleHQgeyBmb250LXNpemU6IDExcHg7IH0KfQoK</div>
+<div data-vg-dep="vg-p-8" style="display:none">Ci8qKgogKiBWaXN1YWwgR3VpZGUgU3RlcHBlciBDb250cm9sbGVyCiAqCiAqIEZpbmRzIGFsbCBbZGF0YS12Zy1tb2RlPSJzdGVwcGVyIl0gY29udGFpbmVycywgcGF1c2VzIHRoZWlyIHRpbWVsaW5lcywKICogaW5qZWN0cyBwcmV2L25leHQgVUksIGFuZCB3aXJlcyBidXR0b25zIHRvIHRsLnR3ZWVuVG8obGFiZWwpLgogKgogKiBSZXF1aXJlbWVudHM6CiAqIC0gU25pcHBldCBhbmltYXRpb24gc2NyaXB0cyBtdXN0IGFkZCBHU0FQIGxhYmVsczogdGwuYWRkTGFiZWwoJ3N0ZXAtMCcsIDApLCBldGMuCiAqIC0gU25pcHBldCB3cmFwcGVyIG11c3QgaGF2ZSBkYXRhLXZnLXN0ZXBzIEpTT04gYXR0cmlidXRlIHdpdGggc3RlcCBkZXNjcmlwdGlvbnMuCiAqCiAqIEV4YW1wbGU6CiAqICAgPGRpdiBjbGFzcz0idmctZW1iZWQiIGRhdGEtdmctc25pcHBldD0iaHlwZXJjb3JlL2ZsYXQtbWVya2xlLXRyZWUiCiAqICAgICAgICBkYXRhLXZnLW1vZGU9InN0ZXBwZXIiCiAqICAgICAgICBkYXRhLXZnLXN0ZXBzPSdbIlRyZWUgc3RydWN0dXJlIiwiSGlnaGxpZ2h0IGJsb2NrIiwiU2libGluZyBoYXNoIiwiVW5jbGUgaGFzaCIsIlJvb3QgY2hlY2siXSc+CiAqLwooZnVuY3Rpb24gKCkgewogICd1c2Ugc3RyaWN0JzsKCiAgaWYgKHR5cGVvZiBnc2FwID09PSAndW5kZWZpbmVkJykgcmV0dXJuOwoKICAvLyBXYWl0IGZvciBhbGwgc25pcHBldCBhbmltYXRpb24gc2NyaXB0cyB0byBydW4gZmlyc3QKICBzZXRUaW1lb3V0KGluaXRTdGVwcGVycywgMTAwKTsKCiAgZnVuY3Rpb24gaW5pdFN0ZXBwZXJzICgpIHsKICAgIHZhciBzdGVwcGVyRWxzID0gZG9jdW1lbnQucXVlcnlTZWxlY3RvckFsbCgnW2RhdGEtdmctbW9kZT0ic3RlcHBlciJdJyk7CiAgICBzdGVwcGVyRWxzLmZvckVhY2goZnVuY3Rpb24gKHdyYXApIHsKICAgICAgdmFyIGNhcmQgPSB3cmFwLnF1ZXJ5U2VsZWN0b3IoJy52Zy1jYXJkJyk7CiAgICAgIGlmICghY2FyZCkgcmV0dXJuOwoKICAgICAgLy8gRmluZCB0aGUgdGltZWxpbmUgYXR0YWNoZWQgdG8gdGhpcyBjYXJkJ3MgU2Nyb2xsVHJpZ2dlcgogICAgICB2YXIgdHJpZ2dlcnMgPSBTY3JvbGxUcmlnZ2VyLmdldEFsbCgpOwogICAgICB2YXIgY2FyZFRyaWdnZXIgPSBudWxsOwogICAgICBmb3IgKHZhciBpID0gMDsgaSA8IHRyaWdnZXJzLmxlbmd0aDsgaSsrKSB7CiAgICAgICAgaWYgKHRyaWdnZXJzW2ldLnRyaWdnZXIgPT09IGNhcmQpIHsKICAgICAgICAgIGNhcmRUcmlnZ2VyID0gdHJpZ2dlcnNbaV07CiAgICAgICAgICBicmVhazsKICAgICAgICB9CiAgICAgIH0KICAgICAgaWYgKCFjYXJkVHJpZ2dlciB8fCAhY2FyZFRyaWdnZXIuYW5pbWF0aW9uKSByZXR1cm47CgogICAgICB2YXIgdGwgPSBjYXJkVHJpZ2dlci5hbmltYXRpb247CgogICAgICAvLyBHZXQgc3RlcCBsYWJlbHMgZnJvbSB0aGUgdGltZWxpbmUKICAgICAgdmFyIGxhYmVscyA9IHRsLmxhYmVsczsKICAgICAgdmFyIHN0ZXBMYWJlbHMgPSBbXTsKICAgICAgZm9yICh2YXIga2V5IGluIGxhYmVscykgewogICAgICAgIGlmIChrZXkuaW5kZXhPZignc3RlcC0nKSA9PT0gMCkgewogICAgICAgICAgc3RlcExhYmVscy5wdXNoKHsgbmFtZToga2V5LCB0aW1lOiBsYWJlbHNba2V5XSB9KTsKICAgICAgICB9CiAgICAgIH0KICAgICAgaWYgKHN0ZXBMYWJlbHMubGVuZ3RoID09PSAwKSByZXR1cm47CgogICAgICAvLyBTb3J0IGJ5IHRpbWUKICAgICAgc3RlcExhYmVscy5zb3J0KGZ1bmN0aW9uIChhLCBiKSB7IHJldHVybiBhLnRpbWUgLSBiLnRpbWU7IH0pOwoKICAgICAgLy8gR2V0IHN0ZXAgZGVzY3JpcHRpb25zIGZyb20gZGF0YSBhdHRyaWJ1dGUKICAgICAgdmFyIHN0ZXBzSlNPTiA9IHdyYXAuZ2V0QXR0cmlidXRlKCdkYXRhLXZnLXN0ZXBzJyk7CiAgICAgIHZhciBzdGVwRGVzY3MgPSBbXTsKICAgICAgaWYgKHN0ZXBzSlNPTikgewogICAgICAgIHRyeSB7IHN0ZXBEZXNjcyA9IEpTT04ucGFyc2Uoc3RlcHNKU09OKTsgfSBjYXRjaCAoZSkgeyAvKiBpZ25vcmUgKi8gfQogICAgICB9CgogICAgICAvLyBLaWxsIHRoZSBTY3JvbGxUcmlnZ2VyIHNvIHRpbWVsaW5lIGlzIGZ1bGx5IG1hbnVhbAogICAgICBjYXJkVHJpZ2dlci5raWxsKCk7CiAgICAgIC8vIE1ha2UgY2FyZCB2aXNpYmxlIGltbWVkaWF0ZWx5CiAgICAgIGdzYXAuc2V0KGNhcmQsIHsgb3BhY2l0eTogMSwgeTogMCB9KTsKICAgICAgLy8gUGF1c2UgdGltZWxpbmUgYXQgc3RlcCAwCiAgICAgIHRsLnBhdXNlKHN0ZXBMYWJlbHNbMF0udGltZSk7CgogICAgICB2YXIgY3VycmVudFN0ZXAgPSAwOwogICAgICB2YXIgdG90YWxTdGVwcyA9IHN0ZXBMYWJlbHMubGVuZ3RoOwoKICAgICAgLy8gQnVpbGQgc3RlcHBlciBVSQogICAgICB2YXIgc3RlcHBlciA9IGRvY3VtZW50LmNyZWF0ZUVsZW1lbnQoJ2RpdicpOwogICAgICBzdGVwcGVyLmNsYXNzTmFtZSA9ICd2Zy1zdGVwcGVyJzsKCiAgICAgIHZhciBwcmV2QnRuID0gZG9jdW1lbnQuY3JlYXRlRWxlbWVudCgnYnV0dG9uJyk7CiAgICAgIHByZXZCdG4uY2xhc3NOYW1lID0gJ3ZnLXN0ZXBwZXItYnRuJzsKICAgICAgcHJldkJ0bi50ZXh0Q29udGVudCA9ICdcdTIxOTAgUHJldic7CiAgICAgIHByZXZCdG4uZGlzYWJsZWQgPSB0cnVlOwoKICAgICAgdmFyIG5leHRCdG4gPSBkb2N1bWVudC5jcmVhdGVFbGVtZW50KCdidXR0b24nKTsKICAgICAgbmV4dEJ0bi5jbGFzc05hbWUgPSAndmctc3RlcHBlci1idG4nOwogICAgICBuZXh0QnRuLnRleHRDb250ZW50ID0gJ05leHQgXHUyMTkyJzsKCiAgICAgIHZhciB0ZXh0V3JhcCA9IGRvY3VtZW50LmNyZWF0ZUVsZW1lbnQoJ2RpdicpOwogICAgICB0ZXh0V3JhcC5jbGFzc05hbWUgPSAndmctc3RlcHBlci10ZXh0JzsKCiAgICAgIHZhciBsYWJlbCA9IGRvY3VtZW50LmNyZWF0ZUVsZW1lbnQoJ3NwYW4nKTsKICAgICAgbGFiZWwuY2xhc3NOYW1lID0gJ3ZnLXN0ZXBwZXItbGFiZWwnOwoKICAgICAgdmFyIGRvdHNXcmFwID0gZG9jdW1lbnQuY3JlYXRlRWxlbWVudCgnZGl2Jyk7CiAgICAgIGRvdHNXcmFwLmNsYXNzTmFtZSA9ICd2Zy1zdGVwcGVyLWRvdHMnOwoKICAgICAgdmFyIGRvdHMgPSBbXTsKICAgICAgZm9yICh2YXIgZCA9IDA7IGQgPCB0b3RhbFN0ZXBzOyBkKyspIHsKICAgICAgICB2YXIgZG90ID0gZG9jdW1lbnQuY3JlYXRlRWxlbWVudCgnc3BhbicpOwogICAgICAgIGRvdC5jbGFzc05hbWUgPSAndmctc3RlcHBlci1kb3QnICsgKGQgPT09IDAgPyAnIGFjdGl2ZScgOiAnJyk7CiAgICAgICAgZG90c1dyYXAuYXBwZW5kQ2hpbGQoZG90KTsKICAgICAgICBkb3RzLnB1c2goZG90KTsKICAgICAgfQoKICAgICAgdGV4dFdyYXAuYXBwZW5kQ2hpbGQobGFiZWwpOwogICAgICB0ZXh0V3JhcC5hcHBlbmRDaGlsZChkb3RzV3JhcCk7CiAgICAgIHN0ZXBwZXIuYXBwZW5kQ2hpbGQocHJldkJ0bik7CiAgICAgIHN0ZXBwZXIuYXBwZW5kQ2hpbGQodGV4dFdyYXApOwogICAgICBzdGVwcGVyLmFwcGVuZENoaWxkKG5leHRCdG4pOwoKICAgICAgLy8gSW5zZXJ0IHN0ZXBwZXIgYWZ0ZXIgdGhlIGNhcmQgYm9keQogICAgICB2YXIgY2FyZEJvZHkgPSBjYXJkLnF1ZXJ5U2VsZWN0b3IoJy52Zy1jYXJkLWJvZHknKTsKICAgICAgaWYgKGNhcmRCb2R5KSB7CiAgICAgICAgY2FyZEJvZHkucGFyZW50Tm9kZS5pbnNlcnRCZWZvcmUoc3RlcHBlciwgY2FyZEJvZHkubmV4dFNpYmxpbmcpOwogICAgICB9IGVsc2UgewogICAgICAgIGNhcmQuYXBwZW5kQ2hpbGQoc3RlcHBlcik7CiAgICAgIH0KCiAgICAgIGZ1bmN0aW9uIHVwZGF0ZVVJICgpIHsKICAgICAgICBsYWJlbC50ZXh0Q29udGVudCA9ICdTdGVwICcgKyAoY3VycmVudFN0ZXAgKyAxKSArICcvJyArIHRvdGFsU3RlcHMgKwogICAgICAgICAgKHN0ZXBEZXNjc1tjdXJyZW50U3RlcF0gPyAnIFx1MjAxNCAnICsgc3RlcERlc2NzW2N1cnJlbnRTdGVwXSA6ICcnKTsKICAgICAgICBwcmV2QnRuLmRpc2FibGVkID0gY3VycmVudFN0ZXAgPT09IDA7CiAgICAgICAgbmV4dEJ0bi5kaXNhYmxlZCA9IGN1cnJlbnRTdGVwID09PSB0b3RhbFN0ZXBzIC0gMTsKICAgICAgICBkb3RzLmZvckVhY2goZnVuY3Rpb24gKGRvdCwgaSkgewogICAgICAgICAgZG90LmNsYXNzTmFtZSA9ICd2Zy1zdGVwcGVyLWRvdCcgKyAoaSA8PSBjdXJyZW50U3RlcCA/ICcgYWN0aXZlJyA6ICcnKTsKICAgICAgICB9KTsKICAgICAgfQoKICAgICAgZnVuY3Rpb24gZ29Ub1N0ZXAgKGlkeCkgewogICAgICAgIGlmIChpZHggPCAwIHx8IGlkeCA+PSB0b3RhbFN0ZXBzKSByZXR1cm47CiAgICAgICAgY3VycmVudFN0ZXAgPSBpZHg7CiAgICAgICAgdGwudHdlZW5UbyhzdGVwTGFiZWxzW2lkeF0udGltZSArIDAuMDAxLCB7IGR1cmF0aW9uOiAwLjQsIGVhc2U6ICdwb3dlcjIuaW5PdXQnIH0pOwogICAgICAgIHVwZGF0ZVVJKCk7CiAgICAgIH0KCiAgICAgIHByZXZCdG4uYWRkRXZlbnRMaXN0ZW5lcignY2xpY2snLCBmdW5jdGlvbiAoKSB7IGdvVG9TdGVwKGN1cnJlbnRTdGVwIC0gMSk7IH0pOwogICAgICBuZXh0QnRuLmFkZEV2ZW50TGlzdGVuZXIoJ2NsaWNrJywgZnVuY3Rpb24gKCkgeyBnb1RvU3RlcChjdXJyZW50U3RlcCArIDEpOyB9KTsKCiAgICAgIC8vIEtleWJvYXJkIG5hdmlnYXRpb24gd2hlbiBjb250YWluZXIgaXMgZm9jdXNlZAogICAgICB3cmFwLnNldEF0dHJpYnV0ZSgndGFiaW5kZXgnLCAnMCcpOwogICAgICB3cmFwLmFkZEV2ZW50TGlzdGVuZXIoJ2tleWRvd24nLCBmdW5jdGlvbiAoZSkgewogICAgICAgIGlmIChlLmtleSA9PT0gJ0Fycm93TGVmdCcpIHsgZ29Ub1N0ZXAoY3VycmVudFN0ZXAgLSAxKTsgZS5wcmV2ZW50RGVmYXVsdCgpOyB9CiAgICAgICAgaWYgKGUua2V5ID09PSAnQXJyb3dSaWdodCcpIHsgZ29Ub1N0ZXAoY3VycmVudFN0ZXAgKyAxKTsgZS5wcmV2ZW50RGVmYXVsdCgpOyB9CiAgICAgIH0pOwoKICAgICAgdXBkYXRlVUkoKTsKICAgIH0pOwogIH0KfSkoKTsKCg==</div>
+<div data-vg-css="vg-p-2" style="display:none">Ci8qIOKUgOKUgCBWaXN1YWwgR3VpZGUgQ29kZSBOYXJyYXRvciDilIDilIAgKi8KLnZnLW5hcnJhdG9yLWNvbnRyb2xzIHsKICBkaXNwbGF5OiBmbGV4OwogIGFsaWduLWl0ZW1zOiBjZW50ZXI7CiAgZ2FwOiAxMHB4OwogIHBhZGRpbmc6IDhweCAwIDRweDsKfQoudmctbmFycmF0b3ItcGxheSB7CiAgYmFja2dyb3VuZDogbm9uZTsKICBib3JkZXI6IDFweCBzb2xpZCB2YXIoLS12Zy1ib3JkZXIpOwogIGJvcmRlci1yYWRpdXM6IDRweDsKICBjb2xvcjogdmFyKC0tdmctY3lhbik7CiAgZm9udC1mYW1pbHk6IHZhcigtLWZvbnQtbW9ubyk7CiAgZm9udC1zaXplOiAxMXB4OwogIHBhZGRpbmc6IDRweCAxMnB4OwogIGN1cnNvcjogcG9pbnRlcjsKICB0cmFuc2l0aW9uOiBhbGwgMC4yczsKICBkaXNwbGF5OiBmbGV4OwogIGFsaWduLWl0ZW1zOiBjZW50ZXI7CiAgZ2FwOiA1cHg7CiAgd2hpdGUtc3BhY2U6IG5vd3JhcDsKfQoudmctbmFycmF0b3ItcGxheTpob3ZlciB7CiAgYm9yZGVyLWNvbG9yOiB2YXIoLS12Zy1ib3JkZXItZ2xvdyk7CiAgYm94LXNoYWRvdzogMCAwIDEycHggcmdiYSgwLCAyMTIsIDI1NSwgMC4xKTsKfQoudmctbmFycmF0b3ItcGxheWluZyB7CiAgYm9yZGVyLWNvbG9yOiB2YXIoLS12Zy1jeWFuKTsKICBiYWNrZ3JvdW5kOiB2YXIoLS12Zy1jeWFuLWRpbSk7Cn0KLnZnLW5hcnJhdG9yLWljb24geyBmb250LXNpemU6IDEwcHg7IH0KCi52Zy1uYXJyYXRvci1zdGF0dXMgewogIGZvbnQtZmFtaWx5OiB2YXIoLS1mb250LW1vbm8pOwogIGZvbnQtc2l6ZTogMTFweDsKICBjb2xvcjogdmFyKC0tdGV4dC1tdXRlZCk7CiAgb3ZlcmZsb3c6IGhpZGRlbjsKICB0ZXh0LW92ZXJmbG93OiBlbGxpcHNpczsKICB3aGl0ZS1zcGFjZTogbm93cmFwOwp9CgovKiBMaW5lIHdyYXBwaW5nICovCi52Zy1jb2RlLWxpbmUgewogIGRpc3BsYXk6IGJsb2NrOwogIHBhZGRpbmc6IDFweCA2cHg7CiAgbWFyZ2luOiAwIC02cHg7CiAgYm9yZGVyLXJhZGl1czogM3B4OwogIGJvcmRlci1sZWZ0OiAycHggc29saWQgdHJhbnNwYXJlbnQ7CiAgdHJhbnNpdGlvbjogYmFja2dyb3VuZCAwLjE1cywgYm9yZGVyLWNvbG9yIDAuMTVzOwp9Ci52Zy1jb2RlLWxpbmUtbmFycmF0ZWQgewogIGN1cnNvcjogcG9pbnRlcjsKfQoudmctY29kZS1saW5lLW5hcnJhdGVkOmhvdmVyIHsKICBiYWNrZ3JvdW5kOiByZ2JhKDAsIDIxMiwgMjU1LCAwLjA1KTsKICBib3JkZXItbGVmdC1jb2xvcjogcmdiYSgwLCAyMTIsIDI1NSwgMC4yKTsKfQoudmctY29kZS1saW5lLWFjdGl2ZSB7CiAgYmFja2dyb3VuZDogcmdiYSgwLCAyMTIsIDI1NSwgMC4xKSAhaW1wb3J0YW50OwogIGJvcmRlci1sZWZ0LWNvbG9yOiB2YXIoLS12Zy1jeWFuKSAhaW1wb3J0YW50Owp9Cgo=</div>
+<div data-vg-dep="vg-p-9" style="display:none">Ci8qKgogKiBWaXN1YWwgR3VpZGUgQ29kZSBOYXJyYXRvcgogKgogKiBCaW5kcyBjb2RlIGxpbmVzIHRvIGRpYWdyYW0gYW5pbWF0aW9uIHN0ZXBzLiBDbGlja2luZyBhIG5hcnJhdGVkIGNvZGUgbGluZQogKiBqdW1wcyB0aGUgZGlhZ3JhbSB0byB0aGF0IHN0YXRlLiBBICJQbGF5IiBidXR0b24gYXV0by1hZHZhbmNlcyB0aHJvdWdoIGFsbAogKiBzdGVwcywgaGlnaGxpZ2h0aW5nIGVhY2ggY29kZSBsaW5lIHdoaWxlIHRoZSBTVkcgYW5pbWF0ZXMuCiAqCiAqIFNldHVwOiBhZGQgZGF0YS12Zy1uYXJyYXRlIEpTT04gdG8gYSAudmctY29kZSBlbGVtZW50IGluc2lkZSBhIC52Zy1lbWJlZDoKICoKICogICA8ZGl2IGNsYXNzPSJ2Zy1jb2RlIiBkYXRhLXZnLW5hcnJhdGU9J1sKICogICAgIHsibGluZSI6IDAsICJsYWJlbCI6ICJuYXJyLTAiLCAiZGVzYyI6ICJDcmVhdGUgYSBIeXBlcmNvcmUifSwKICogICAgIHsibGluZSI6IDEsICJsYWJlbCI6ICJuYXJyLTEiLCAiZGVzYyI6ICJBcHBlbmQgYmxvY2sgMCJ9CiAqICAgXSc+CiAqCiAqIFRoZSBhbmltYXRpb24gc2NyaXB0IG11c3QgYWRkIG1hdGNoaW5nIGxhYmVsczogdGwuYWRkTGFiZWwoJ25hcnItMCcsIC4uLikKICogVGhlIHJ1bnRpbWUgbXVzdCBzdG9yZSB0aGUgdGltZWxpbmU6IGNhcmQuX3ZnVGltZWxpbmUgKGRvbmUgYnkgdmdSdW50aW1lLmNhcmRUTCkKICovCihmdW5jdGlvbiAoKSB7CiAgJ3VzZSBzdHJpY3QnOwoKICBpZiAodHlwZW9mIGdzYXAgPT09ICd1bmRlZmluZWQnKSByZXR1cm47CgogIC8vIFdhaXQgZm9yIGFuaW1hdGlvbiBzY3JpcHRzIHRvIGNyZWF0ZSB0aW1lbGluZXMKICBzZXRUaW1lb3V0KGluaXROYXJyYXRvcnMsIDE1MCk7CgogIGZ1bmN0aW9uIGluaXROYXJyYXRvcnMgKCkgewogICAgdmFyIGNvZGVCbG9ja3MgPSBkb2N1bWVudC5xdWVyeVNlbGVjdG9yQWxsKCcudmctY29kZVtkYXRhLXZnLW5hcnJhdGVdJyk7CiAgICBjb2RlQmxvY2tzLmZvckVhY2goc2V0dXBOYXJyYXRvcik7CiAgfQoKICBmdW5jdGlvbiBzZXR1cE5hcnJhdG9yIChjb2RlRWwpIHsKICAgIHZhciBlbWJlZCA9IGNvZGVFbC5jbG9zZXN0KCcudmctZW1iZWQnKTsKICAgIGlmICghZW1iZWQpIHJldHVybjsKICAgIHZhciBjYXJkID0gZW1iZWQucXVlcnlTZWxlY3RvcignLnZnLWNhcmQnKTsKICAgIGlmICghY2FyZCB8fCAhY2FyZC5fdmdUaW1lbGluZSkgcmV0dXJuOwoKICAgIHZhciB0bCA9IGNhcmQuX3ZnVGltZWxpbmU7CiAgICB2YXIgbmFycmF0aW9uOwogICAgdHJ5IHsgbmFycmF0aW9uID0gSlNPTi5wYXJzZShjb2RlRWwuZ2V0QXR0cmlidXRlKCdkYXRhLXZnLW5hcnJhdGUnKSk7IH0gY2F0Y2ggKGUpIHsgcmV0dXJuOyB9CiAgICBpZiAoIW5hcnJhdGlvbiB8fCAhbmFycmF0aW9uLmxlbmd0aCkgcmV0dXJuOwoKICAgIC8vIFZlcmlmeSBhdCBsZWFzdCBvbmUgbGFiZWwgZXhpc3RzIGluIHRoZSB0aW1lbGluZQogICAgdmFyIGhhc0xhYmVscyA9IG5hcnJhdGlvbi5zb21lKGZ1bmN0aW9uIChzKSB7IHJldHVybiB0bC5sYWJlbHNbcy5sYWJlbF0gIT09IHVuZGVmaW5lZDsgfSk7CiAgICBpZiAoIWhhc0xhYmVscykgcmV0dXJuOwoKICAgIC8vIOKUgOKUgCBXcmFwIGNvZGUgbGluZXMg4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSACiAgICB2YXIgaHRtbCA9IGNvZGVFbC5pbm5lckhUTUw7CiAgICB2YXIgbGluZXMgPSBodG1sLnNwbGl0KCdcbicpOwogICAgdmFyIG5hcnJhdGVkTGluZVNldCA9IHt9OwogICAgbmFycmF0aW9uLmZvckVhY2goZnVuY3Rpb24gKHMpIHsgbmFycmF0ZWRMaW5lU2V0W3MubGluZV0gPSB0cnVlOyB9KTsKCiAgICBjb2RlRWwuaW5uZXJIVE1MID0gbGluZXMubWFwKGZ1bmN0aW9uIChsaW5lLCBpKSB7CiAgICAgIHZhciBjbHMgPSAndmctY29kZS1saW5lJyArIChuYXJyYXRlZExpbmVTZXRbaV0gPyAnIHZnLWNvZGUtbGluZS1uYXJyYXRlZCcgOiAnJyk7CiAgICAgIHJldHVybiAnPHNwYW4gY2xhc3M9IicgKyBjbHMgKyAnIiBkYXRhLWxpbmUtaWR4PSInICsgaSArICciPicgKyAobGluZSB8fCAnICcpICsgJzwvc3Bhbj4nOwogICAgfSkuam9pbignXG4nKTsKCiAgICAvLyDilIDilIAgSW5qZWN0IGNvbnRyb2xzIOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgAogICAgdmFyIGNvbnRyb2xzID0gZG9jdW1lbnQuY3JlYXRlRWxlbWVudCgnZGl2Jyk7CiAgICBjb250cm9scy5jbGFzc05hbWUgPSAndmctbmFycmF0b3ItY29udHJvbHMnOwoKICAgIHZhciBwbGF5QnRuID0gZG9jdW1lbnQuY3JlYXRlRWxlbWVudCgnYnV0dG9uJyk7CiAgICBwbGF5QnRuLmNsYXNzTmFtZSA9ICd2Zy1uYXJyYXRvci1wbGF5JzsKICAgIHBsYXlCdG4uaW5uZXJIVE1MID0gJzxzcGFuIGNsYXNzPSJ2Zy1uYXJyYXRvci1pY29uIj5cdTI1QjY8L3NwYW4+IE5hcnJhdGUnOwoKICAgIHZhciBzdGF0dXMgPSBkb2N1bWVudC5jcmVhdGVFbGVtZW50KCdzcGFuJyk7CiAgICBzdGF0dXMuY2xhc3NOYW1lID0gJ3ZnLW5hcnJhdG9yLXN0YXR1cyc7CgogICAgY29udHJvbHMuYXBwZW5kQ2hpbGQocGxheUJ0bik7CiAgICBjb250cm9scy5hcHBlbmRDaGlsZChzdGF0dXMpOwogICAgY29kZUVsLnBhcmVudE5vZGUuaW5zZXJ0QmVmb3JlKGNvbnRyb2xzLCBjb2RlRWwpOwoKICAgIC8vIOKUgOKUgCBTdGF0ZSDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIAKICAgIHZhciBjdXJyZW50U3RlcCA9IC0xOwogICAgdmFyIHBsYXlpbmcgPSBmYWxzZTsKICAgIHZhciBzdGVwVGltZXIgPSBudWxsOwoKICAgIGZ1bmN0aW9uIGhpZ2hsaWdodExpbmUgKGxpbmVJZHgpIHsKICAgICAgY29kZUVsLnF1ZXJ5U2VsZWN0b3JBbGwoJy52Zy1jb2RlLWxpbmUtYWN0aXZlJykuZm9yRWFjaChmdW5jdGlvbiAoZWwpIHsKICAgICAgICBlbC5jbGFzc0xpc3QucmVtb3ZlKCd2Zy1jb2RlLWxpbmUtYWN0aXZlJyk7CiAgICAgIH0pOwogICAgICBpZiAobGluZUlkeCA8IDApIHJldHVybjsKICAgICAgdmFyIGVsID0gY29kZUVsLnF1ZXJ5U2VsZWN0b3IoJ1tkYXRhLWxpbmUtaWR4PSInICsgbGluZUlkeCArICciXScpOwogICAgICBpZiAoIWVsKSByZXR1cm47CiAgICAgIGVsLmNsYXNzTGlzdC5hZGQoJ3ZnLWNvZGUtbGluZS1hY3RpdmUnKTsKICAgICAgLy8gU2Nyb2xsIGludG8gdmlldyB3aXRoaW4gdGhlIGNvZGUgYmxvY2sgaWYgbmVlZGVkCiAgICAgIHZhciBlbFRvcCA9IGVsLm9mZnNldFRvcCAtIGNvZGVFbC5vZmZzZXRUb3A7CiAgICAgIGlmIChlbFRvcCA8IGNvZGVFbC5zY3JvbGxUb3AgfHwgZWxUb3AgKyBlbC5vZmZzZXRIZWlnaHQgPiBjb2RlRWwuc2Nyb2xsVG9wICsgY29kZUVsLmNsaWVudEhlaWdodCkgewogICAgICAgIGNvZGVFbC5zY3JvbGxUb3AgPSBNYXRoLm1heCgwLCBlbFRvcCAtIDIwKTsKICAgICAgfQogICAgfQoKICAgIGZ1bmN0aW9uIGdvVG9TdGVwIChpZHgpIHsKICAgICAgaWYgKGlkeCA8IDAgfHwgaWR4ID49IG5hcnJhdGlvbi5sZW5ndGgpIHJldHVybjsKICAgICAgY3VycmVudFN0ZXAgPSBpZHg7CiAgICAgIHZhciBzdGVwID0gbmFycmF0aW9uW2lkeF07CiAgICAgIGhpZ2hsaWdodExpbmUoc3RlcC5saW5lKTsKICAgICAgc3RhdHVzLnRleHRDb250ZW50ID0gc3RlcC5kZXNjIHx8ICcnOwogICAgICBpZiAodGwubGFiZWxzW3N0ZXAubGFiZWxdICE9PSB1bmRlZmluZWQpIHsKICAgICAgICB0bC50d2VlblRvKHRsLmxhYmVsc1tzdGVwLmxhYmVsXSArIDAuMDAxLCB7IGR1cmF0aW9uOiAwLjUsIGVhc2U6ICdwb3dlcjIuaW5PdXQnIH0pOwogICAgICB9CiAgICB9CgogICAgZnVuY3Rpb24gcmVzZXRUb1N0YXJ0ICgpIHsKICAgICAgY3VycmVudFN0ZXAgPSAtMTsKICAgICAgaGlnaGxpZ2h0TGluZSgtMSk7CiAgICAgIHN0YXR1cy50ZXh0Q29udGVudCA9ICcnOwogICAgICAvLyBTZWVrIGJhY2sgdG8ganVzdCBhZnRlciBjYXJkIHJldmVhbCAoMC40NXMpIOKAlCBTVkcgZWxlbWVudHMgcmV0dXJuIHRvIGluaXRpYWwgc3RhdGUKICAgICAgdGwucGF1c2UoKTsKICAgICAgLy8gS2VlcCBjYXJkIHZpc2libGUKICAgICAgZ3NhcC5zZXQoY2FyZCwgeyBvcGFjaXR5OiAxLCB5OiAwIH0pOwogICAgICB0bC5zZWVrKDAuNDYpOwogICAgfQoKICAgIGZ1bmN0aW9uIGF1dG9BZHZhbmNlICgpIHsKICAgICAgaWYgKCFwbGF5aW5nKSByZXR1cm47CiAgICAgIGN1cnJlbnRTdGVwKys7CiAgICAgIGlmIChjdXJyZW50U3RlcCA+PSBuYXJyYXRpb24ubGVuZ3RoKSB7CiAgICAgICAgLy8gRG9uZQogICAgICAgIHBsYXlpbmcgPSBmYWxzZTsKICAgICAgICBwbGF5QnRuLmlubmVySFRNTCA9ICc8c3BhbiBjbGFzcz0idmctbmFycmF0b3ItaWNvbiI+XHUyMUJBPC9zcGFuPiBSZXBsYXknOwogICAgICAgIHBsYXlCdG4uY2xhc3NMaXN0LnJlbW92ZSgndmctbmFycmF0b3ItcGxheWluZycpOwogICAgICAgIHN0YXR1cy50ZXh0Q29udGVudCA9ICdkb25lJzsKICAgICAgICByZXR1cm47CiAgICAgIH0KICAgICAgZ29Ub1N0ZXAoY3VycmVudFN0ZXApOwogICAgICAvLyBBZHZhbmNlIGRlbGF5OiBmaXJzdCBzdGVwIHNob3J0ZXIsIHN1YnNlcXVlbnQgbG9uZ2VyIGZvciByZWFkaW5nCiAgICAgIHZhciBkZWxheSA9IGN1cnJlbnRTdGVwID09PSAwID8gMTQwMCA6IDIwMDA7CiAgICAgIHN0ZXBUaW1lciA9IHNldFRpbWVvdXQoYXV0b0FkdmFuY2UsIGRlbGF5KTsKICAgIH0KCiAgICAvLyDilIDilIAgUGxheSAvIFBhdXNlIC8gUmVwbGF5IOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgAogICAgcGxheUJ0bi5hZGRFdmVudExpc3RlbmVyKCdjbGljaycsIGZ1bmN0aW9uICgpIHsKICAgICAgaWYgKHBsYXlpbmcpIHsKICAgICAgICAvLyBQYXVzZQogICAgICAgIHBsYXlpbmcgPSBmYWxzZTsKICAgICAgICBjbGVhclRpbWVvdXQoc3RlcFRpbWVyKTsKICAgICAgICBwbGF5QnRuLmlubmVySFRNTCA9ICc8c3BhbiBjbGFzcz0idmctbmFycmF0b3ItaWNvbiI+XHUyNUI2PC9zcGFuPiBSZXN1bWUnOwogICAgICAgIHBsYXlCdG4uY2xhc3NMaXN0LnJlbW92ZSgndmctbmFycmF0b3ItcGxheWluZycpOwogICAgICB9IGVsc2UgewogICAgICAgIHBsYXlpbmcgPSB0cnVlOwogICAgICAgIHBsYXlCdG4uaW5uZXJIVE1MID0gJzxzcGFuIGNsYXNzPSJ2Zy1uYXJyYXRvci1pY29uIj5cdTIzRjg8L3NwYW4+IFBhdXNlJzsKICAgICAgICBwbGF5QnRuLmNsYXNzTGlzdC5hZGQoJ3ZnLW5hcnJhdG9yLXBsYXlpbmcnKTsKICAgICAgICBpZiAoY3VycmVudFN0ZXAgPj0gbmFycmF0aW9uLmxlbmd0aCAtIDEpIHsKICAgICAgICAgIC8vIFJlc3RhcnQKICAgICAgICAgIHJlc2V0VG9TdGFydCgpOwogICAgICAgIH0KICAgICAgICBhdXRvQWR2YW5jZSgpOwogICAgICB9CiAgICB9KTsKCiAgICAvLyDilIDilIAgTGluZSBjbGljazoganVtcCB0byBzdGVwIOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgAogICAgbmFycmF0aW9uLmZvckVhY2goZnVuY3Rpb24gKHN0ZXAsIGlkeCkgewogICAgICB2YXIgZWwgPSBjb2RlRWwucXVlcnlTZWxlY3RvcignW2RhdGEtbGluZS1pZHg9IicgKyBzdGVwLmxpbmUgKyAnIl0nKTsKICAgICAgaWYgKCFlbCkgcmV0dXJuOwogICAgICBlbC5hZGRFdmVudExpc3RlbmVyKCdjbGljaycsIGZ1bmN0aW9uICgpIHsKICAgICAgICAvLyBTdG9wIGF1dG8tcGxheSBpZiBydW5uaW5nCiAgICAgICAgcGxheWluZyA9IGZhbHNlOwogICAgICAgIGNsZWFyVGltZW91dChzdGVwVGltZXIpOwogICAgICAgIHBsYXlCdG4uaW5uZXJIVE1MID0gJzxzcGFuIGNsYXNzPSJ2Zy1uYXJyYXRvci1pY29uIj5cdTI1QjY8L3NwYW4+IE5hcnJhdGUnOwogICAgICAgIHBsYXlCdG4uY2xhc3NMaXN0LnJlbW92ZSgndmctbmFycmF0b3ItcGxheWluZycpOwogICAgICAgIGdvVG9TdGVwKGlkeCk7CiAgICAgIH0pOwogICAgfSk7CiAgfQp9KSgpOwoK</div>
+<!-- /wp:html -->
+
+<script>!function(){var d=document,b=atob,r=function(q,t){d.querySelectorAll(q).forEach(function(e){var s=d.createElement(t||`script`);s.textContent=b(e.textContent);e.parentNode.replaceChild(s,e)})};r(`[data-vg-css]`,`style`);r(`[data-vg-dep]`);r(`[data-vg-anim]`);d.querySelectorAll(`[data-vg-mod]`).forEach(function(e){var s=d.createElement(`script`);s.type=`module`;s.textContent=b(e.textContent);e.parentNode.replaceChild(s,e)})}()</script>

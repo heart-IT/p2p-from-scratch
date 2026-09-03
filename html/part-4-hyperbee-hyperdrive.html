@@ -1,49 +1,97 @@
-<!--
-  WORDPRESS IMPORT INSTRUCTIONS
-  ==============================
-  1. Create a new Post in WordPress
-  2. Switch to the Code Editor (⋮ menu > Code editor)
-  3. Select ALL text below this comment block and paste
-  4. Switch back to Visual Editor to verify
-
-  Plugins required:
-  - Prismatic (syntax highlighting)
-
-  Mermaid diagrams are loaded via CDN (no plugin needed).
-  The <script> tag at the bottom handles rendering.
--->
-
-<h1 id="p2p-from-scratch-part-4-from-logs-to-databases">P2P from Scratch — Part 4: From Logs to Databases</h1>
+<h1 id="p2p-from-scratch-part-4-building-p2p-databases-with-hyperbee-and-hyperdrive">P2P from Scratch — Part 4: Building P2P Databases with Hyperbee and Hyperdrive</h1>
 
 <blockquote>
 <p>&quot;Simple things should be simple, complex things should be possible.&quot;
-— Alan Kay</p>
+— attributed to Alan Kay</p>
 </blockquote>
 
 <p><strong>Excerpt:</strong> A Hypercore is an append-only log — you can append blocks and read them by index. That&#39;s it. But most applications need sorted key-value lookups, file systems, and range queries. This post explains how Hyperbee maps a B-tree onto Hypercore&#39;s sequential blocks, how Hyperdrive combines a Hyperbee with Hyperblobs to build a distributed file system, and how Corestore manages multiple Hypercores from a single master seed.</p>
+<!-- meta-description: Build P2P databases with Hyperbee (B-tree on Hypercore), Hyperdrive (distributed file system), and Corestore. Full API walkthrough. -->
+<!-- meta-labs: p2p-sparse-db p2p-drop -->
+
 
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <strong>Part 4: From Logs to Databases (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
+<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: NAT Hole Punching Explained</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: P2P Encryption with the Noise Protocol</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Merkle Trees and Append-Only Logs</a> | <strong>Part 4: Building P2P Databases with Hyperbee and Hyperdrive (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Peer Discovery with Kademlia DHT</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Multi-Writer Consensus with Autobase</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: P2P Security — Threats, Defenses, and Trust</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Offline-First UX for P2P Applications</a></p>
 </blockquote>
 
 <hr>
+<blockquote>
+<p><strong>Verified against:</strong> hypercore 11.35.2 · hyperbee 2.27.3 · hyperdrive 13.3.3 · hyperblobs 2.12.1 · corestore 7.12.2 — checked 2026-09-03. Every constant, default and byte count in this post is asserted in <a href="https://github.com/heart-IT/p2p-from-scratch-labs/tree/main/verify"><code>verify/</code></a>, which installs whatever Holepunch publishes today and fails if the stack has moved.</p>
+</blockquote>
+
 <h2 id="quick-recap">Quick Recap</h2>
 
 <p>In <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3</a>, we built Hypercore — an append-only log where every block is bound to a Merkle proof chain and an Ed25519 signature. Any peer can verify any block without trusting the messenger. Now we need richer data structures on top of it.</p>
 <hr>
-<h2 id="the-problem-access-patterns">The Problem: Access Patterns</h2>
+<h2 id="beyond-append-only-why-p2p-apps-need-databases">Beyond Append-Only: Why P2P Apps Need Databases</h2>
 
 <p>A Hypercore gives you <code>append(data)</code> and <code>get(index)</code>. For a chat log, that&#39;s fine — messages arrive in order and you read them sequentially. But consider a contacts app: you need to look up &quot;Alice&quot; without scanning every block. Or a file system: you need to read <code>/photos/vacation.jpg</code> without downloading every file in the drive.</p>
 <p>You need data structures on top of the log. The challenge is building them in a way that preserves Hypercore&#39;s two superpowers: <strong>cryptographic verification</strong> (every read is provably correct) and <strong>sparse replication</strong> (download only what you need, not the whole dataset).</p>
 <hr>
 <h2 id="hyperbee-a-b-tree-on-an-append-only-log">Hyperbee: A B-Tree on an Append-Only Log</h2>
 
+<!-- wp:html -->
+<div class="vg-embed" data-vg-snippet="hyperbee/btree-append-log">
+  <div class="vg-card vg-card--wide">
+          <div class="vg-card-visual">
+            <svg class="vg-svg" viewBox="0 0 700 260" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="280" y="20" width="140" height="40" rx="5" fill="#0a1628" stroke="#f5a623" stroke-opacity="0.5"/>
+              <text x="350" y="45" text-anchor="middle" fill="#f5a623" font-size="12" font-weight="500" style="font-size:12px;font-weight:500">M</text>
+              <line x1="310" y1="60" x2="170" y2="90" stroke="#f5a623" stroke-opacity="0.2"/>
+              <line x1="390" y1="60" x2="530" y2="90" stroke="#f5a623" stroke-opacity="0.2"/>
+              <rect x="100" y="90" width="140" height="40" rx="5" fill="#0a1628" stroke="#f5a623" stroke-opacity="0.4"/>
+              <text x="170" y="115" text-anchor="middle" fill="#f5a623" font-size="11" style="font-size:11px">D · H</text>
+              <rect x="460" y="90" width="140" height="40" rx="5" fill="#0a1628" stroke="#f5a623" stroke-opacity="0.4"/>
+              <text x="530" y="115" text-anchor="middle" fill="#f5a623" font-size="11" style="font-size:11px">R · W</text>
+              <line x1="130" y1="130" x2="60" y2="160"  stroke="#f5a623" stroke-opacity="0.15"/>
+              <line x1="170" y1="130" x2="170" y2="160" stroke="#f5a623" stroke-opacity="0.15"/>
+              <line x1="210" y1="130" x2="280" y2="160" stroke="#f5a623" stroke-opacity="0.15"/>
+              <line x1="490" y1="130" x2="420" y2="160" stroke="#f5a623" stroke-opacity="0.15"/>
+              <line x1="530" y1="130" x2="530" y2="160" stroke="#f5a623" stroke-opacity="0.15"/>
+              <line x1="570" y1="130" x2="640" y2="160" stroke="#f5a623" stroke-opacity="0.15"/>
+              <rect x="20" y="165" width="80" height="35" rx="4" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.3"/>
+              <rect x="130" y="165" width="80" height="35" rx="4" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.3"/>
+              <rect x="240" y="165" width="80" height="35" rx="4" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.3"/>
+              <rect x="380" y="165" width="80" height="35" rx="4" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.3"/>
+              <rect x="490" y="165" width="80" height="35" rx="4" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.3"/>
+              <rect x="600" y="165" width="80" height="35" rx="4" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.3"/>
+              <text x="60"  y="187" text-anchor="middle" fill="#00d4ff" font-size="9" style="font-size:9px">A B C</text>
+              <text x="170" y="187" text-anchor="middle" fill="#00d4ff" font-size="9" style="font-size:9px">E F G</text>
+              <text x="280" y="187" text-anchor="middle" fill="#00d4ff" font-size="9" style="font-size:9px">I J K L</text>
+              <text x="420" y="187" text-anchor="middle" fill="#00d4ff" font-size="9" style="font-size:9px">N O P Q</text>
+              <text x="530" y="187" text-anchor="middle" fill="#00d4ff" font-size="9" style="font-size:9px">S T U V</text>
+              <text x="640" y="187" text-anchor="middle" fill="#00d4ff" font-size="9" style="font-size:9px">X Y Z</text>
+              <rect x="280" y="20" width="140" height="40" rx="5" fill="none" stroke="#00ff88" stroke-width="1.5" stroke-opacity="0.4" class="vg-pulse"/>
+              <rect x="460" y="90" width="140" height="40" rx="5" fill="none" stroke="#00ff88" stroke-width="1.5" stroke-opacity="0.4" class="vg-pulse"/>
+              <rect x="490" y="165" width="80" height="35" rx="4" fill="none" stroke="#00ff88" stroke-width="1.5" stroke-opacity="0.4" class="vg-pulse"/>
+              <text x="350" y="240" text-anchor="middle" fill="#00ff88" font-size="11" style="font-size:11px">Lookup "T" → Root → R·W → S·T·U·V → found in 3 hops</text>
+            </svg>
+          </div>
+          <div class="vg-card-body">
+            <div class="vg-card-title">B-Tree on an Append-Only Log</div>
+            <div class="vg-card-text">Hyperbee stores sorted key-value pairs in a B-tree, but here's the trick: <strong>the B-tree itself lives inside a Hypercore</strong>. When you <code>put()</code> a key, Hyperbee serializes the affected tree nodes and appends them as new blocks to the underlying Hypercore. A remote peer can look up a single key by downloading just the tree nodes along the lookup path (O(log n) blocks), without fetching the entire database.</div>
+            <div class="vg-code"><span class="kw">const</span> db = <span class="kw">new</span> <span class="fn">Hyperbee</span>(core, { keyEncoding: <span class="str">'utf-8'</span>, valueEncoding: <span class="str">'json'</span> })
+  
+  <span class="kw">await</span> db.<span class="fn">put</span>(<span class="str">'user:alice'</span>, { name: <span class="str">'Alice'</span>, score: <span class="num">42</span> })
+  <span class="kw">const</span> node = <span class="kw">await</span> db.<span class="fn">get</span>(<span class="str">'user:alice'</span>)
+  
+  <span class="cmt">// Range query — all users</span>
+  <span class="kw">for await</span> (<span class="kw">const</span> { key, value } <span class="kw">of</span> db.<span class="fn">createReadStream</span>({ gte: <span class="str">'user:'</span>, lt: <span class="str">'user;'</span> })) {
+    console.<span class="fn">log</span>(key, value)
+  }</div>
+          </div>
+        </div>
+  <div data-vg-anim="vg-p-1" style="display:none">CiAgKGZ1bmN0aW9uKCkgewogIGlmICghd2luZG93LnZnUnVudGltZSkgcmV0dXJuOwogIHZhciB3cmFwID0gZG9jdW1lbnQucXVlcnlTZWxlY3RvcignW2RhdGEtdmctc25pcHBldD0iaHlwZXJiZWUvYnRyZWUtYXBwZW5kLWxvZyJdJyk7CiAgaWYgKCF3cmFwKSByZXR1cm47CiAgdmFyIGNhcmQgPSB3cmFwLnF1ZXJ5U2VsZWN0b3IoJy52Zy1jYXJkJyk7CiAgdmFyIHN2ZyA9IGNhcmQucXVlcnlTZWxlY3RvcignLnZnLXN2ZycpOwogIGlmICghc3ZnKSB7IGlmICh0eXBlb2YgZ3NhcCAhPT0gJ3VuZGVmaW5lZCcpIGdzYXAuc2V0KGNhcmQsIHsgb3BhY2l0eTogMSwgeTogMCB9KTsgcmV0dXJuOyB9CiAgdmFyIHRsID0gdmdSdW50aW1lLmNhcmRUTChjYXJkKTsKICB2YXIgcmVjdHMgPSBzdmcucXVlcnlTZWxlY3RvckFsbCgncmVjdCcpOwogIHZhciB0ZXh0cyA9IHN2Zy5xdWVyeVNlbGVjdG9yQWxsKCd0ZXh0Jyk7CiAgdmFyIGxpbmVzID0gc3ZnLnF1ZXJ5U2VsZWN0b3JBbGwoJ2xpbmUnKTsKICAvLyBQaGFzZSAxOiBSb290IHJlY3QgKyByb290ICJNIiBsYWJlbCArIGNhcHRpb24KICB0bC5mcm9tKHJlY3RzWzBdLCB7IG9wYWNpdHk6IDAsIHNjYWxlOiAwLjYsIHRyYW5zZm9ybU9yaWdpbjogJ2NlbnRlcicsIGR1cmF0aW9uOiAwLjM1LCBlYXNlOiAnYmFjay5vdXQoMS41KScgfSwgMC4zKTsKICB0bC5mcm9tKHRleHRzWzBdLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjI1IH0sIDAuNCk7CiAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsICdCLXRyZWUgcm9vdCBcdTIwMTQgc29ydGVkIGtleXMgZm9yIE8obG9nIG4pIGxvb2t1cCddKTsKICAvLyBQaGFzZSAyOiBMZXZlbC0xIHJlY3RzICsgbGFiZWxzICsgY29ubmVjdG9yIGxpbmVzIGZyb20gcm9vdAogIHRsLmZyb20oW3JlY3RzWzFdLCByZWN0c1syXV0sIHsgb3BhY2l0eTogMCwgeTogLTEwLCBkdXJhdGlvbjogMC4zLCBzdGFnZ2VyOiAwLjEgfSwgJz4wLjA1Jyk7CiAgdGwuZnJvbShbdGV4dHNbMV0sIHRleHRzWzJdXSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yNSwgc3RhZ2dlcjogMC4xIH0sICc8MC4wNScpOwogIHRsLmZyb20oW2xpbmVzWzBdLCBsaW5lc1sxXV0sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiwgc3RhZ2dlcjogMC4wNSB9LCAnPDAuMDUnKTsKICB0bC5jYWxsKHZnUnVudGltZS5jYXB0aW9uLCBbd3JhcCwgJ0ludGVybmFsIG5vZGVzIG5hcnJvdyB0aGUgc2VhcmNoIHBhdGgnXSk7CiAgLy8gUGhhc2UgMzogTGVhZiByZWN0cyArIGxlYWYgbGFiZWxzICsgY29ubmVjdG9yIGxpbmVzIGZyb20gbGV2ZWwtMQogIHZhciBsZWFmUmVjdHMgPSBBcnJheS5wcm90b3R5cGUuc2xpY2UuY2FsbChyZWN0cywgMywgOSk7CiAgdmFyIGxlYWZUZXh0cyA9IEFycmF5LnByb3RvdHlwZS5zbGljZS5jYWxsKHRleHRzLCAzLCA5KTsKICB2YXIgbGVhZkxpbmVzID0gQXJyYXkucHJvdG90eXBlLnNsaWNlLmNhbGwobGluZXMsIDIsIDgpOwogIHRsLmZyb20obGVhZlJlY3RzLCB7IG9wYWNpdHk6IDAsIHk6IC04LCBkdXJhdGlvbjogMC4yLCBzdGFnZ2VyOiAwLjA1IH0sICc+MC4wNScpOwogIHRsLmZyb20obGVhZlRleHRzLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjIsIHN0YWdnZXI6IDAuMDUgfSwgJzwwLjA1Jyk7CiAgdGwuZnJvbShsZWFmTGluZXMsIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiwgc3RhZ2dlcjogMC4wMyB9LCAnPDAuMDUnKTsKICB0bC5jYWxsKHZnUnVudGltZS5jYXB0aW9uLCBbd3JhcCwgJ0xlYWYgbm9kZXMgaG9sZCB0aGUgYWN0dWFsIGtleS12YWx1ZSBkYXRhJ10pOwogIC8vIFBoYXNlIDQ6IExvb2t1cCBwYXRoIGhpZ2hsaWdodHMgKyBib3R0b20gc3VtbWFyeSB0ZXh0CiAgdGwuZnJvbSh0ZXh0c1s5XSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4zIH0sICc+MC4xJyk7CiAgdmFyIGhpZ2hsaWdodHMgPSBzdmcucXVlcnlTZWxlY3RvckFsbCgnLnZnLXB1bHNlJyk7CiAgaWYgKGhpZ2hsaWdodHMubGVuZ3RoKSB7CiAgICB0bC5jYWxsKGZ1bmN0aW9uICgpIHsKICAgICAgaGlnaGxpZ2h0cy5mb3JFYWNoKGZ1bmN0aW9uIChlbCwgaSkgewogICAgICAgIGdzYXAudG8oZWwsIHsKICAgICAgICAgIGF0dHI6IHsgJ3N0cm9rZS1vcGFjaXR5JzogMSB9LAogICAgICAgICAgc2NhbGU6IDEuMDUsCiAgICAgICAgICB0cmFuc2Zvcm1PcmlnaW46ICdjZW50ZXInLAogICAgICAgICAgZHVyYXRpb246IDAuOCwKICAgICAgICAgIHJlcGVhdDogLTEsCiAgICAgICAgICB5b3lvOiB0cnVlLAogICAgICAgICAgZWFzZTogJ3NpbmUuaW5PdXQnLAogICAgICAgICAgZGVsYXk6IGkgKiAwLjQKICAgICAgICB9KTsKICAgICAgfSk7CiAgICB9KTsKICB9CiAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsICdMb29rdXAgIlQiOiBSb290IFx1MjE5MiBSXHUwMEI3VyBcdTIxOTIgU1x1MDBCN1RcdTAwQjdVXHUwMEI3ViBcdTIwMTQgMyBob3BzLCAzIGJsb2NrcyBkb3dubG9hZGVkJ10pOwogIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnJ10sICc+MScpOwp9KSgpOwogIA==</div>
+</div>
+
+<!-- /wp:html -->
+
 <p><a href="https://github.com/holepunchto/hyperbee" target="_blank">Hyperbee</a> is a sorted key-value store built on a single Hypercore. It maps a <a href="https://en.wikipedia.org/wiki/B-tree" target="_blank">B-tree</a> onto sequential log blocks, giving you <code>O(log n)</code> lookups, range queries, and ordered iteration — all sparse-friendly.</p>
 <h3 id="why-a-b-tree">Why a B-Tree?</h3>
 
 <p>A B-tree is a self-balancing search tree where each node can hold multiple keys and has multiple children. Compared to a binary search tree, a B-tree is <em>wider</em> and <em>shorter</em> — fewer levels means fewer blocks to download for a lookup.</p>
-<p>Hyperbee uses a B-tree (not a B+ tree — values are stored at every level, not just the leaves). The tree parameters are:</p>
+<p>Hyperbee uses a B-tree (not a B+ tree — values are stored at every level, not just the leaves). At the time of writing, the tree parameters are:</p>
 <ul>
 <li><strong>Maximum children per node:</strong> 9</li>
 <li><strong>Maximum keys per node:</strong> 8</li>
@@ -51,7 +99,7 @@
 </ul>
 <p>When a node exceeds 8 keys, it splits. When it drops below 4, it rebalances.</p>
 <blockquote class="callout-feynman">
-<p><strong>Feynman Moment:</strong> Why does wider-and-shorter matter for P2P? Because every level in the tree is a potential network round-trip. In a binary tree with a million entries, a lookup traverses ~20 levels. In Hyperbee&#39;s B-tree with max 9 children, the same million entries fit in ~7 levels. Fewer levels = fewer blocks to download = faster sparse queries over the network.</p>
+<p><strong>Feynman Moment:</strong> Why does wider-and-shorter matter for P2P? Because every level in the tree is a set of blocks you must fetch before you know where to go next. In a binary tree with a million entries, a lookup traverses ~20 levels. In Hyperbee&#39;s B-tree with max 9 children, the same million entries fit in 7–9 levels (fuller nodes when keys arrive in random order, half-full ones when they arrive sorted). Fewer levels = fewer blocks to download = faster sparse queries over the network. And the levels don&#39;t have to be serial round-trips: Hyperbee ships a replication extension that lets a peer who has the data walk the path for you and send back the list of every block it touched in one message, so you fetch them all at once instead of one level at a time.</p>
 </blockquote>
 
 <h3 id="how-it-maps-to-hypercore">How It Maps to Hypercore</h3>
@@ -84,7 +132,7 @@
 
 <h3 id="sparse-lookups">Sparse Lookups</h3>
 
-<p>When a remote peer queries <code>db.get(&quot;alice&quot;)</code>, Hyperbee only downloads the blocks along the B-tree path from the current root to the leaf containing &quot;alice&quot;. For a database with a million entries, that&#39;s roughly 7 blocks — not a million.</p>
+<p>When a remote peer queries <code>db.get(&quot;alice&quot;)</code>, Hyperbee only downloads the blocks along the B-tree path from the current root to the leaf containing &quot;alice&quot; — plus the blocks holding the keys it compares against on the way down, because a node stores its keys as pointers to the blocks that wrote them. For a database with a million entries, that&#39;s about 70 blocks — under 10 KB when keys and values are small, a few tens of KB when they aren&#39;t — not a million blocks.</p>
 <p>Each downloaded block is a Hypercore block, which means it comes with a Merkle proof (from <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3</a>). The lookup is not only sparse but <strong>cryptographically verified</strong> — you know each block is authentic without trusting the peer who sent it.</p>
 <hr>
 <h2 id="hyperbee-api-what-you-can-do">Hyperbee API: What You Can Do</h2>
@@ -214,6 +262,64 @@ entry.on('update', () =&gt; {
 <hr>
 <h2 id="hyperdrive-a-distributed-file-system">Hyperdrive: A Distributed File System</h2>
 
+<!-- wp:html -->
+<div class="vg-embed" data-vg-snippet="hyperdrive/two-core-architecture">
+  <div class="vg-card vg-card--wide">
+          <div class="vg-card-visual">
+            <svg class="vg-svg" viewBox="0 0 700 240" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="40" y="30" width="280" height="170" rx="8" fill="#0a1628" stroke="#f5a623" stroke-opacity="0.3"/>
+              <text x="180" y="55" text-anchor="middle" fill="#f5a623" font-size="13" font-weight="600" style="font-size:13px;font-weight:600">Metadata (Hyperbee)</text>
+              <rect x="60" y="70" width="240" height="25" rx="3" fill="#f5a623" fill-opacity="0.05" stroke="#f5a623" stroke-opacity="0.2"/>
+              <text x="70" y="87" fill="#f5a623" font-size="10" style="font-size:10px">/readme.md</text>
+              <text x="260" y="87" text-anchor="end" fill="#636e7b" font-size="9" style="font-size:9px">2.1 KB · blob#0</text>
+              <rect x="60" y="100" width="240" height="25" rx="3" fill="#f5a623" fill-opacity="0.05" stroke="#f5a623" stroke-opacity="0.2"/>
+              <text x="70" y="117" fill="#f5a623" font-size="10" style="font-size:10px">/src/index.js</text>
+              <text x="260" y="117" text-anchor="end" fill="#636e7b" font-size="9" style="font-size:9px">890 B · blob#1-2</text>
+              <rect x="60" y="130" width="240" height="25" rx="3" fill="#f5a623" fill-opacity="0.05" stroke="#f5a623" stroke-opacity="0.2"/>
+              <text x="70" y="147" fill="#f5a623" font-size="10" style="font-size:10px">/assets/logo.png</text>
+              <text x="260" y="147" text-anchor="end" fill="#636e7b" font-size="9" style="font-size:9px">48 KB · blob#3-5</text>
+              <rect x="60" y="160" width="240" height="25" rx="3" fill="#f5a623" fill-opacity="0.05" stroke="#f5a623" stroke-opacity="0.2"/>
+              <text x="70" y="177" fill="#f5a623" font-size="10" style="font-size:10px">/package.json</text>
+              <text x="260" y="177" text-anchor="end" fill="#636e7b" font-size="9" style="font-size:9px">340 B · blob#6</text>
+              <rect x="380" y="30" width="280" height="170" rx="8" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.3"/>
+              <text x="520" y="55" text-anchor="middle" fill="#00d4ff" font-size="13" font-weight="600" style="font-size:13px;font-weight:600">Content (Hypercore)</text>
+              <rect x="400" y="75" width="45" height="35" rx="3" fill="#00d4ff" fill-opacity="0.08" stroke="#00d4ff" stroke-opacity="0.3"/>
+              <rect x="450" y="75" width="45" height="35" rx="3" fill="#00d4ff" fill-opacity="0.08" stroke="#00d4ff" stroke-opacity="0.3"/>
+              <rect x="500" y="75" width="45" height="35" rx="3" fill="#00d4ff" fill-opacity="0.08" stroke="#00d4ff" stroke-opacity="0.3"/>
+              <rect x="550" y="75" width="45" height="35" rx="3" fill="#00d4ff" fill-opacity="0.08" stroke="#00d4ff" stroke-opacity="0.3"/>
+              <rect x="600" y="75" width="45" height="35" rx="3" fill="#00d4ff" fill-opacity="0.08" stroke="#00d4ff" stroke-opacity="0.3"/>
+              <rect x="400" y="120" width="45" height="35" rx="3" fill="#00d4ff" fill-opacity="0.08" stroke="#00d4ff" stroke-opacity="0.3"/>
+              <rect x="450" y="120" width="45" height="35" rx="3" fill="#00d4ff" fill-opacity="0.08" stroke="#00d4ff" stroke-opacity="0.3"/>
+              <text x="422" y="97" text-anchor="middle" fill="#00d4ff" font-size="9" style="font-size:9px">#0</text>
+              <text x="472" y="97" text-anchor="middle" fill="#00d4ff" font-size="9" style="font-size:9px">#1</text>
+              <text x="522" y="97" text-anchor="middle" fill="#00d4ff" font-size="9" style="font-size:9px">#2</text>
+              <text x="572" y="97" text-anchor="middle" fill="#00d4ff" font-size="9" style="font-size:9px">#3</text>
+              <text x="622" y="97" text-anchor="middle" fill="#00d4ff" font-size="9" style="font-size:9px">#4</text>
+              <text x="422" y="142" text-anchor="middle" fill="#00d4ff" font-size="9" style="font-size:9px">#5</text>
+              <text x="472" y="142" text-anchor="middle" fill="#00d4ff" font-size="9" style="font-size:9px">#6</text>
+              <line x1="320" y1="82" x2="397" y2="92" stroke="#636e7b" stroke-width="1" stroke-dasharray="4 3"/>
+              <text x="350" y="220" text-anchor="middle" fill="#636e7b" font-size="10" style="font-size:10px">Metadata points to content blocks → sparse file downloads</text>
+            </svg>
+          </div>
+          <div class="vg-card-body">
+            <div class="vg-card-title">Two-Core Architecture</div>
+            <div class="vg-card-text">Hyperdrive separates metadata from content into two Hypercores. The metadata index is cheap, and content is downloaded on demand — sparse P2P file sharing.</div>
+            <div class="vg-code"><span class="kw">const</span> drive = <span class="kw">new</span> <span class="fn">Hyperdrive</span>(store)
+  
+  <span class="kw">await</span> drive.<span class="fn">put</span>(<span class="str">'/hello.txt'</span>, Buffer.<span class="fn">from</span>(<span class="str">'Hello P2P!'</span>))
+  <span class="kw">const</span> buf = <span class="kw">await</span> drive.<span class="fn">get</span>(<span class="str">'/hello.txt'</span>)
+  
+  <span class="cmt">// List directory</span>
+  <span class="kw">for await</span> (<span class="kw">const</span> entry <span class="kw">of</span> drive.<span class="fn">readdir</span>(<span class="str">'/'</span>)) {
+    console.<span class="fn">log</span>(entry)
+  }</div>
+          </div>
+        </div>
+  <div data-vg-anim="vg-p-2" style="display:none">CiAgKGZ1bmN0aW9uKCkgewogIGlmICghd2luZG93LnZnUnVudGltZSkgcmV0dXJuOwogIHZhciB3cmFwID0gZG9jdW1lbnQucXVlcnlTZWxlY3RvcignW2RhdGEtdmctc25pcHBldD0iaHlwZXJkcml2ZS90d28tY29yZS1hcmNoaXRlY3R1cmUiXScpOwogIGlmICghd3JhcCkgcmV0dXJuOwogIHZhciBjYXJkID0gd3JhcC5xdWVyeVNlbGVjdG9yKCcudmctY2FyZCcpOwogIHZhciBzdmcgPSBjYXJkLnF1ZXJ5U2VsZWN0b3IoJy52Zy1zdmcnKTsKICBpZiAoIXN2ZykgeyBpZiAodHlwZW9mIGdzYXAgIT09ICd1bmRlZmluZWQnKSBnc2FwLnNldChjYXJkLCB7IG9wYWNpdHk6IDEsIHk6IDAgfSk7IHJldHVybjsgfQogIHZhciB0bCA9IHZnUnVudGltZS5jYXJkVEwoY2FyZCk7CiAgdmFyIHJlY3RzID0gc3ZnLnF1ZXJ5U2VsZWN0b3JBbGwoJ3JlY3QnKTsKICB2YXIgdGV4dHMgPSBzdmcucXVlcnlTZWxlY3RvckFsbCgndGV4dCcpOwogIC8vIFBoYXNlIDE6IE1ldGFkYXRhIGNvbnRhaW5lciByZWN0ICsgaGVhZGVyIHRleHQKICB0bC5mcm9tKHJlY3RzWzBdLCB7IG9wYWNpdHk6IDAsIHg6IC0zMCwgZHVyYXRpb246IDAuNCwgZWFzZTogJ3Bvd2VyMi5vdXQnIH0sIDAuMyk7CiAgdGwuZnJvbSh0ZXh0c1swXSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yNSB9LCAwLjQpOwogIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnTWV0YWRhdGEgSHlwZXJiZWUgXHUyMDE0IGZpbGUgbmFtZXMsIHNpemVzLCBibG9jayBwb2ludGVycyddKTsKICAvLyBQaGFzZSAyOiBNZXRhZGF0YSBlbnRyeSByZWN0cyArIGZpbGUgbmFtZS9zaXplIHRleHRzCiAgdmFyIG1ldGFFbnRyaWVzID0gQXJyYXkucHJvdG90eXBlLnNsaWNlLmNhbGwocmVjdHMsIDEsIDUpOwogIHZhciBtZXRhVGV4dHMgPSBBcnJheS5wcm90b3R5cGUuc2xpY2UuY2FsbCh0ZXh0cywgMSwgOSk7CiAgdGwuZnJvbShtZXRhRW50cmllcywgeyBvcGFjaXR5OiAwLCB4OiAtMTUsIGR1cmF0aW9uOiAwLjI1LCBzdGFnZ2VyOiAwLjA4IH0sICc+MC4wNScpOwogIHRsLmZyb20obWV0YVRleHRzLCB7IG9wYWNpdHk6IDAsIHg6IC0xMCwgZHVyYXRpb246IDAuMiwgc3RhZ2dlcjogMC4wNCB9LCAnPDAuMDUnKTsKICB0bC5jYWxsKHZnUnVudGltZS5jYXB0aW9uLCBbd3JhcCwgJ0VhY2ggZmlsZSBlbnRyeSBwb2ludHMgdG8gY29udGVudCBibG9ja3MgYnkgaW5kZXgnXSk7CiAgLy8gUGhhc2UgMzogQ29udGVudCBjb250YWluZXIgcmVjdCArIGhlYWRlciArIGNvbnRlbnQgYmxvY2sgcmVjdHMgKyBibG9jayBudW1iZXIgdGV4dHMKICB0bC5mcm9tKHJlY3RzWzVdLCB7IG9wYWNpdHk6IDAsIHg6IDMwLCBkdXJhdGlvbjogMC40LCBlYXNlOiAncG93ZXIyLm91dCcgfSwgJz4wLjEnKTsKICB0bC5mcm9tKHRleHRzWzldLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjI1IH0sICc8MC4xJyk7CiAgdmFyIGNvbnRlbnRCbG9ja3MgPSBBcnJheS5wcm90b3R5cGUuc2xpY2UuY2FsbChyZWN0cywgNik7CiAgdmFyIGJsb2NrVGV4dHMgPSBBcnJheS5wcm90b3R5cGUuc2xpY2UuY2FsbCh0ZXh0cywgMTAsIDE3KTsKICB0bC5mcm9tKGNvbnRlbnRCbG9ja3MsIHsgb3BhY2l0eTogMCwgc2NhbGU6IDAuNywgdHJhbnNmb3JtT3JpZ2luOiAnY2VudGVyJywgZHVyYXRpb246IDAuMiwgc3RhZ2dlcjogMC4wNCwgZWFzZTogJ2JhY2sub3V0KDEuMyknIH0sICc+MC4wNScpOwogIHRsLmZyb20oYmxvY2tUZXh0cywgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yLCBzdGFnZ2VyOiAwLjA0IH0sICc8MC4wNScpOwogIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnQ29udGVudCBIeXBlcmNvcmUgXHUyMDE0IHJhdyBmaWxlIGRhdGEgaW4gc2VxdWVudGlhbCBibG9ja3MnXSk7CiAgLy8gUGhhc2UgNDogUG9pbnRlciBsaW5lIGRyYXdzICsgYm90dG9tIHN1bW1hcnkgdGV4dAogIHZnUnVudGltZS5kcmF3TGluZXModGwsIHN2ZywgJ2xpbmUnLCB7IGR1cjogMC40IH0pOwogIHRsLmZyb20odGV4dHNbMTddLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjMgfSwgJzwwLjEnKTsKICB0bC5jYWxsKHZnUnVudGltZS5jYXB0aW9uLCBbd3JhcCwgJ01ldGFkYXRhIGlzIGNoZWFwIHRvIHN5bmMgXHUyMDE0IGNvbnRlbnQgZG93bmxvYWRlZCBvbiBkZW1hbmQnXSk7CiAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsICcnXSwgJz4xJyk7Cn0pKCk7CiAg</div>
+</div>
+
+<!-- /wp:html -->
+
 <p><a href="https://github.com/holepunchto/hyperdrive" target="_blank">Hyperdrive</a> is a POSIX-like file system built on top of Hyperbee and a companion module called <a href="https://github.com/holepunchto/hyperblobs" target="_blank">Hyperblobs</a>. It uses a <strong>two-core architecture</strong>:</p>
 <pre><code>┌──────────────────────────────────────────────────────┐
 │                    Hyperdrive                         │
@@ -323,7 +429,7 @@ await drive.put('/docs/api/ref.md', Buffer.from('# API'))
 
 // List entry names (shallow, one level)
 for await (const name of drive.readdir('/docs')) {
-  console.log(name)  // 'readme.md', 'guide.md', 'api'
+  console.log(name)  // 'api', 'guide.md', 'readme.md' — sorted by key
 }
 
 // List full entries (recursive by default)
@@ -403,7 +509,8 @@ drive.contentKey   // Public key of the blobs core</code></pre>
      ▼
   Ed25519 keypair (crypto_sign_seed_keypair)
      │
-     ├── publicKey (32 bytes) ── identifies the Hypercore
+     ├── publicKey (32 bytes) ── the signer in the core's manifest
+     │                            (core.key = BLAKE2b hash of that manifest)
      └── secretKey (64 bytes) ── signs new appends</code></pre>
 
 <p>The derivation uses <code>crypto_generichash_batch</code> (BLAKE2b keyed hashing) with the <code>primaryKey</code> as the hash key, and three data inputs concatenated in order:</p>
@@ -412,7 +519,7 @@ drive.contentKey   // Public key of the blobs core</code></pre>
 <li><strong>namespace</strong> — a 32-byte namespace (defaults to all zeros for the root store)</li>
 <li><strong>name</strong> — the UTF-8 encoded name string you passed to <code>store.get()</code></li>
 </ol>
-<p>The resulting 32-byte seed is fed into <code>crypto_sign_seed_keypair</code> to produce a deterministic Ed25519 keypair.</p>
+<p>The resulting 32-byte seed is fed into <code>crypto_sign_seed_keypair</code> to produce a deterministic Ed25519 keypair. Corestore then wraps the public key in a version-1 manifest (<code>{ version: 1, signers: [{ publicKey }] }</code>), and the Hypercore&#39;s key is the BLAKE2b hash of that manifest — still fully determined by the seed, but not byte-for-byte the public key (Part 3 covers why keys are manifest hashes).</p>
 <blockquote class="callout-insight">
 <p><strong>Key Insight:</strong> The same <code>primaryKey</code> + <code>namespace</code> + <code>name</code> always produces the same keypair. This means a user can reconstruct every Hypercore they&#39;ve ever created from their master seed alone — no need to store individual keypairs. It&#39;s the same principle as hierarchical deterministic wallets in cryptocurrency, applied to P2P data structures.</p>
 </blockquote>
@@ -435,8 +542,8 @@ const again = store.get({ name: 'chat-log' })
 await again.ready()
 console.log(again.key.equals(core1.key))  // true
 
-// Open a remote core by public key (read-only, no keypair derived)
-const remote = store.get({ key: somePublicKey })</code></pre>
+// Open a remote core by its core key (read-only, no keypair derived)
+const remote = store.get({ key: someCoreKey })</code></pre>
 
 <h3 id="namespaces">Namespaces</h3>
 
@@ -478,7 +585,7 @@ const store2 = new Corestore('./other-storage', {
 
 <h3 id="sessions-and-resource-management">Sessions and Resource Management</h3>
 
-<p>Corestore uses a garbage collection model for Hypercores. When a core becomes idle (no active sessions referencing it), it enters a GC cycle. A core is closed after 3 GC ticks (~6 seconds of idle time, at 2-second intervals):</p>
+<p>Corestore uses a garbage collection model for Hypercores. When a core becomes idle (no active sessions referencing it), it enters a GC cycle. In the current implementation, a core is closed after approximately 3 GC ticks (~6 seconds of idle time, at 2-second intervals):</p>
 <div class="code-filename">corestore-sessions.js</div>
 <pre><code class="language-js">// Sessions share the same underlying storage and cores
 const session = store.session()
@@ -491,9 +598,11 @@ const core = session.get({ name: 'temp' })
 await session.close()
 
 // For mobile/embedded: suspend and resume storage
+// (on Android, pass { suspend: true } to the Corestore constructor —
+//  otherwise suspend() only flushes)
 await store.suspend()
 // ... app backgrounded ...
-store.resume()</code></pre>
+await store.resume()</code></pre>
 
 <h3 id="replication">Replication</h3>
 
@@ -531,9 +640,9 @@ graph TD
 <p><em>Figure 1: Reading a file from a remote Hyperdrive. The B-tree lookup in Hyperbee requires only path nodes (sparse). The blob fetch in Hyperblobs downloads only the file&#39;s content blocks. Every block is Merkle-verified.</em></p>
 <p>The total data downloaded:</p>
 <ul>
-<li><strong>~7 Hyperbee blocks</strong> (B-tree path for a million-file drive)</li>
+<li><strong>~70 Hyperbee blocks, 15–25 KB</strong> (the B-tree path plus the key blocks compared along it, for a million-file drive — the byte figure tracks how fat your entries are)</li>
 <li><strong>3 Hyperblobs blocks</strong> (the actual file content — 3 x 64 KB)</li>
-<li><strong>Merkle proofs</strong> for each block (a handful of 32-byte hashes)</li>
+<li><strong>Merkle proofs</strong> for each block (up to ~20 sibling hashes of 32 bytes for a million-block core, fewer once neighbouring proofs are cached — in practice those blocks move roughly 40–65 KB over the wire)</li>
 </ul>
 <p>Everything else in the drive stays undownloaded. And every byte is cryptographically verified.</p>
 <hr>
@@ -544,12 +653,12 @@ graph TD
 <tr><th>What You Gain</th><th>What You Pay</th></tr>
 </thead>
 <tbody>
-<tr><td>Sorted key-value lookups with `O(log n)` sparse access</td><td>Append-only B-tree duplicates path nodes on every mutation — storage grows faster than a mutable B-tree</td></tr>
-<tr><td>Free versioning — every past state is accessible via `checkout()`</td><td>Old versions accumulate unless explicitly garbage-collected</td></tr>
+<tr><td>Sorted key-value lookups with <code>O(log n)</code> sparse access</td><td>Append-only B-tree duplicates path nodes on every mutation — storage grows faster than a mutable B-tree</td></tr>
+<tr><td>Free versioning — every past state is accessible via <code>checkout()</code></td><td>Old versions accumulate unless explicitly garbage-collected</td></tr>
 <tr><td>Two-core architecture separates metadata from content</td><td>Two discovery keys to manage, blobs core loaded lazily</td></tr>
-<tr><td>Deterministic key derivation from a single seed</td><td>The `primaryKey` is a single point of compromise — losing it means losing every keypair</td></tr>
+<tr><td>Deterministic key derivation from a single seed</td><td>The <code>primaryKey</code> is a single point of compromise — losing it means losing every keypair</td></tr>
 <tr><td>Automatic GC for idle Hypercores</td><td>~6-second idle threshold may cause unnecessary re-opens in bursty access patterns</td></tr>
-<tr><td>Atomic batches via `batch.flush()`</td><td>Batch serialization happens in memory before the single append</td></tr>
+<tr><td>Atomic batches via <code>batch.flush()</code></td><td>Batch serialization happens in memory before the single append</td></tr>
 </tbody>
 </table></figure>
 
@@ -557,7 +666,7 @@ graph TD
 <h2 id="key-takeaways">Key Takeaways</h2>
 
 <ul>
-<li><p><strong>Hyperbee maps a B-tree onto Hypercore&#39;s sequential blocks.</strong> Each mutation appends a new block with the key, value, and a snapshot of the modified path. With max 9 children per node, a million-entry database requires ~7 levels — 7 blocks to download for any lookup.</p>
+<li><p><strong>Hyperbee maps a B-tree onto Hypercore&#39;s sequential blocks.</strong> Each mutation appends a new block with the key, value, and a snapshot of the modified path. With max 9 children per node, a million-entry database is 7–9 levels deep — about 70 blocks — under 10 KB for small entries, a few tens of KB for fat ones — to download for any lookup, because each level also fetches the blocks holding the keys it compares against.</p>
 </li>
 <li><p><strong>Hyperdrive separates metadata from content.</strong> A Hyperbee stores file entries (path, executable flag, blob pointer, metadata). A Hyperblobs core stores raw content in 64 KB chunks. Both are independent Hypercores managed by a single Corestore.</p>
 </li>
@@ -569,10 +678,24 @@ graph TD
 </li>
 </ul>
 <hr>
+<h2 id="frequently-asked-questions">Frequently Asked Questions</h2>
+
+<h3 id="how-does-hyperbee-work">How does Hyperbee work?</h3>
+
+<p>Hyperbee maps a B-tree onto Hypercore&#39;s sequential append-only log, giving O(log n) sorted lookups with sparse replication. Each mutation appends a new block containing the key, value, and a snapshot of the modified B-tree path. Unchanged subtrees are referenced by their existing sequence numbers.</p>
+<h3 id="what-is-the-difference-between-hyperbee-and-hyperdrive">What is the difference between Hyperbee and Hyperdrive?</h3>
+
+<p>Hyperbee is a sorted key-value store built on a single Hypercore. Hyperdrive is a file system built on top of Hyperbee (for metadata like file paths and permissions) and Hyperblobs (for raw file content stored in 64 KB chunks on a separate Hypercore).</p>
+<h3 id="how-does-corestore-derive-keys">How does Corestore derive keys?</h3>
+
+<p>Corestore uses BLAKE2b keyed hashing with a master seed (the primaryKey) to deterministically derive Ed25519 keypairs from human-readable names. The derivation chain is: primaryKey + namespace + name -&gt; BLAKE2b keyed hash -&gt; 32-byte seed -&gt; Ed25519 keypair. The same inputs always produce the same keypair.</p>
+<hr>
 <h2 id="what-s-next">What's Next</h2>
 
 <p>We have data structures: key-value stores, file systems, deterministic key management. But we&#39;re still missing a fundamental piece — how do peers <em>find each other</em>?</p>
 <p>In <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5</a>, we&#39;ll explore Hyperswarm&#39;s DHT-based discovery: how peers announce themselves on topics, how the Kademlia DHT routes queries without a central server, and how <code>joinPeer()</code> maintains persistent connections through the chaos of peer churn.</p>
+<p>[heartit_lab title="p2p-sparse-db" cmd="npx @heart-it/p2p-sparse-db seed" desc="Seed 10,000 invoices, then range-query 50 from a second terminal and count the kilobytes you actually downloaded." repo="https://github.com/heart-IT/p2p-from-scratch-labs" note="needs Node.js 18+ · two terminals — the seeder prints the second command"]</p>
+<p>[heartit_lab title="p2p-drop" cmd="npx @heart-it/p2p-drop seed" desc="Share a 2 MB drive, list every file from kilobytes of metadata, download exactly one — and watch the accounting prove the rest never traveled." repo="https://github.com/heart-IT/p2p-from-scratch-labs" note="needs Node.js 18+ · two terminals — the seeder prints the get command"]</p>
 <hr>
 <h2 id="references-further-reading">References & Further Reading</h2>
 
@@ -590,33 +713,19 @@ graph TD
 <hr>
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <strong>Part 4: From Logs to Databases (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
+<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: NAT Hole Punching Explained</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: P2P Encryption with the Noise Protocol</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Merkle Trees and Append-Only Logs</a> | <strong>Part 4: Building P2P Databases with Hyperbee and Hyperdrive (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Peer Discovery with Kademlia DHT</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Multi-Writer Consensus with Autobase</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: P2P Security — Threats, Defenses, and Trust</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Offline-First UX for P2P Applications</a></p>
 </blockquote>
 
 
 <!-- Mermaid.js — renders <pre class="mermaid"> blocks -->
-<script type="module">
-import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-mermaid.initialize({
-  startOnLoad: true,
-  theme: 'dark',
-  themeVariables: {
-    primaryColor: '#2d333b',
-    primaryTextColor: '#8b949e',
-    primaryBorderColor: '#373e47',
-    lineColor: '#539bf5',
-    secondaryColor: '#22272e',
-    tertiaryColor: '#1b1f24',
-    noteBkgColor: '#2d333b',
-    noteTextColor: '#8b949e',
-    noteBorderColor: '#986ee2',
-    actorBkg: '#2d333b',
-    actorBorder: '#373e47',
-    actorTextColor: '#cdd9e5',
-    actorLineColor: '#373e47',
-    signalColor: '#539bf5',
-    signalTextColor: '#8b949e',
-    sequenceNumberColor: '#1b1f24'
-  }
-});
-</script>
+<div data-vg-mod="vg-p-4" style="display:none">CmltcG9ydCBtZXJtYWlkIGZyb20gJ2h0dHBzOi8vY2RuLmpzZGVsaXZyLm5ldC9ucG0vbWVybWFpZEAxMS4xNC4wL2Rpc3QvbWVybWFpZC5lc20ubWluLm1qcyc7Cm1lcm1haWQuaW5pdGlhbGl6ZSh7CiAgc3RhcnRPbkxvYWQ6IHRydWUsCiAgdGhlbWU6ICdkYXJrJywKICB0aGVtZVZhcmlhYmxlczogewogICAgcHJpbWFyeUNvbG9yOiAnIzJkMzMzYicsCiAgICBwcmltYXJ5VGV4dENvbG9yOiAnIzhiOTQ5ZScsCiAgICBwcmltYXJ5Qm9yZGVyQ29sb3I6ICcjMzczZTQ3JywKICAgIGxpbmVDb2xvcjogJyM1MzliZjUnLAogICAgc2Vjb25kYXJ5Q29sb3I6ICcjMjIyNzJlJywKICAgIHRlcnRpYXJ5Q29sb3I6ICcjMWIxZjI0JywKICAgIG5vdGVCa2dDb2xvcjogJyMyZDMzM2InLAogICAgbm90ZVRleHRDb2xvcjogJyM4Yjk0OWUnLAogICAgbm90ZUJvcmRlckNvbG9yOiAnIzk4NmVlMicsCiAgICBhY3RvckJrZzogJyMyZDMzM2InLAogICAgYWN0b3JCb3JkZXI6ICcjMzczZTQ3JywKICAgIGFjdG9yVGV4dENvbG9yOiAnI2NkZDllNScsCiAgICBhY3RvckxpbmVDb2xvcjogJyMzNzNlNDcnLAogICAgc2lnbmFsQ29sb3I6ICcjNTM5YmY1JywKICAgIHNpZ25hbFRleHRDb2xvcjogJyM4Yjk0OWUnLAogICAgc2VxdWVuY2VOdW1iZXJDb2xvcjogJyMxYjFmMjQnCiAgfQp9KTsK</div>
+
+<!-- wp:html -->
+<!-- Visual Guide Dependencies -->
+<div data-vg-css="vg-p-0" style="display:none">Ci8qIFZpc3VhbCBHdWlkZSBFbWJlZCBTdHlsZXMg4oCUIGV4dHJhY3RlZCBmcm9tIHZpc3VhbC1ndWlkZS5odG1sICovCgovKiDilIDilIAgU2NvcGVkIGJveC1zaXppbmcgKGF2b2lkcyBicmVha2luZyBXb3JkUHJlc3MgZ2xvYmFscykg4pSA4pSAICovCi52Zy1lbWJlZCwgLnZnLWVtYmVkICosIC52Zy1lbWJlZCAqOjpiZWZvcmUsIC52Zy1lbWJlZCAqOjphZnRlciB7CiAgYm94LXNpemluZzogYm9yZGVyLWJveDsKfQoKLyog4pSA4pSAIEJhc2UgZGVzaWduIHRva2VucyAoZnJvbSBoZWFydGl0LWJsb2cuY3NzKSDilIDilIAgKi8KOnJvb3QgewogIC0tYmctY29kZTogIzE2MWExZjsKICAtLXRleHQtcHJpbWFyeTogI2NkZDllNTsKICAtLXRleHQtc2Vjb25kYXJ5OiAjOGI5NDllOwogIC0tdGV4dC1tdXRlZDogIzYzNmU3YjsKICAtLWZvbnQtc2FuczogJ1NwYWNlIEdyb3Rlc2snLCAnSW50ZXInLCAtYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsICdTZWdvZSBVSScsIHN5c3RlbS11aSwgc2Fucy1zZXJpZjsKICAtLWZvbnQtYm9keTogJ0ludGVyJywgLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCAnU2Vnb2UgVUknLCBzeXN0ZW0tdWksIHNhbnMtc2VyaWY7CiAgLS1mb250LW1vbm86ICdKZXRCcmFpbnMgTW9ubycsICdGaXJhIENvZGUnLCAnU0YgTW9ubycsICdDYXNjYWRpYSBDb2RlJywgJ0NvbnNvbGFzJywgbW9ub3NwYWNlOwogIC0tc3BhY2UtMTogNHB4OwogIC0tc3BhY2UtMjogOHB4OwogIC0tc3BhY2UtMzogMTJweDsKICAtLXNwYWNlLTQ6IDE2cHg7CiAgLS1zcGFjZS01OiAyNHB4OwogIC0tc3BhY2UtNjogMzJweDsKICAtLXNwYWNlLTc6IDQ4cHg7CiAgLS1zcGFjZS04OiA2NHB4OwogIC0tc3BhY2UtOTogOTZweDsKCiAgLyogVmlzdWFsIGd1aWRlIHRva2VucyAqLwogIC0tdmctY3lhbjogIzAwZDRmZjsKICAtLXZnLWN5YW4tZGltOiByZ2JhKDAsIDIxMiwgMjU1LCAwLjE1KTsKICAtLXZnLW1hZ2VudGE6ICNmZjAwY2M7CiAgLS12Zy1tYWdlbnRhLWRpbTogcmdiYSgyNTUsIDAsIDIwNCwgMC4xMik7CiAgLS12Zy1ncmVlbjogIzAwZmY4ODsKICAtLXZnLWdyZWVuLWRpbTogcmdiYSgwLCAyNTUsIDEzNiwgMC4xMik7CiAgLS12Zy1hbWJlcjogI2Y1YTYyMzsKICAtLXZnLWFtYmVyLWRpbTogcmdiYSgyNDUsIDE2NiwgMzUsIDAuMTIpOwogIC0tdmctcHVycGxlOiAjYTg1NWY3OwogIC0tdmctcHVycGxlLWRpbTogcmdiYSgxNjgsIDg1LCAyNDcsIDAuMTIpOwogIC0tdmctcmVkOiAjZmY2YjZiOwogIC0tdmctcmVkLWRpbTogcmdiYSgyNTUsIDEwNywgMTA3LCAwLjEyKTsKICAtLXZnLWJnOiAjMDUwODEwOwogIC0tdmctYmctY2FyZDogIzBhMGYxYTsKICAtLXZnLWJnLWNhcmQtaG92ZXI6ICMwZjE1MjU7CiAgLS12Zy1ib3JkZXI6ICMxYTIwMzU7CiAgLS12Zy1ib3JkZXItZ2xvdzogcmdiYSgwLCAyMTIsIDI1NSwgMC4yKTsKICAtLXZnLW1heC13OiAxMTAwcHg7CiAgLS12Zy1uYXYtaDogNTJweDsKfQoKCi8qIOKUgOKUgCBDYXJkcyDilIDilIAgKi8KLnZnLWRpYWdyYW0tZ3JpZCB7IGRpc3BsYXk6IGdyaWQ7IGdyaWQtdGVtcGxhdGUtY29sdW1uczogMWZyOyBnYXA6IDI0cHg7IH0KLnZnLWNhcmQgewogIGJhY2tncm91bmQ6IHZhcigtLXZnLWJnLWNhcmQpOyBib3JkZXI6IDFweCBzb2xpZCB2YXIoLS12Zy1ib3JkZXIpOwogIGJvcmRlci1yYWRpdXM6IDhweDsgb3ZlcmZsb3c6IGhpZGRlbjsKICB0cmFuc2l0aW9uOiBib3JkZXItY29sb3IgMC4zcywgYm94LXNoYWRvdyAwLjNzOwogIG9wYWNpdHk6IDA7IHRyYW5zZm9ybTogdHJhbnNsYXRlWSgyNHB4KTsgd2lsbC1jaGFuZ2U6IG9wYWNpdHksIHRyYW5zZm9ybTsKfQoudmctY2FyZDpob3ZlciB7IGJvcmRlci1jb2xvcjogdmFyKC0tdmctYm9yZGVyLWdsb3cpOyBib3gtc2hhZG93OiAwIDAgMzBweCByZ2JhKDAsMjEyLDI1NSwwLjA2KTsgfQoudmctY2FyZC12aXN1YWwgewogIHBhZGRpbmc6IDMycHggMjRweDsgZGlzcGxheTogZmxleDsgYWxpZ24taXRlbXM6IGNlbnRlcjsganVzdGlmeS1jb250ZW50OiBjZW50ZXI7CiAgbWluLWhlaWdodDogMjYwcHg7IHBvc2l0aW9uOiByZWxhdGl2ZTsgb3ZlcmZsb3c6IGhpZGRlbjsKfQoudmctY2FyZC1ib2R5IHsgcGFkZGluZzogMjBweCAyNHB4IDI0cHg7IGJvcmRlci10b3A6IDFweCBzb2xpZCB2YXIoLS12Zy1ib3JkZXIpOyB9Ci52Zy1jYXJkLXRpdGxlIHsgZm9udC1mYW1pbHk6IHZhcigtLWZvbnQtc2Fucyk7IGZvbnQtc2l6ZTogMTZweDsgZm9udC13ZWlnaHQ6IDYwMDsgY29sb3I6IHZhcigtLXRleHQtcHJpbWFyeSk7IG1hcmdpbi1ib3R0b206IDZweDsgfQoudmctY2FyZC10ZXh0IHsgZm9udC1mYW1pbHk6IHZhcigtLWZvbnQtYm9keSk7IGZvbnQtc2l6ZTogMTRweDsgY29sb3I6IHZhcigtLXRleHQtc2Vjb25kYXJ5KTsgbGluZS1oZWlnaHQ6IDEuNjsgfQoudmctY2FyZC0td2lkZSB7IGdyaWQtY29sdW1uOiAxIC8gLTE7IH0KLnZnLWNhcmQtLXdpZGUgLnZnLWNhcmQtdmlzdWFsIHsgbWluLWhlaWdodDogMzIwcHg7IH0KCi8qIOKUgOKUgCBDb2RlIOKUgOKUgCAqLwoudmctY29kZSB7CiAgYmFja2dyb3VuZDogdmFyKC0tYmctY29kZSk7IGJvcmRlcjogMXB4IHNvbGlkIHZhcigtLXZnLWJvcmRlcik7CiAgYm9yZGVyLXJhZGl1czogNnB4OyBwYWRkaW5nOiAxNnB4IDIwcHg7IGZvbnQtZmFtaWx5OiB2YXIoLS1mb250LW1vbm8pOwogIGZvbnQtc2l6ZTogMTNweDsgbGluZS1oZWlnaHQ6IDEuNjsgY29sb3I6IHZhcigtLXRleHQtc2Vjb25kYXJ5KTsKICBvdmVyZmxvdy14OiBhdXRvOyBtYXJnaW4tdG9wOiAxMnB4OyB3aGl0ZS1zcGFjZTogcHJlOwp9Ci52Zy1jb2RlIC5rdyAgeyBjb2xvcjogdmFyKC0tdmctY3lhbik7IH0KLnZnLWNvZGUgLmZuICB7IGNvbG9yOiAjNmNiNmZmOyB9Ci52Zy1jb2RlIC5zdHIgeyBjb2xvcjogdmFyKC0tdmctZ3JlZW4pOyB9Ci52Zy1jb2RlIC5jbXQgeyBjb2xvcjogdmFyKC0tdGV4dC1tdXRlZCk7IH0KLnZnLWNvZGUgLm51bSB7IGNvbG9yOiB2YXIoLS12Zy1hbWJlcik7IH0KCi8qIOKUgOKUgCBTVkcg4pSA4pSAICovCi52Zy1zdmcgeyB3aWR0aDogMTAwJTsgbWF4LXdpZHRoOiA3MDBweDsgaGVpZ2h0OiBhdXRvOyBvdmVyZmxvdzogaGlkZGVuOyB9Ci52Zy1zdmcgdGV4dCB7IGZvbnQtZmFtaWx5OiAnSmV0QnJhaW5zIE1vbm8nLCAnU0YgTW9ubycsIG1vbm9zcGFjZTsgfQoudmctcHVsc2UsIC52Zy1yaXBwbGUsIC52Zy1nbG93LWxpbmUsIC52Zy1mbG93LXJpZ2h0LCAudmctZmxvdy1kb3duLCAudmctb3JiaXQgeyBhbmltYXRpb246IG5vbmUgIWltcG9ydGFudDsgfQpub3NjcmlwdCB+IC52Zy13cmFwIC52Zy1jYXJkLCAudmctY2FyZC52Zy1uby1nc2FwIHsgb3BhY2l0eTogMSAhaW1wb3J0YW50OyB0cmFuc2Zvcm06IG5vbmUgIWltcG9ydGFudDsgfQoKLyog4pSA4pSAIExlZ2VuZCDilIDilIAgKi8KLnZnLWxlZ2VuZCB7IGRpc3BsYXk6IGZsZXg7IGZsZXgtd3JhcDogd3JhcDsgZ2FwOiAxMnB4OyBtYXJnaW4tdG9wOiAxMnB4OyB9Ci52Zy1sZWdlbmQtaXRlbSB7IGRpc3BsYXk6IGZsZXg7IGFsaWduLWl0ZW1zOiBjZW50ZXI7IGdhcDogNnB4OyBmb250LWZhbWlseTogdmFyKC0tZm9udC1tb25vKTsgZm9udC1zaXplOiAxMXB4OyBjb2xvcjogdmFyKC0tdGV4dC1tdXRlZCk7IH0KLnZnLWxlZ2VuZC1kb3QgeyB3aWR0aDogOHB4OyBoZWlnaHQ6IDhweDsgYm9yZGVyLXJhZGl1czogNTAlOyBmbGV4LXNocmluazogMDsgfQoKLyog4pSA4pSAIFJlc3BvbnNpdmUgKGVtYmVkKSDilIDilIAgKi8KQG1lZGlhIChtYXgtd2lkdGg6IDY5OXB4KSB7CiAgLnZnLWNhcmQtdmlzdWFsIHsgcGFkZGluZzogMjRweCAxNnB4OyBtaW4taGVpZ2h0OiAyMDBweDsgfQp9CgovKiDilIDilIAgRW1iZWQgd3JhcHBlciDilIDilIAgKi8KLnZnLWVtYmVkIHsKICBtYXJnaW46IDJlbSAwOwogIG1heC13aWR0aDogMTAwJTsKICBvdmVyZmxvdzogaGlkZGVuOwp9Ci52Zy1lbWJlZCAudmctY2FyZCB7CiAgb3BhY2l0eTogMDsKICB0cmFuc2Zvcm06IHRyYW5zbGF0ZVkoMjRweCk7CiAgd2lsbC1jaGFuZ2U6IG9wYWNpdHksIHRyYW5zZm9ybTsKfQoudmctZW1iZWQgLnZnLWNhcmQudmctbm8tZ3NhcCwKLnZnLWVtYmVkLnZnLW5vLWdzYXAgLnZnLWNhcmQgewogIG9wYWNpdHk6IDEgIWltcG9ydGFudDsKICB0cmFuc2Zvcm06IG5vbmUgIWltcG9ydGFudDsKfQoKCi8qIOKUgOKUgCBBbWJpZW50IGNhcHRpb25zIOKUgOKUgCAqLwoudmctY2FwdGlvbiB7CiAgcG9zaXRpb246IGFic29sdXRlOwogIGJvdHRvbTogMTBweDsKICBsZWZ0OiAxNnB4OwogIHJpZ2h0OiAxNnB4OwogIGZvbnQtZmFtaWx5OiB2YXIoLS1mb250LW1vbm8pOwogIGZvbnQtc2l6ZTogMTFweDsKICBsaW5lLWhlaWdodDogMS41OwogIGNvbG9yOiB2YXIoLS12Zy1jeWFuKTsKICBiYWNrZ3JvdW5kOiByZ2JhKDUsIDgsIDE2LCAwLjg1KTsKICBiYWNrZHJvcC1maWx0ZXI6IGJsdXIoNnB4KTsKICAtd2Via2l0LWJhY2tkcm9wLWZpbHRlcjogYmx1cig2cHgpOwogIHBhZGRpbmc6IDZweCAxMnB4OwogIGJvcmRlci1yYWRpdXM6IDRweDsKICBib3JkZXI6IDFweCBzb2xpZCByZ2JhKDAsIDIxMiwgMjU1LCAwLjEyKTsKICBvcGFjaXR5OiAwOwogIHBvaW50ZXItZXZlbnRzOiBub25lOwogIHRleHQtYWxpZ246IGNlbnRlcjsKICB6LWluZGV4OiAxMDsKfQoK</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js" integrity="sha384-g4NTh/Iv5PPU4xPyhEWqPcwtNXOvdaDI8LLnyYfyNZOjKJeYQyjzQ9X5275eBjpt" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js" integrity="sha384-Z3REaz79l2IaAZqJsSABtTbhjgOUYyV3p90XNnAPCSHg3EMTz1fouunq9WZRtj3d" crossorigin="anonymous"></script>
+<div data-vg-dep="vg-p-3" style="display:none">Ci8qKgogKiBWaXN1YWwgR3VpZGUgUnVudGltZSDigJQgc2hhcmVkIEdTQVAgaGVscGVycyBmb3IgZW1iZWRkZWQgc25pcHBldHMKICogRXh0cmFjdGVkIGZyb20gdmlzdWFsLWd1aWRlLmh0bWwKICovCihmdW5jdGlvbiAoKSB7CiAgJ3VzZSBzdHJpY3QnOwoKICAvLyBHdWFyZDogaWYgR1NBUCBmYWlsZWQgdG8gbG9hZCwgbWFrZSBhbGwgZW1iZWRzIHZpc2libGUKICBpZiAodHlwZW9mIGdzYXAgPT09ICd1bmRlZmluZWQnIHx8IHR5cGVvZiBTY3JvbGxUcmlnZ2VyID09PSAndW5kZWZpbmVkJykgewogICAgZG9jdW1lbnQucXVlcnlTZWxlY3RvckFsbCgnLnZnLWVtYmVkIC52Zy1jYXJkJykuZm9yRWFjaChmdW5jdGlvbiAoYykgewogICAgICBjLnN0eWxlLm9wYWNpdHkgPSAnMSc7CiAgICAgIGMuc3R5bGUudHJhbnNmb3JtID0gJ25vbmUnOwogICAgfSk7CiAgICB3aW5kb3cudmdSdW50aW1lID0gbnVsbDsKICAgIHJldHVybjsKICB9CgogIGdzYXAucmVnaXN0ZXJQbHVnaW4oU2Nyb2xsVHJpZ2dlcik7CgogIC8qKiBDcmVhdGUgYSBzY3JvbGwtdHJpZ2dlcmVkIHRpbWVsaW5lIGZvciBhIGNhcmQgZWxlbWVudCAqLwogIGZ1bmN0aW9uIGNhcmRUTChjYXJkKSB7CiAgICB2YXIgdGwgPSBnc2FwLnRpbWVsaW5lKHsKICAgICAgc2Nyb2xsVHJpZ2dlcjogewogICAgICAgIHRyaWdnZXI6IGNhcmQsCiAgICAgICAgc3RhcnQ6ICd0b3AgODglJywKICAgICAgICB0b2dnbGVBY3Rpb25zOiAncGxheSBub25lIG5vbmUgbm9uZScKICAgICAgfQogICAgfSk7CiAgICB0bC50byhjYXJkLCB7IG9wYWNpdHk6IDEsIHk6IDAsIGR1cmF0aW9uOiAwLjQ1LCBlYXNlOiAncG93ZXIyLm91dCcgfSk7CiAgICBjYXJkLl92Z1RpbWVsaW5lID0gdGw7CiAgICByZXR1cm4gdGw7CiAgfQoKICAvKiogU3RhZ2dlci1mYWRlIFNWRyBjaGlsZHJlbiBtYXRjaGluZyBzZWxlY3RvciBpbnNpZGUgYSBjb250YWluZXIgKi8KICBmdW5jdGlvbiBmYWRlSW4odGwsIHBhcmVudCwgc2VsLCBvcHRzKSB7CiAgICB2YXIgZWxzID0gcGFyZW50LnF1ZXJ5U2VsZWN0b3JBbGwoc2VsKTsKICAgIGlmICghZWxzLmxlbmd0aCkgcmV0dXJuOwogICAgdmFyIG8gPSBvcHRzIHx8IHt9OwogICAgdGwuZnJvbShlbHMsIHsKICAgICAgb3BhY2l0eTogMCwKICAgICAgeTogby55IHx8IDAsCiAgICAgIHg6IG8ueCB8fCAwLAogICAgICBzY2FsZTogby5zY2FsZSB8fCAxLAogICAgICBkdXJhdGlvbjogby5kdXIgfHwgMC4zLAogICAgICBzdGFnZ2VyOiBvLnN0YWdnZXIgfHwgMC4wOCwKICAgICAgZWFzZTogby5lYXNlIHx8ICdwb3dlcjIub3V0JwogICAgfSwgby5hdCB8fCAnPi0wLjE1Jyk7CiAgfQoKICAvKiogTG9vcGluZyBwdWxzZSAob3BhY2l0eSkgb24gZWxlbWVudHMg4oCUIGlkZW1wb3RlbnQgKGtpbGxzIGV4aXN0aW5nIGxvb3BzIGZpcnN0KSAqLwogIGZ1bmN0aW9uIHB1bHNlKGVscywgb3B0cykgewogICAgdmFyIG8gPSBvcHRzIHx8IHt9OwogICAgZ3NhcC5raWxsVHdlZW5zT2YoZWxzKTsKICAgIGdzYXAudG8oZWxzLCB7CiAgICAgIG9wYWNpdHk6IG8ubWluIHx8IDAuMzUsCiAgICAgIGR1cmF0aW9uOiBvLmR1ciB8fCAxLAogICAgICByZXBlYXQ6IC0xLAogICAgICB5b3lvOiB0cnVlLAogICAgICBlYXNlOiAnc2luZS5pbk91dCcsCiAgICAgIGRlbGF5OiBvLmRlbGF5IHx8IDAKICAgIH0pOwogIH0KCiAgLyoqIExvb3BpbmcgZ2xvdyBvbiBzdHJva2Utb3BhY2l0eSDigJQgaWRlbXBvdGVudCAoa2lsbHMgZXhpc3RpbmcgbG9vcHMgZmlyc3QpICovCiAgZnVuY3Rpb24gZ2xvd1N0cm9rZShlbHMsIG9wdHMpIHsKICAgIHZhciBvID0gb3B0cyB8fCB7fTsKICAgIGdzYXAua2lsbFR3ZWVuc09mKGVscyk7CiAgICBnc2FwLmZyb21UbyhlbHMsCiAgICAgIHsgYXR0cjogeyAnc3Ryb2tlLW9wYWNpdHknOiAwLjE1IH0gfSwKICAgICAgeyBhdHRyOiB7ICdzdHJva2Utb3BhY2l0eSc6IDAuOCB9LCBkdXJhdGlvbjogby5kdXIgfHwgMS41LCByZXBlYXQ6IC0xLCB5b3lvOiB0cnVlLCBlYXNlOiAnc2luZS5pbk91dCcsIGRlbGF5OiBvLmRlbGF5IHx8IDAgfQogICAgKTsKICB9CgogIC8qKiBEcmF3IGEgbGluZSBmcm9tIG5vdGhpbmcgKHN0cm9rZS1kYXNob2Zmc2V0IHRyaWNrKSAqLwogIGZ1bmN0aW9uIGRyYXdMaW5lcyh0bCwgcGFyZW50LCBzZWwsIG9wdHMpIHsKICAgIHZhciBsaW5lcyA9IHBhcmVudC5xdWVyeVNlbGVjdG9yQWxsKHNlbCk7CiAgICBpZiAoIWxpbmVzLmxlbmd0aCkgcmV0dXJuOwogICAgdmFyIG8gPSBvcHRzIHx8IHt9OwogICAgbGluZXMuZm9yRWFjaChmdW5jdGlvbiAobGluZSkgewogICAgICB2YXIgbGVuID0gbGluZS5nZXRUb3RhbExlbmd0aCA/IGxpbmUuZ2V0VG90YWxMZW5ndGgoKSA6IDEwMDsKICAgICAgZ3NhcC5zZXQobGluZSwgeyBhdHRyOiB7ICdzdHJva2UtZGFzaGFycmF5JzogbGVuLCAnc3Ryb2tlLWRhc2hvZmZzZXQnOiBsZW4gfSB9KTsKICAgIH0pOwogICAgdGwudG8obGluZXMsIHsKICAgICAgYXR0cjogeyAnc3Ryb2tlLWRhc2hvZmZzZXQnOiAwIH0sCiAgICAgIGR1cmF0aW9uOiBvLmR1ciB8fCAwLjUsCiAgICAgIHN0YWdnZXI6IG8uc3RhZ2dlciB8fCAwLjA2LAogICAgICBlYXNlOiBvLmVhc2UgfHwgJ3Bvd2VyMS5pbk91dCcKICAgIH0sIG8uYXQgfHwgJz4tMC4xJyk7CiAgfQoKICAvKiogU2hvdyBhbiBhbWJpZW50IGNhcHRpb24gaW5zaWRlIHRoZSBjYXJkIHZpc3VhbCBhcmVhLgogICAqICBVc2FnZSBmcm9tIGFuaW1hdGlvbiBzY3JpcHRzOgogICAqICAgIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnRGF0YSBibG9ja3MgYXQgZXZlbiBpbmRpY2VzLi4uJ10pOwogICAqICAgIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnJ10pOyAgLy8gY2xlYXIKICAgKi8KICBmdW5jdGlvbiBjYXB0aW9uKHdyYXAsIHRleHQpIHsKICAgIGlmICghd3JhcCkgcmV0dXJuOwogICAgLy8gU3VwcHJlc3MgY2FwdGlvbnMgd2hlbiB0aW1lbGluZSBpcyByZXZlcnNpbmcgKHNjcm9sbC1iYWNrIGRlY29uc3RydWN0aW9uKQogICAgdmFyIGNhcmQgPSB3cmFwLnF1ZXJ5U2VsZWN0b3IoJy52Zy1jYXJkJyk7CiAgICBpZiAoY2FyZCAmJiBjYXJkLl92Z1RpbWVsaW5lICYmIGNhcmQuX3ZnVGltZWxpbmUucmV2ZXJzZWQoKSkgewogICAgICAvLyBPbiByZXZlcnNlLCBqdXN0IGhpZGUgYW55IHZpc2libGUgY2FwdGlvbiBpbW1lZGlhdGVseQogICAgICB2YXIgZXhpc3RpbmcgPSB3cmFwLnF1ZXJ5U2VsZWN0b3IoJy52Zy1jYXB0aW9uJyk7CiAgICAgIGlmIChleGlzdGluZykgZ3NhcC5zZXQoZXhpc3RpbmcsIHsgb3BhY2l0eTogMCB9KTsKICAgICAgcmV0dXJuOwogICAgfQogICAgdmFyIGVsID0gd3JhcC5xdWVyeVNlbGVjdG9yKCcudmctY2FwdGlvbicpOwogICAgaWYgKCFlbCkgewogICAgICBlbCA9IGRvY3VtZW50LmNyZWF0ZUVsZW1lbnQoJ2RpdicpOwogICAgICBlbC5jbGFzc05hbWUgPSAndmctY2FwdGlvbic7CiAgICAgIHZhciB2aXN1YWwgPSB3cmFwLnF1ZXJ5U2VsZWN0b3IoJy52Zy1jYXJkLXZpc3VhbCcpOwogICAgICBpZiAodmlzdWFsKSB7CiAgICAgICAgdmlzdWFsLmFwcGVuZENoaWxkKGVsKTsKICAgICAgfSBlbHNlIHsKICAgICAgICByZXR1cm47CiAgICAgIH0KICAgIH0KICAgIGlmICghdGV4dCkgewogICAgICBnc2FwLnRvKGVsLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjI1IH0pOwogICAgICByZXR1cm47CiAgICB9CiAgICAvLyBJZiBhbHJlYWR5IHNob3dpbmcgdGV4dCwgY3Jvc3NmYWRlCiAgICBpZiAoZWwudGV4dENvbnRlbnQgJiYgZWwuc3R5bGUub3BhY2l0eSAhPT0gJzAnKSB7CiAgICAgIGdzYXAudG8oZWwsIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMTUsIG9uQ29tcGxldGU6IGZ1bmN0aW9uICgpIHsKICAgICAgICBlbC50ZXh0Q29udGVudCA9IHRleHQ7CiAgICAgICAgZ3NhcC50byhlbCwgeyBvcGFjaXR5OiAxLCBkdXJhdGlvbjogMC4yNSB9KTsKICAgICAgfX0pOwogICAgfSBlbHNlIHsKICAgICAgZWwudGV4dENvbnRlbnQgPSB0ZXh0OwogICAgICBnc2FwLnRvKGVsLCB7IG9wYWNpdHk6IDEsIGR1cmF0aW9uOiAwLjMgfSk7CiAgICB9CiAgfQoKICB3aW5kb3cudmdSdW50aW1lID0gewogICAgY2FyZFRMOiBjYXJkVEwsCiAgICBmYWRlSW46IGZhZGVJbiwKICAgIHB1bHNlOiBwdWxzZSwKICAgIGdsb3dTdHJva2U6IGdsb3dTdHJva2UsCiAgICBkcmF3TGluZXM6IGRyYXdMaW5lcywKICAgIGNhcHRpb246IGNhcHRpb24KICB9Owp9KSgpOwoK</div>
+<!-- /wp:html -->
+
+<script>!function(){var d=document,b=atob,r=function(q,t){d.querySelectorAll(q).forEach(function(e){var s=d.createElement(t||`script`);s.textContent=b(e.textContent);e.parentNode.replaceChild(s,e)})};r(`[data-vg-css]`,`style`);r(`[data-vg-dep]`);r(`[data-vg-anim]`);d.querySelectorAll(`[data-vg-mod]`).forEach(function(e){var s=d.createElement(`script`);s.type=`module`;s.textContent=b(e.textContent);e.parentNode.replaceChild(s,e)})}()</script>

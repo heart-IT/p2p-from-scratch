@@ -1,19 +1,23 @@
-# P2P from Scratch — Part 1: The Internet is Hostile
+# P2P from Scratch — Part 1: NAT Hole Punching Explained
 
-> "The Internet was done so well that most people think of it as a natural resource like the Pacific Ocean, rather than something that was man-made. When was the last time a technology with a footprint so large was so error-free?"
+> "The Internet was done so well that most people think of it as a natural resource like the Pacific Ocean, rather than something that was man-made. When was the last time a technology with a scale like that was so error-free?"
 > — Alan Kay
 
 **Excerpt:** You want two computers to talk directly to each other. No server in the middle, no middleman, no monthly bill. Sounds simple — the Internet is a network, after all. But the moment you try it, you discover something uncomfortable: the Internet was never designed for this. Here's why, and how Hyperswarm punches through anyway.
+<!-- meta-description: Learn how NAT hole punching works and how Hyperswarm establishes direct P2P connections through firewalls. Step-by-step with code examples. -->
+<!-- meta-labs: p2p-hello p2p-path -->
 
 <!-- Series Navigation -->
 > **Series: P2P from Scratch — Building on the Holepunch Stack**
-> **Part 1: The Internet is Hostile (You are here)** | [Part 2: Encrypted Pipes](part-2-encrypted-pipes.md) | [Part 3: Append-Only Truth](part-3-hypercore-merkle.md) | [Part 4: From Logs to Databases](part-4-hyperbee-hyperdrive.md) | [Part 5: Finding Peers](part-5-dht-discovery.md) | [Part 6: Many Writers, One Truth](part-6-autobase-consensus.md) | [Part 7: Trust No One](part-7-security-trust.md) | [Part 8: Building for Humans](part-8-ux-production.md)
+> **Part 1: NAT Hole Punching Explained (You are here)** | [Part 2: P2P Encryption with the Noise Protocol](part-2-encrypted-pipes.md) | [Part 3: Merkle Trees and Append-Only Logs](part-3-hypercore-merkle.md) | [Part 4: Building P2P Databases with Hyperbee and Hyperdrive](part-4-hyperbee-hyperdrive.md) | [Part 5: Peer Discovery with Kademlia DHT](part-5-dht-discovery.md) | [Part 6: Multi-Writer Consensus with Autobase](part-6-autobase-consensus.md) | [Part 7: P2P Security — Threats, Defenses, and Trust](part-7-security-trust.md) | [Part 8: Offline-First UX for P2P Applications](part-8-ux-production.md)
 
 ---
 
-## The Problem: Your Computer Doesn't Have an Address
+> **Verified against:** hyperdht 6.33.2 · dht-rpc 6.27.0 · hyperswarm 4.17.0 — checked 2026-09-03. Every constant, default and byte count in this post is asserted in [`verify/`](https://github.com/heart-IT/p2p-from-scratch-labs/tree/main/verify), which installs whatever Holepunch publishes today and fails if the stack has moved.
 
-Here's something that should bother you: your laptop is connected to the Internet right now, but nobody can reach it.
+## The NAT Problem: Why Your Computer Isn't Reachable
+
+Here's something that should bother you: your laptop is connected to the Internet right now, but nobody can reach it. This is why NAT hole punching exists — and why it's the first problem any P2P system must solve.
 
 Try it. Find your IP address. It's probably something like `192.168.1.47`. Now ask a friend on a different Wi-Fi network to send a packet to `192.168.1.47`. Nothing happens. That address means nothing outside your home.
 
@@ -62,7 +66,7 @@ Not all NATs are created equal. The way your router creates and filters its mapp
 | **Full Cone** | Same external port for all destinations | Any source allowed through | Yes — easiest |
 | **Restricted Cone** | Same external port for all destinations | Only IPs you've contacted | Yes — with coordination |
 | **Port Restricted** | Same external port for all destinations | Only IP:port pairs you've contacted | Yes — with precise timing |
-| **Symmetric** | Different external port per destination IP:port | Only the specific destination | No — port unpredictable |
+| **Symmetric** | Different external port per destination IP:port | Only the specific destination | No — the port can't be read off one sample |
 
 The key question for holepunching is whether the external port is predictable:
 
@@ -74,7 +78,7 @@ graph LR
         PR["Port Restricted<br/>IP:port must match"]:::green
     end
 
-    subgraph "Unpredictable Port (Relay Required)"
+    subgraph "Unpredictable Port (Punchable only against a predictable peer)"
         SYM["Symmetric<br/>Different port per destination"]:::red
     end
 
@@ -84,21 +88,23 @@ graph LR
     classDef red fill:#22272e,stroke:#e5534b,color:#e6edf3
 ```
 
-*Figure 1: The NAT classification from a holepunching perspective. The first three types share a critical property — predictable external ports — that makes them holepunchable. Symmetric NAT assigns unpredictable ports, requiring relay.*
+*Figure 1: The NAT classification from a holepunching perspective. The first three types share a critical property — predictable external ports — that makes them holepunchable. Symmetric NAT assigns unpredictable ports: one symmetric side can still be brute-forced, but two symmetric sides leave nothing to aim at, and only a relay can join them.*
 
-HyperDHT simplifies this into three levels: **OPEN** (full cone — no coordination needed), **CONSISTENT** (restricted/port-restricted — port is predictable, coordination required), and **RANDOM** (symmetric — port unpredictable, relay needed).
+HyperDHT doesn't classify by RFC name at all — it measures. **OPEN** means your listening port answered a cold probe from DHT nodes (a public IP or a port-forward — no coordination needed). **CONSISTENT** means the samples converged on an address worth aiming at — three sightings of one external `ip:port`, or two sightings each of two different ones (predictable — coordination required). **RANDOM** means they didn't: no address repeated often enough to be worth a punch (symmetric — punchable only if the other side is consistent).
 
-> **Note on terminology:** The four names above (Full Cone, Restricted Cone, Port Restricted, Symmetric) come from <a href="https://www.rfc-editor.org/rfc/rfc3489" target="_blank">RFC 3489</a> (2003). The later <a href="https://www.rfc-editor.org/rfc/rfc4787" target="_blank">RFC 4787</a> (2007) replaces this with a two-axis model — *mapping behavior* (Endpoint-Independent / Address-Dependent / Address-and-Port-Dependent) × *filtering behavior* — which better captures real-world NATs that don't fit neatly into one of four boxes. Internally, HyperDHT uses a three-level classification — **OPEN**, **CONSISTENT** (predictable port mapping), and **RANDOM** (unpredictable) — which maps to what matters for holepunching: can you predict the port or not?
+> **Note on terminology:** The four names above (Full Cone, Restricted Cone, Port Restricted, Symmetric) come from <a href="https://www.rfc-editor.org/rfc/rfc3489" target="_blank">RFC 3489</a> (2003). The later <a href="https://www.rfc-editor.org/rfc/rfc4787" target="_blank">RFC 4787</a> (2007) replaces this with a two-axis model — *mapping behavior* (Endpoint-Independent / Address-Dependent / Address-and-Port-Dependent) × *filtering behavior* — which better captures real-world NATs that don't fit neatly into one of four boxes. Internally, HyperDHT uses a measured classification — **OPEN**, **CONSISTENT** (predictable port mapping), and **RANDOM** (unpredictable), plus **UNKNOWN** until a handful of DHT nodes have reported what they saw — which maps to what matters for holepunching: can you predict the port or not?
 
 The first three types share a critical property: the external port stays the same regardless of destination. If your laptop sends a packet to server A and gets mapped to external port `41928`, it also uses port `41928` when talking to server B. This consistency is what makes holepunching possible — a coordinator can observe the port from one connection and tell a peer to aim at that same port.
 
-Symmetric NAT breaks this entirely. Every new destination gets a fresh, unpredictable external port, and symmetric NATs typically combine this with address-and-port-dependent filtering — making both mapping and filtering unpredictable. A coordinator can observe the port your router assigned when talking to the DHT, but that port is useless for connecting to another peer — the router will assign a completely different one.
+Symmetric NAT breaks this entirely. Every new destination gets a fresh external port, and symmetric NATs typically combine this with address-and-port-dependent filtering — so neither the mapping nor the filter can be worked out from a single observation. A coordinator can observe the port your router assigned when talking to the DHT, but that port is useless for connecting to another peer — the router will assign a completely different one.
 
-> **Key Insight:** Holepunching is fundamentally about *port prediction*. If the coordinator can predict what external port your router will use, peers can aim their packets at it. Symmetric NAT makes this prediction impossible.
+> **Key Insight:** Holepunching is fundamentally about *port prediction*. If the coordinator can predict what external port your router will use, peers can aim their packets at it. Symmetric NAT takes that single observation away — the port the DHT saw tells you nothing about the port your peer will get — and HyperDHT doesn't try to extrapolate it, so it stops predicting and starts guessing: the predictable side sprays packets at random ports (about 1,750 of them, 20 ms apart) while the symmetric side opens 256 sockets, and the birthday paradox makes a collision near-certain inside ~35 seconds.
 
 ---
 
-## The Dance: How Holepunching Actually Works
+## How UDP Hole Punching Works Step by Step
+
+<!-- vg:hyperswarm/nat-hole-punching -->
 
 Let's walk through what <a href="https://github.com/holepunchto/hyperswarm" target="_blank">Hyperswarm</a> does when two peers want to connect. This isn't abstract protocol theory — this is what happens on your network right now.
 
@@ -108,9 +114,9 @@ Both Alice and Bob connect to <a href="https://github.com/holepunchto/hyperdht" 
 
 ### Step 2: Signaling via DHT Nodes
 
-Alice wants to connect to Bob. She finds Bob's announcement in the DHT and sends a connection request. But she doesn't send it directly to Bob — she can't, because Bob's NAT would drop it. Instead, she sends it to one of Bob's designated *relay nodes* in the DHT.
+Alice wants to connect to Bob. She finds Bob's announcement in the DHT and sends a connection request. But she doesn't send it directly to Bob — she can't, because Bob's NAT would drop it. Instead, she sends it to DHT nodes that are closest to Bob's announcement.
 
-This is a key design choice: Hyperswarm doesn't rely on external STUN/TURN servers like WebRTC does. Instead, the DHT nodes *themselves* perform the equivalent functions — NAT type detection (STUN's role) and connection relay when holepunching fails (TURN's role). The protocol is different, but the jobs are the same. No single company controls the infrastructure.
+This is a key design choice: Hyperswarm doesn't rely on external STUN/TURN servers like WebRTC does. Instead, the DHT nodes handle signaling — NAT type detection (STUN's role) and holepunch coordination. If holepunching fails and you've told the swarm which peer to fall back to, a separate mechanism kicks in: **blind relays** (any willing peer, not DHT nodes specifically) relay the data (TURN's role). The protocol is different, but the jobs are the same. No single company controls the infrastructure.
 
 ### Step 3: The Simultaneous Send
 
@@ -124,7 +130,7 @@ The same thing happens on Bob's side. Both doors open at the same moment. The ho
 sequenceDiagram
     participant A as Alice (behind NAT)
     participant AR as Alice's Router
-    participant DHT as DHT Relay Node
+    participant DHT as DHT Signaling Node
     participant BR as Bob's Router
     participant B as Bob (behind NAT)
 
@@ -150,38 +156,40 @@ sequenceDiagram
 
 > **Implementation detail:** The diagram above shows the logical flow. In practice, HyperDHT sends multiple probe rounds with retries — the first packets sent to an unopened NAT mapping are expected to be dropped. The holepunch succeeds when at least one packet from each side arrives *after* the other side's outbound packet has created the necessary mapping. This is why timing coordination matters more than single-packet delivery.
 
-> **Note:** All of this refers to **UDP holepunching**. Hyperswarm uses UDP for the holepunch dance because UDP NAT mappings are simpler and more predictable. TCP holepunching is significantly harder — it requires simultaneous SYN packets and many NATs don't support it reliably. This is why Hyperswarm establishes the UDP path first and then upgrades it to a reliable, encrypted stream.
+> **Note:** All of this refers to **UDP holepunching**. Hyperswarm uses UDP for the holepunch dance because UDP NAT mappings are simpler and more predictable. TCP holepunching is harder — it needs a simultaneous open, and a SYN that arrives before the other side has sent its own can be dropped or answered with a RST, killing the attempt (RFC 5128 §3.4). This is why Hyperswarm establishes the UDP path first and then upgrades it to a reliable, encrypted stream.
 
 ### Step 4: Encrypted Stream
 
-Once the UDP path is established, Hyperswarm upgrades the connection to a reliable, encrypted stream using <a href="https://github.com/holepunchto/hyperswarm-secret-stream" target="_blank">Secret Stream</a> — a Noise XX handshake with Ed25519 keypairs, followed by libsodium's AEAD encryption for all payload data. We'll cover this in detail in <a href="part-2-encrypted-pipes.md">Part 2</a>.
+The keys were agreed before the first punch packet flew — the Noise IK handshake rode inside the DHT signaling messages. So the moment the UDP path opens, Hyperswarm runs a reliable, ordered stream over it with <a href="https://github.com/holepunchto/libudx" target="_blank">libudx</a> and encrypts it with Secret Stream, which uses <a href="https://doc.libsodium.org/secret-key_cryptography/secretstream" target="_blank">libsodium's secretstream</a> underneath. We'll cover this in detail in <a href="part-2-encrypted-pipes.md">Part 2</a>.
 
-> **Gotcha:** The timing requirement isn't just "roughly at the same time." NAT mappings have expiry timers. If Alice sends her packet but Bob's router takes too long to relay the signal, Alice's mapping may expire before Bob's packet arrives. Connection failures that look like "peer unreachable" are often timing desynchronization in disguise.
+> **Gotcha:** The timing requirement isn't just "roughly at the same time." HyperDHT gives each punch a short budget — about ten probes a second apart, and before that a 10-second deadline for the relayed handshake to get both sides punching at all — far shorter than a NAT mapping's lifetime (at least two minutes per RFC 4787). If the DHT node relaying the signal is slow, Bob's packets arrive after Alice's probes have stopped, and the attempt is abandoned. Connection failures that look like "peer unreachable" are often timing desynchronization in disguise.
 
 ---
 
 ## When the Dance Fails: Symmetric NAT and Relay Fallback
 
-Holepunching works when at least one side has a predictable port mapping. If Alice is behind a symmetric NAT but Bob is behind a cone or restricted NAT, Bob's external port is still predictable — so the holepunch can target it. Alice's side creates a fresh mapping for the outbound packet to Bob, and Bob's response arrives at that mapping. One predictable side is enough.
+Holepunching works when at least one side has a predictable port mapping. If Alice is behind a symmetric NAT but Bob is behind a cone or restricted NAT, Bob's external port is still predictable — so Alice can open mappings toward it. Bob can't know which port Alice's NAT picked, so HyperDHT brute-forces it: Alice opens 256 sockets, each punching a fresh mapping toward Bob, and Bob sprays packets at random ports on Alice's address until one lands in a mapping — the birthday paradox makes that near-certain within about 35 seconds. One predictable side is enough.
 
-Relay is only needed when **both** peers are behind randomized (symmetric) NATs. Neither side can predict the other's port, so there's no target to aim at. No amount of timing coordination can overcome both ports being unpredictable.
+Relay is unavoidable when **both** peers are behind randomized (symmetric) NATs. Neither side can predict the other's port, so there's no target to aim at: HyperDHT re-samples its own NAT up to three times hoping for a consistent reading, then aborts without ever sending a punch packet. A relay also rescues the rarer failures — a punch that times out, or a peer that declines to punch.
 
-Hyperswarm handles this with **relay fallback**: the connection routes through a DHT node that both peers can reach. Each peer can specify up to 3 relay nodes. The data still flows — just through an intermediary.
+Hyperswarm handles this with **blind relays**. If a connection cannot be established for whatever reason, it supports passing the traffic through another peer as a relay. Any peer can be a blind relay if they want, allowing powerful topologies to be built.
 
 | Scenario | NAT A | NAT B | Method | Result |
 |---|---|---|---|---|
 | Best case | Full Cone | Full Cone | Direct holepunch | Low latency, direct path |
 | Common case | Restricted | Port Restricted | Coordinated holepunch | Slightly higher latency |
 | One-sided | Symmetric | Restricted | Direct holepunch | Works — B's port is predictable |
-| Worst case | Symmetric | Symmetric | Full relay | Both ports unpredictable, must relay |
+| Worst case | Symmetric | Symmetric | Relay (if you configured one) | Neither side has a port the other can aim at — no relay, no connection |
 
-On typical consumer networks, Holepunch achieves roughly 95% direct connections and only ~5% relayed. The ~5% happens specifically when both peers are on randomized NATs — since it requires both sides to be unpredictable simultaneously, the probability is low. But it's not uniformly distributed: environments where symmetric NATs are common (like corporate networks) see a higher local relay rate when peers within those environments connect to each other. The application should handle both paths transparently.
+Direct punching needs only one predictable side, so the pairs that fail are the ones where both sides are randomized. How often that happens is a property of the networks your users sit on, not a fixed rate: symmetric NATs cluster in places like corporate LANs, so two peers inside one of those are far likelier to need a relay than two peers on home broadband. The application should handle both paths transparently.
 
-> **Key Insight:** The fallback isn't a failure — it's a design requirement. Any P2P system that doesn't account for symmetric NAT will silently fail for a significant fraction of users. Hyperswarm makes the fallback automatic so applications don't need to handle it manually.
+> **Key Insight:** The fallback isn't a failure — it's a design requirement. A P2P system that doesn't account for symmetric NAT simply never connects those user pairs, and nothing in the failure says why. Hyperswarm makes the fallback automatic once you give it a relay: pass a blind-relay peer's public key as `relayThrough` when you create the swarm and failed punches are re-routed through it with no further code. Without one, a double-symmetric pair simply never connects.
 
 ---
 
 ## Beyond NAT: What Makes Hyperswarm's DHT Different
+
+<!-- vg:hyperswarm/dht-peer-discovery -->
 
 The DHT isn't just a signaling helper — it's the peer discovery layer, and it has its own engineering challenges.
 
@@ -197,7 +205,7 @@ This is one defense layer. Round-trip tokens prove IP ownership (preventing spoo
 
 New nodes don't immediately become permanent members of the DHT's routing tables. They start in **ephemeral mode** — participating in queries but not stored in other nodes' routing tables.
 
-After approximately 20–30 minutes of stable uptime (the base threshold is 240 ticks × 5 seconds, but NAT assessment and network conditions add overhead), the node transitions to **persistent mode** and takes a permanent position in the routing table. After a sleep/wake cycle, this timer resets to ~60 minutes.
+After 20 minutes of stable uptime (240 ticks × 5 seconds), the node checks itself: DHT nodes must agree on its external `ip:port`, and a cold probe to its listening port must get through. If that passes, it derives its node ID from that address and switches to **persistent mode**, taking a permanent position in the routing table. If it fails — the node is firewalled — it doesn't keep hammering: it caches the address it just tested and re-checks only once that external IP changes. A sleep/wake cycle clears the cache and restarts the clock at ~60 minutes.
 
 This protects the DHT from short-lived nodes churning the routing tables and from attackers spinning up thousands of nodes to flood the network. If you're running a server on an open NAT, you can bypass this with `ephemeral: false`, but for consumer devices behind NATs, the transition period is a feature, not a limitation.
 
@@ -210,10 +218,10 @@ Holepunching and DHT-based discovery solve the fundamental connectivity problem,
 | What You Gain | What You Pay |
 |---|---|
 | No central server dependency | Connection setup is slower (DHT lookup + holepunch negotiation) |
-| No monthly infrastructure bill | ~5% of connections relay through intermediaries (only when both sides are on randomized NATs) |
+| No monthly infrastructure bill | Some connections need a relay peer you provide (mostly when both sides are on randomized NATs) |
 | Resistant to single-point-of-failure | First connection takes seconds, not milliseconds |
 | Works across ISPs and countries | Both-sides-symmetric connections get relay latency |
-| DHT nodes are the infrastructure | ~20–30 minute warmup for new DHT nodes (~60 min after wake) |
+| DHT nodes are the infrastructure | ~20 minute warmup for new DHT nodes (~60 min after wake) |
 
 The connection setup cost is a one-time tax. Once the hole is punched, the direct UDP path is as fast as any other Internet connection. But that initial negotiation — DHT lookup, signaling, simultaneous send, handshake — takes real time. Your UX needs to account for this (we'll cover P2P UX design in <a href="part-8-ux-production.md">Part 8</a>).
 
@@ -251,9 +259,9 @@ swarm.on('connection', (conn, info) => {
 
 The complete script combines both pieces. Run it on two different machines — e.g., `node holepunch-demo.js Alice` on one and `node holepunch-demo.js Bob` on the other.
 
-> **Note:** Code examples in this series use `require()` with top-level `await` for clarity. To run them, either wrap the body in `(async () => { ... })()` or save with an `.mjs` extension and use `import` instead of `require`. The <a href="https://docs.pears.com/" target="_blank">Pear Runtime</a> supports this syntax natively.
+> **Note:** Most code examples in this series use `require()` with top-level `await` for clarity. To run them, either wrap the body in `(async () => { ... })()` or save with an `.mjs` extension and use `import` instead of `require`. The <a href="https://docs.pears.com/" target="_blank">Pear Runtime</a> is no different — its Bare runtime rejects `require()` and top-level `await` in the same file too, so pick one of the two forms above.
 
-Because the topic is hardcoded, both peers discover each other automatically. You'll see the connection event and the data exchange. If both peers are behind randomized (symmetric) NATs, Hyperswarm silently falls back to relay — the `connection` event fires either way. If only one side is symmetric, holepunching still works directly.
+Because the topic is hardcoded, both peers discover each other automatically. You'll see the connection event and the data exchange. If only one side is symmetric, holepunching still works directly. If both peers are behind randomized (symmetric) NATs, this script never connects — Hyperswarm keeps retrying with backoff, but without a `relayThrough` peer there is no fallback and no `connection` event.
 
 > **Gotcha:** If you run both peers on the same machine or the same LAN, you're not testing holepunching at all — you're testing local discovery. Real holepunching only happens across NAT boundaries. To test properly, use two different networks or a cloud VM as the second peer.
 
@@ -265,19 +273,39 @@ Because the topic is hardcoded, both peers discover each other automatically. Yo
 
 - **Holepunching is a timing dance.** Both peers must create outbound NAT mappings simultaneously so that each peer's inbound packet matches the other's fresh mapping. The DHT coordinates this timing.
 
-- **Both-sides-symmetric is the only case that requires relay.** If only one peer is behind a symmetric NAT, holepunching still works — the other side's port is predictable. Relay is only needed when both peers have randomized port mappings, making prediction impossible on both ends.
+- **Both-sides-symmetric always needs a relay.** If only one peer is behind a symmetric NAT, holepunching still works — the other side's port is predictable and the symmetric side is brute-forced. When both peers have randomized port mappings there is nothing to aim at, and only a relay you've configured can join them.
 
-- **Hyperswarm's DHT is more than a phone book.** Node IDs derived from `hash(IP + port)` resist Sybil attacks. Ephemeral-to-persistent transitions resist routing table pollution. DHT nodes double as relay infrastructure.
+- **Hyperswarm's DHT is more than a phone book.** Node IDs derived from `hash(IP + port)` resist Sybil attacks. Ephemeral-to-persistent transitions resist routing table pollution. When direct connections fail, any willing peer can serve as a blind relay — the relay infrastructure is decentralized, not tied to DHT nodes.
 
-- **Budget for ~5% relayed connections.** On consumer networks, Holepunch achieves ~95% direct connectivity. The ~5% relay fraction occurs specifically when both peers are on randomized NATs — since it requires both sides to be unpredictable, the probability is low. But it's not uniformly distributed: environments where symmetric NATs are common (corporate networks) see higher local relay rates. Your architecture and UX must handle relayed connections as a first-class path, not an error state.
+- **Budget for relayed connections — and bring your own relay.** Direct punching needs only one predictable side, so the pairs that fail are the ones where both are randomized — concentrated wherever symmetric NATs are, like corporate networks. Hyperswarm only relays through a peer you name in `relayThrough`, so your architecture and UX must handle relayed connections as a first-class path, not an error state.
+
+---
+
+## Frequently Asked Questions
+
+### What is NAT hole punching?
+NAT hole punching is a technique for establishing direct connections between two devices that are both behind NAT routers. It works by having both peers simultaneously send UDP packets toward each other's external addresses, causing their routers to create mapping entries that allow the other peer's packets through.
+
+### Why does UDP hole punching fail with symmetric NAT?
+Symmetric NATs assign a different external port for every destination, so the port a coordinator saw is not the port your peer will need. A coordinator can observe the port your router assigned when talking to the DHT, but that port is useless for connecting to another peer because the router will assign a completely different one.
+
+### Can you do peer-to-peer without a server?
+You need at least a minimal coordination point (like DHT bootstrap nodes) to help peers discover each other and coordinate the holepunching dance. However, these bootstrap nodes are lightweight, replaceable, and don't control your data or connections. Once peers are connected, none of the traffic between them touches a bootstrap node — they only ever help you find your way back into the DHT.
+
+### What is the difference between STUN and TURN?
+STUN tells you the public address the outside world sees for your socket, which is what makes direct holepunching possible. (Classic STUN also tried to label your NAT type; RFC 5389 dropped that, because real NATs don't sort cleanly into the four boxes.) TURN relays data through an intermediary when direct connection fails. Hyperswarm's DHT nodes serve a similar role to STUN, while blind relays serve a similar role to TURN.
 
 ---
 
 ## What's Next
 
-We've established that two peers can find each other and create a connection path — even through hostile network conditions. But that path is just raw UDP packets. Anyone between the two peers can read them, modify them, or inject fake ones.
+We've established that two peers can find each other and create a connection path — even through hostile network conditions. But a UDP path protects nothing on its own — left raw, anyone on the wire could read those packets, modify them, or inject fake ones. Hyperswarm never leaves it raw, and Part 1 skipped over how.
 
-In <a href="part-2-encrypted-pipes.md">Part 2</a>, we'll look at how Hyperswarm turns that raw UDP path into an encrypted, multiplexed communication channel using the Noise protocol, Secret Stream, and Protomux. We'll see how a single encrypted connection carries multiple independent protocol channels — and why that matters when you start replicating data structures in Part 3.
+In <a href="part-2-encrypted-pipes.md">Part 2</a>, we'll look at how Hyperswarm turns that UDP path into an encrypted, multiplexed communication channel using the Noise protocol, Secret Stream, and Protomux. We'll see how a single encrypted connection carries multiple independent protocol channels — and why that matters when you start replicating data structures in Part 3.
+
+[heartit_lab title="p2p-hello" cmd="npx @heart-it/p2p-hello swordfish" desc="Two terminals, one passphrase — watch the DHT introduce two strangers. Everything this series explains, you are about to watch happen." repo="https://github.com/heart-IT/p2p-from-scratch-labs" note="needs Node.js 18+ · every reader using this phrase meets the others"]
+
+[heartit_lab title="p2p-path" cmd="npx @heart-it/p2p-path swordfish" desc="What the DHT knows about you — external address, firewall state, NAT class — then a timestamped timeline of the connection and an honest verdict on the path it took." repo="https://github.com/heart-IT/p2p-from-scratch-labs" note="needs Node.js 18+ · same phrase in two terminals"]
 
 ---
 
@@ -286,7 +314,7 @@ In <a href="part-2-encrypted-pipes.md">Part 2</a>, we'll look at how Hyperswarm 
 1. <a href="https://github.com/holepunchto/hyperswarm" target="_blank">holepunchto/hyperswarm — High-level peer discovery and connection management</a>
 2. <a href="https://github.com/holepunchto/hyperdht" target="_blank">holepunchto/hyperdht — DHT layer with keypair connections and NAT traversal</a>
 3. <a href="https://github.com/holepunchto/dht-rpc" target="_blank">holepunchto/dht-rpc — Low-level Kademlia DHT with Sybil-resistant node IDs</a>
-4. <a href="https://github.com/holepunchto/hyperswarm-secret-stream" target="_blank">holepunchto/hyperswarm-secret-stream — Noise XX + libsodium transport encryption</a>
+4. <a href="https://github.com/holepunchto/hyperswarm-secret-stream" target="_blank">holepunchto/hyperswarm-secret-stream — Noise handshake (IK inside Hyperswarm, XX standalone) + libsodium transport encryption</a>
 5. <a href="https://en.wikipedia.org/wiki/Network_address_translation" target="_blank">Wikipedia — Network Address Translation</a>
 6. <a href="https://www.rfc-editor.org/rfc/rfc4787" target="_blank">RFC 4787 — NAT Behavioral Requirements for Unicast UDP</a>
 7. <a href="https://en.wikipedia.org/wiki/Hole_punching_(networking)" target="_blank">Wikipedia — Hole Punching (Networking)</a>
@@ -296,4 +324,4 @@ In <a href="part-2-encrypted-pipes.md">Part 2</a>, we'll look at how Hyperswarm 
 ---
 
 > **Series: P2P from Scratch — Building on the Holepunch Stack**
-> **Part 1: The Internet is Hostile (You are here)** | [Part 2: Encrypted Pipes](part-2-encrypted-pipes.md) | [Part 3: Append-Only Truth](part-3-hypercore-merkle.md) | [Part 4: From Logs to Databases](part-4-hyperbee-hyperdrive.md) | [Part 5: Finding Peers](part-5-dht-discovery.md) | [Part 6: Many Writers, One Truth](part-6-autobase-consensus.md) | [Part 7: Trust No One](part-7-security-trust.md) | [Part 8: Building for Humans](part-8-ux-production.md)
+> **Part 1: NAT Hole Punching Explained (You are here)** | [Part 2: P2P Encryption with the Noise Protocol](part-2-encrypted-pipes.md) | [Part 3: Merkle Trees and Append-Only Logs](part-3-hypercore-merkle.md) | [Part 4: Building P2P Databases with Hyperbee and Hyperdrive](part-4-hyperbee-hyperdrive.md) | [Part 5: Peer Discovery with Kademlia DHT](part-5-dht-discovery.md) | [Part 6: Multi-Writer Consensus with Autobase](part-6-autobase-consensus.md) | [Part 7: P2P Security — Threats, Defenses, and Trust](part-7-security-trust.md) | [Part 8: Offline-First UX for P2P Applications](part-8-ux-production.md)

@@ -1,15 +1,19 @@
-# P2P from Scratch — Part 8: Building for Humans
+# P2P from Scratch — Part 8: Offline-First UX for P2P Applications
 
 > "The purpose of computing is insight, not numbers."
 > — Richard Hamming
 
 **Excerpt:** The Holepunch stack gives you cryptographic identity, verified data, and decentralized discovery. But none of that matters if the app feels broken when you're on the subway. This final post covers the hardest part of P2P engineering: making it invisible — offline-first design, managing the consistency spectrum, mobile lifecycle with suspend/resume, availability strategies, and the observability tools that keep a serverless system debuggable.
+<!-- meta-description: Offline-first design, signedLength consistency, suspend/resume, availability strategies, and observability for production P2P applications. -->
+<!-- meta-labs: p2p-sync-states -->
 
 <!-- Series Navigation -->
 > **Series: P2P from Scratch — Building on the Holepunch Stack**
-> [Part 1: The Internet is Hostile](part-1-nat-holepunching.md) | [Part 2: Encrypted Pipes](part-2-encrypted-pipes.md) | [Part 3: Append-Only Truth](part-3-hypercore-merkle.md) | [Part 4: From Logs to Databases](part-4-hyperbee-hyperdrive.md) | [Part 5: Finding Peers](part-5-dht-discovery.md) | [Part 6: Many Writers, One Truth](part-6-autobase-consensus.md) | [Part 7: Trust No One](part-7-security-trust.md) | **Part 8: Building for Humans (You are here)**
+> [Part 1: NAT Hole Punching Explained](part-1-nat-holepunching.md) | [Part 2: P2P Encryption with the Noise Protocol](part-2-encrypted-pipes.md) | [Part 3: Merkle Trees and Append-Only Logs](part-3-hypercore-merkle.md) | [Part 4: Building P2P Databases with Hyperbee and Hyperdrive](part-4-hyperbee-hyperdrive.md) | [Part 5: Peer Discovery with Kademlia DHT](part-5-dht-discovery.md) | [Part 6: Multi-Writer Consensus with Autobase](part-6-autobase-consensus.md) | [Part 7: P2P Security — Threats, Defenses, and Trust](part-7-security-trust.md) | **Part 8: Offline-First UX for P2P Applications (You are here)**
 
 ---
+
+> **Verified against:** hypercore 11.35.2 · corestore 7.12.2 · hypercore-storage 3.2.1 · autobase 7.28.1 · hyperswarm 4.17.0 — checked 2026-09-03. Every constant, default and byte count in this post is asserted in [`verify/`](https://github.com/heart-IT/p2p-from-scratch-labs/tree/main/verify), which installs whatever Holepunch publishes today and fails if the stack has moved.
 
 ## Quick Recap
 
@@ -17,9 +21,9 @@ Parts <a href="part-1-nat-holepunching.md">1</a>–<a href="part-6-autobase-cons
 
 ---
 
-## The Problem: Technology Isn't the Hard Part
+## The UX Challenge: Why P2P Apps Feel Broken
 
-We've spent seven posts building an extraordinary stack. Encrypted pipes. Merkle-verified data. Distributed discovery. Multi-writer consensus. Six layers of security. Every component is cryptographically sound, mathematically correct, and elegantly designed.
+Building an offline-first application on a P2P stack is the real challenge. We've spent seven posts building an extraordinary stack. Encrypted pipes. Merkle-verified data. Distributed discovery. Multi-writer consensus. Six layers of security. Every component is cryptographically sound, mathematically correct, and elegantly designed.
 
 And none of your users will care.
 
@@ -60,7 +64,7 @@ This means the UX should reflect two truths simultaneously:
 |-------|-------------------|---------------|
 | **Local** | Their data, visible instantly | Written to local Hypercore, not yet seen by peers |
 | **Synced** | Data visible to collaborators | Replicated to connected peers |
-| **Confirmed** | Permanently ordered | Past `signedLength` — quorum-locked, will never reorder |
+| **Confirmed** | Permanently ordered | Past the view's `signedLength` — quorum-locked, will never reorder |
 
 > **Gotcha:** "Offline-first" doesn't mean "offline-only." Some operations inherently need peers — discovering new collaborators, joining a group via Blind Pairing, or real-time cursor presence. Design these to degrade gracefully: show what's possible offline, and queue what needs connectivity.
 
@@ -68,18 +72,24 @@ This means the UX should reflect two truths simultaneously:
 
 ## The Consistency Spectrum: signedLength in Practice
 
-From <a href="part-6-autobase-consensus.md">Part 6</a>, we know Autobase exposes two markers: `base.signedLength` (confirmed, quorum-locked) and `base.view.length` (total including provisional). The gap between them is the **consistency spectrum** — data that exists but whose ordering might change.
+From <a href="part-6-autobase-consensus.md">Part 6</a>, we know every Autobase view core carries two markers: `signedLength` (confirmed, quorum-locked) and `length` (total including provisional). The gap between them is the **consistency spectrum** — data that exists but whose ordering might change. (`base.signedLength` is the same marker on Autobase's internal *system* core — a different log, so never compare it against a view length.)
+
+Where you read those markers depends on what your `open` handler returned. If the view *is* a Hypercore, they sit on `base.view` directly. If you wrapped it — a Hyperbee, as in the capstone at the end of this post — `base.view` is the wrapper and the markers live one level down. Don't reach for `base.view.core || base.view` to paper over the difference: a Hypercore has a `.core` too, an internal object that carries neither marker, so that idiom silently reads `undefined` on exactly the case it was meant to handle. Test for the marker instead, once, and work from what you get back.
 
 Your application must make this spectrum visible without overwhelming users:
 
 ```js title="consistency-aware-ui.js"
 await base.update()
 
-const confirmed = base.signedLength
-const total = base.view.length
+// The view's core: `base.view` itself when open() returned a Hypercore,
+// `base.view.core` when it returned a Hyperbee or another wrapper
+const core = typeof base.view.signedLength === 'number' ? base.view : base.view.core
+
+const confirmed = core.signedLength
+const total = core.length
 
 for (let i = 0; i < total; i++) {
-  const entry = await base.view.get(i)
+  const entry = await core.get(i)
   const isConfirmed = i < confirmed
 
   renderEntry(entry, {
@@ -98,7 +108,7 @@ for (let i = 0; i < total; i++) {
 | **Fade unconfirmed** | Chat apps, feeds | Provisional messages appear slightly dimmed; they solidify as quorum confirms |
 | **"Syncing" badge** | Collaborative docs | A small indicator shows entries are provisional; disappears on confirmation |
 | **Optimistic + undo** | Real-time editing | Apply changes immediately; if reordering changes the outcome, show a notification |
-| **Confirm before acting** | Financial, permissions | Block irreversible actions until `signedLength` advances past the relevant entry |
+| **Confirm before acting** | Financial, permissions | Block irreversible actions until the view's `signedLength` advances past the relevant entry |
 
 Let's visualize the journey every piece of data takes:
 
@@ -123,6 +133,8 @@ The golden rule: **never trigger external side effects from provisional data.** 
 ---
 
 ## Sparse Replication: Download Only What You Need
+
+<!-- vg:corestore/managed-collections -->
 
 Not every peer needs every block. <a href="https://github.com/holepunchto/hypercore" target="_blank">Hypercore</a>'s sparse replication means `core.get(index)` is a lazy operation — it checks local storage first, and only requests from peers if the block isn't available locally:
 
@@ -149,12 +161,11 @@ The `onwait` callback is a UX goldmine — it fires *only when a block needs to 
 
 Long-lived applications accumulate data. Two APIs manage storage:
 
-**`core.clear(start, end)`** — removes block *data* from local storage while preserving the Merkle tree. The blocks can be re-fetched from peers later. Use this for cache-like behavior:
+**`core.clear(start, end)`** — removes block *data* from local storage, keeping the Merkle nodes still needed to verify whatever remains (nodes that only covered cleared blocks go too). The blocks can be re-fetched from peers later. Use this for cache-like behavior:
 
 ```js title="storage-pruning.js"
 // Clear old blocks to free disk space (Merkle proofs still valid)
-const result = await core.clear(0, 1000, { diff: true })
-console.log(`Freed ${result.blocks} blocks from storage`)
+await core.clear(0, 1000)
 // Blocks 0-999 can still be fetched on demand from peers
 ```
 
@@ -166,6 +177,8 @@ console.log(`Freed ${result.blocks} blocks from storage`)
 | `truncate(length)` | No (rewrites) | Yes | No (permanent) |
 
 > **Key Insight:** Sparse replication and `clear()` together enable a powerful pattern: download what you need, verify it once, use it, then clear it to free space. The verification metadata needed for remaining data stays intact, so re-verification on re-download is automatic. This is how mobile apps can handle large datasets without exhausting storage.
+
+> **Gotcha:** Sparse replication keeps a *new* peer's first verified block cheap too — a proof is one signature plus O(log N) hashes, so verifying block 42 of a million-block core costs a few kilobytes, not the tree. What grows with history is the number of blocks an app has to *read* before it's useful: replaying a 100K-block log (or letting Autobase rebuild its view from it) is where new-peer onboarding turns into seconds to minutes. If your app will cross that threshold, plan a snapshot/pruning strategy before you get there: distribute snapshots out-of-band, lean on Autobase fast-forward (next section), or shard data across multiple cores. Retrofitting pruning onto a million-block log is painful.
 
 ---
 
@@ -206,7 +219,7 @@ await store.suspend()
 await store.resume()
 ```
 
-Corestore's `suspend()` flushes the database before releasing resources — no data loss even during abrupt backgrounding. On Android, suspend is disabled by default (requires explicit `{ suspend: true }` opt-in); on all other platforms, it's enabled by default.
+Corestore's `suspend()` hands off to the storage layer, which waits for in-flight I/O to go idle and then suspends RocksDB. Through corestore 7.11 it also called `db.flush()` explicitly first; 7.12 dropped that call, so don't treat `suspend()` as a durability barrier — finish the writes you care about before you background. On Android, suspend is disabled by default (requires explicit `{ suspend: true }` opt-in); on all other platforms, it's enabled by default.
 
 > **Gotcha:** There is no auto-resume. If your app doesn't call `swarm.resume()` on foreground, networking stays dead. Wire suspend/resume to your platform's lifecycle events (e.g., `visibilitychange` on web, `AppState` on React Native, `onPause`/`onResume` on Android).
 
@@ -237,9 +250,13 @@ const swarm = new Hyperswarm()
 // Replicate with every peer that connects
 swarm.on('connection', (socket) => store.replicate(socket))
 
-// Join the topics this seed node should keep alive
-for (const topic of topics) {
-  swarm.join(topic, { server: true, client: true })
+// Open every core this seed should mirror and keep it complete —
+// Corestore only serves cores it has open (or already on disk),
+// and only downloads blocks something asked for
+for (const key of coreKeys) {
+  const core = store.get({ key })
+  core.download({ start: 0, end: -1 })   // non-sparse: follow the log forever
+  swarm.join(core.discoveryKey, { server: true, client: true })
 }
 
 // The seed node holds data so it's available even when users are offline
@@ -255,7 +272,7 @@ The seed node is *not* a server. It doesn't control access, validate data, or en
 
 When a peer has been offline for days, replaying the entire DAG history through Autobase's `apply` function would be painfully slow. **Fast-forward** skips directly to the latest confirmed checkpoint.
 
-The trigger is automatic: when the gap between local state and the confirmed remote state reaches 16 or more blocks, Autobase fast-forwards — downloading the checkpoint state and all view cores at their target lengths, then atomically jumping to that point. No replay of intermediate history needed.
+The trigger is automatic: at the time of writing, when the gap between local state and the confirmed remote state reaches 16 or more blocks, Autobase fast-forwards — downloading the checkpoint state and all view cores at their target lengths, then atomically jumping to that point. No replay of intermediate history needed.
 
 ```js title="fast-forward-monitoring.js"
 // Check if we're fast-forwarding (useful for UX)
@@ -265,7 +282,8 @@ if (base.isFastForwarding()) {
 
 // After update, check how far behind we are
 await base.update()
-const behind = base.view.length - base.signedLength
+const core = typeof base.view.signedLength === 'number' ? base.view : base.view.core
+const behind = core.length - core.signedLength
 if (behind > 0) {
   showStatus(`${behind} entries pending confirmation`)
 }
@@ -274,7 +292,7 @@ if (behind > 0) {
 await base.repair()  // forces fast-forward regardless of threshold
 ```
 
-If fast-forward fails (network issues, corrupted state), a 5-minute cooldown prevents retry storms. The `repair()` method bypasses this cooldown and the minimum threshold — use it for manual recovery when automatic mechanisms fail.
+If fast-forward fails (network issues, corrupted state), a cooldown (currently 5 minutes) prevents retry storms. The `repair()` method bypasses this cooldown and the minimum threshold — use it for manual recovery when automatic mechanisms fail.
 
 ---
 
@@ -308,7 +326,7 @@ swarm.on('update', () => {
 for (const [key, peerInfo] of swarm.peers) {
   console.log({
     peer: key.slice(0, 8),
-    connected: peerInfo.connectedTime > -1,
+    connected: peerInfo.connectedTime > -1,   // set only for connections we dialed; inbound peers stay -1
     attempts: peerInfo.attempts,
     explicit: peerInfo.explicit,
     banned: peerInfo.banned
@@ -335,7 +353,7 @@ for (const peer of core.peers) {
 |--------|-------------------|-------------------|
 | `swarm.connections.size` | Network health | 0 for > 30 seconds |
 | `swarm.stats.connects.client.attempted` vs `opened` | Connection success rate | < 50% success |
-| `base.signedLength` vs `base.view.length` | Consensus health | Gap growing over time |
+| The view core's `signedLength` vs `length` | Consensus health | Gap growing over time |
 | `core.length` vs peer `remoteLength` | Replication progress | Falling behind |
 | `base.isFastForwarding()` | Catch-up status | Extended fast-forward |
 
@@ -343,21 +361,25 @@ for (const peer of core.peers) {
 
 ## Distributing with Pear Runtime
 
+<!-- vg:pear/app-container -->
+
 <a href="https://docs.pears.com/" target="_blank">Pear Runtime</a> packages the entire Holepunch stack for end-user distribution. Applications are distributed as Hyperdrives, identified by their public key, and updated via standard Hypercore replication.
 
 The deployment workflow:
 
 ```
-pear stage        →  Sync local code to application Hyperdrive
-pear release      →  Mark a version as the production release
-pear seed         →  Announce to DHT and serve to peers
+pear touch                  →  Mint the app's pear:// link (once)
+pear stage pear://<key> .   →  Sync local code into the link's Hyperdrive
+pear seed pear://<key>      →  Announce to DHT and serve to peers
 ```
+
+There is no `pear release` any more — it was removed in Pear v3. Writing a seeded drive *is* publishing; production lines go live through `pear multisig … commit`.
 
 Users access apps via `pear://` links — the Hyperdrive public key becomes the app's permanent, unforgeable identifier. Updates propagate through the same replication mechanism as any other Hypercore data: peers discover, connect, and sync automatically.
 
-For persistent state across restarts, Pear provides `Pear.checkpoint(value)` — a simple key-value store that survives app restarts and is available as `Pear.app.checkpoint` on next launch. For clean shutdown, `Pear.teardown(fn)` registers handlers that run in order, with promises awaited between them.
+The old global `Pear` object — `Pear.checkpoint()`, `Pear.app.checkpoint`, `Pear.teardown(fn)` — was deprecated in Pear v2.6.5 and removed in Pear v3. A v3 app embeds the `pear-runtime` module inside its own host (Electron on desktop, a Bare worker on mobile), so persistent state lives in your own store — a Hypercore or Hyperbee under `pear.storage` — and clean shutdown is your host's teardown hook closing things in reverse-dependency order: swarm, then Autobase, then Corestore.
 
-> **Gotcha:** `Pear.updates()` is deprecated. Use the `pear-updates` module instead for handling application update notifications.
+> **Gotcha:** `Pear.updates()` went away with the rest of the global API. The `pear-updates` module that replaced it in v2 has itself been archived (August 2026); under `pear-runtime` you listen on the instance's updater — `pear.updater.on('updating', ...)` and `pear.updater.on('updated', ...)` — and call `pear.updater.applyUpdate()` when you're ready to restart.
 
 ---
 
@@ -370,7 +392,7 @@ For persistent state across restarts, Pear provides `Pear.checkpoint(value)` —
 | Suspend/resume saves battery on mobile | All connections destroyed — resume reinitializes networking |
 | Seed nodes provide baseline availability | Seed nodes must be operated and maintained |
 | Fast-forward catches up efficiently | 16-block threshold before triggering; 5-min cooldown on failure |
-| Pear distributes apps without app stores | Users need Pear Runtime installed |
+| Pear distributes apps without app stores | Users need the `pear` CLI (`pear install <link>`) — or you ship a packaged shell that embeds `pear-runtime` |
 | Full observability via local metrics | No centralized dashboard — each peer monitors itself |
 
 ---
@@ -379,7 +401,7 @@ For persistent state across restarts, Pear provides `Pear.checkpoint(value)` —
 
 - **Offline-first is the P2P superpower.** Writes happen instantly to the local Hypercore. Sync happens when peers connect. Design UX around three states: local, synced, and confirmed (`signedLength`).
 
-- **Never trigger side effects from provisional data.** Everything between `signedLength` and `view.length` might reorder. Wait for confirmation before sending notifications, updating external systems, or making irreversible changes.
+- **Never trigger side effects from provisional data.** Everything between `view.signedLength` and `view.length` might reorder. Wait for confirmation before sending notifications, updating external systems, or making irreversible changes.
 
 - **Use sparse replication and `clear()` for storage management.** Download on demand, verify once, clear when done. Verification metadata stays intact for re-verification. This is essential for mobile.
 
@@ -387,11 +409,26 @@ For persistent state across restarts, Pear provides `Pear.checkpoint(value)` —
 
 - **Choose an availability strategy explicitly.** Pure mesh, seeded mesh, personal node, or hybrid. Seed nodes improve availability without compromising sovereignty because the verification chain ensures data integrity regardless of the source.
 
-- **Build observability from day one.** `swarm.connections.size`, `swarm.stats`, `swarm.on('update')`, and `base.signedLength` vs `base.view.length` are your core health indicators. Every peer must be its own monitoring system.
+- **Build observability from day one.** `swarm.connections.size`, `swarm.stats`, `swarm.on('update')`, and the view core's `signedLength` vs `length` are your core health indicators. Every peer must be its own monitoring system.
+
+---
+
+## Frequently Asked Questions
+
+### What is offline-first design?
+Offline-first means writes happen immediately to local storage without requiring network connectivity, and sync happens opportunistically when peers connect. In the Holepunch stack, every write appends to a local Hypercore instantly, signed by the user's Ed25519 key, and replicates to peers the next time a connection exists.
+
+### How do P2P apps handle data availability?
+P2P apps use strategies like seed nodes (always-on mirrors), personal nodes (user-controlled VPS or NAS), or hybrid approaches to ensure data is available when the original author is offline. Seed nodes improve availability without compromising sovereignty because the Merkle verification chain ensures data integrity regardless of the source.
+
+### What happens when P2P data reorders?
+Before quorum confirmation, the ordering of concurrent events is provisional and may change as new causal information arrives. Applications should distinguish confirmed from provisional data in their UI — showing entries past signedLength as settled and everything after as tentative, using subtle visual indicators like fading or "syncing" badges.
 
 ---
 
 ## Putting It All Together
+
+<!-- vg:e2e/full-pipeline -->
 
 Here's the complete picture — a collaborative key-value store that combines every layer we've built across this series. One file, ~50 lines, the full Holepunch stack:
 
@@ -425,32 +462,37 @@ async function apply (nodes, view, host) {
   await batch.flush()
 }
 
-// --- Setup ---
+async function main () {
+  // --- Setup ---
 
-const store = new Corestore('./p2p-storage')  // Part 4: Deterministic key derivation
-const base = new Autobase(store, null, { open, apply, valueEncoding: 'json', ackInterval: 1000 })
-await base.ready()
+  const store = new Corestore('./p2p-storage')  // Part 4: Deterministic key derivation
+  const base = new Autobase(store, null, { open, apply, valueEncoding: 'json', ackInterval: 1000 })
+  await base.ready()
 
-// --- Networking (Parts 1, 2, 5) ---
+  // --- Networking (Parts 1, 2, 5) ---
 
-const swarm = new Hyperswarm()                // Part 1: NAT traversal, Part 2: Encrypted pipes
-swarm.on('connection', (socket) => base.replicate(socket))  // Part 3: Merkle-verified replication
-swarm.join(base.discoveryKey, { server: true, client: true })
-await swarm.flush()
+  const swarm = new Hyperswarm()                // Part 1: NAT traversal, Part 2: Encrypted pipes
+  swarm.on('connection', (socket) => base.replicate(socket))  // Part 3: Merkle-verified replication
+  swarm.join(base.discoveryKey, { server: true, client: true })
+  await swarm.flush()
 
-// --- Use it ---
+  // --- Use it ---
 
-await base.append({ type: 'put', key: 'hello', value: { from: 'Part 8', msg: 'The full stack in 45 lines' } })
-await base.update()
+  await base.append({ type: 'put', key: 'hello', value: { from: 'Part 8', msg: 'The full stack in ~50 lines' } })
+  await base.update()
 
-const entry = await base.view.get('hello')
-console.log(entry.value)  // { from: 'Part 8', msg: 'The full stack in 45 lines' }
+  const entry = await base.view.get('hello')
+  console.log(entry.value)  // { from: 'Part 8', msg: 'The full stack in ~50 lines' }
 
-// --- Observability (Part 8) ---
-console.log(`Peers: ${swarm.connections.size}, Confirmed: ${base.signedLength}/${base.view.length}`)
+  // --- Observability (Part 8) ---
+  // The view here is a Hyperbee, so the markers are on base.view.core
+  console.log(`Peers: ${swarm.connections.size}, Confirmed: ${base.view.core.signedLength}/${base.view.core.length}`)
+}
+
+main().catch((err) => { console.error(err); process.exit(1) })
 ```
 
-Every part of this series is represented in those 45 lines. NAT traversal and encrypted pipes (Parts 1–2) happen inside `Hyperswarm`. Merkle-verified append-only logs (Part 3) power every `Hypercore` underneath. `Hyperbee` and `Corestore` (Part 4) provide the database and key management. `Hyperswarm` (Part 5) handles discovery. `Autobase` (Part 6) linearizes multiple writers. The security model (Part 7) is enforced at every layer — from the Noise XX handshake to the Ed25519 signatures. And the observability line at the bottom is where Part 8 begins.
+Every part of this series is represented in those ~50 lines. NAT traversal and encrypted pipes (Parts 1–2) happen inside `Hyperswarm`. Merkle-verified append-only logs (Part 3) power every `Hypercore` underneath. `Hyperbee` and `Corestore` (Part 4) provide the database and key management. `Hyperswarm` (Part 5) handles discovery. `Autobase` (Part 6) linearizes multiple writers. The security model (Part 7) is enforced at every layer — from the Noise IK handshake to the Ed25519 signatures. And the observability line at the bottom is where Part 8 begins.
 
 A second peer joins by passing the first peer's bootstrap key — the same pattern from Part 6. From there, both peers write to their own Hypercores, Autobase linearizes everything, and the Hyperbee view stays consistent across the network.
 
@@ -464,6 +506,8 @@ The Holepunch stack is not simple. But the complexity serves a purpose: giving i
 
 The technology is ready. The question now is what you'll build with it.
 
+[heartit_lab title="p2p-sync-states" cmd="npx @heart-it/p2p-sync-states write" desc="An offline-first writer and a late-joining follower with an honest sync-state line: connecting, catching up, live." repo="https://github.com/heart-IT/p2p-from-scratch-labs" note="needs Node.js 18+ · two terminals — the writer prints the follow command"]
+
 ---
 
 ## References & Further Reading
@@ -473,11 +517,11 @@ The technology is ready. The question now is what you'll build with it.
 3. <a href="https://github.com/holepunchto/corestore" target="_blank">holepunchto/corestore — Multi-core management with suspend/resume and GC</a>
 4. <a href="https://github.com/holepunchto/autobase" target="_blank">holepunchto/autobase — Fast-forward, signedLength, and repair APIs</a>
 5. <a href="https://docs.pears.com/" target="_blank">Pear Runtime Documentation — Application distribution and lifecycle APIs</a>
-6. <a href="https://github.com/nicolo-ribaudo/pear-docs" target="_blank">Pear Documentation Source — Configuration reference and API details</a>
-7. <a href="https://github.com/nicolo-ribaudo/pear-updates" target="_blank">pear-updates — Application update notifications (replaces deprecated Pear.updates())</a>
+6. <a href="https://github.com/holepunchto/pear-docs" target="_blank">Pear Documentation Source — Configuration reference and API details</a>
+7. <a href="https://github.com/holepunchto/pear-updates" target="_blank">pear-updates — the v2 replacement for Pear.updates() (archived Aug 2026; pear-runtime's updater supersedes it)</a>
 8. <a href="https://github.com/holepunchto/hyperdrive" target="_blank">holepunchto/hyperdrive — Application distribution via pear:// links</a>
 
 ---
 
 > **Series: P2P from Scratch — Building on the Holepunch Stack**
-> [Part 1: The Internet is Hostile](part-1-nat-holepunching.md) | [Part 2: Encrypted Pipes](part-2-encrypted-pipes.md) | [Part 3: Append-Only Truth](part-3-hypercore-merkle.md) | [Part 4: From Logs to Databases](part-4-hyperbee-hyperdrive.md) | [Part 5: Finding Peers](part-5-dht-discovery.md) | [Part 6: Many Writers, One Truth](part-6-autobase-consensus.md) | [Part 7: Trust No One](part-7-security-trust.md) | **Part 8: Building for Humans (You are here)**
+> [Part 1: NAT Hole Punching Explained](part-1-nat-holepunching.md) | [Part 2: P2P Encryption with the Noise Protocol](part-2-encrypted-pipes.md) | [Part 3: Merkle Trees and Append-Only Logs](part-3-hypercore-merkle.md) | [Part 4: Building P2P Databases with Hyperbee and Hyperdrive](part-4-hyperbee-hyperdrive.md) | [Part 5: Peer Discovery with Kademlia DHT](part-5-dht-discovery.md) | [Part 6: Multi-Writer Consensus with Autobase](part-6-autobase-consensus.md) | [Part 7: P2P Security — Threats, Defenses, and Trust](part-7-security-trust.md) | **Part 8: Offline-First UX for P2P Applications (You are here)**

@@ -1,19 +1,4 @@
-<!--
-  WORDPRESS IMPORT INSTRUCTIONS
-  ==============================
-  1. Create a new Post in WordPress
-  2. Switch to the Code Editor (⋮ menu > Code editor)
-  3. Select ALL text below this comment block and paste
-  4. Switch back to Visual Editor to verify
-
-  Plugins required:
-  - Prismatic (syntax highlighting)
-
-  Mermaid diagrams are loaded via CDN (no plugin needed).
-  The <script> tag at the bottom handles rendering.
--->
-
-<h1 id="p2p-from-scratch-part-6-many-writers-one-truth">P2P from Scratch — Part 6: Many Writers, One Truth</h1>
+<h1 id="p2p-from-scratch-part-6-multi-writer-consensus-with-autobase">P2P from Scratch — Part 6: Multi-Writer Consensus with Autobase</h1>
 
 <blockquote>
 <p>&quot;A distributed system is one in which the failure of a computer you didn&#39;t even know existed can render your own computer unusable.&quot;
@@ -21,20 +6,27 @@
 </blockquote>
 
 <p><strong>Excerpt:</strong> Everything in the series so far has been single-writer: one keypair signs one Hypercore, and everyone else is a reader. But real collaboration requires multiple writers — and the moment two people can write concurrently, you face the hardest problem in distributed systems: ordering. Autobase takes independent Hypercores from different writers and linearizes them into a single, deterministic view using causal DAGs and quorum consensus. This post explains how.</p>
+<!-- meta-description: How Autobase linearizes multiple Hypercore writers into one deterministic view using causal DAGs and quorum consensus. With code examples. -->
+<!-- meta-labs: p2p-one-truth p2p-quorum -->
+
 
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <strong>Part 6: Many Writers, One Truth (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
+<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: NAT Hole Punching Explained</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: P2P Encryption with the Noise Protocol</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Merkle Trees and Append-Only Logs</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: Building P2P Databases with Hyperbee and Hyperdrive</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Peer Discovery with Kademlia DHT</a> | <strong>Part 6: Multi-Writer Consensus with Autobase (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: P2P Security — Threats, Defenses, and Trust</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Offline-First UX for P2P Applications</a></p>
 </blockquote>
 
 <hr>
+<blockquote>
+<p><strong>Verified against:</strong> autobase 7.28.1 · hypercore 11.35.2 · hyperbee 2.27.3 — checked 2026-09-03. Every constant, default and byte count in this post is asserted in <a href="https://github.com/heart-IT/p2p-from-scratch-labs/tree/main/verify"><code>verify/</code></a>, which installs whatever Holepunch publishes today and fails if the stack has moved.</p>
+</blockquote>
+
 <h2 id="quick-recap">Quick Recap</h2>
 
 <p>In Parts <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">3</a>–<a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">4</a>, we built single-writer data structures: Hypercores, Hyperbee databases, and Hyperdrives. In <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5</a>, we connected peers via DHT discovery. But everything so far has one keypair per log — one writer, many readers.</p>
 <hr>
-<h2 id="the-problem-single-writer-isn-t-enough">The Problem: Single-Writer Isn't Enough</h2>
+<h2 id="the-multi-writer-problem-why-one-hypercore-isn-t-enough">The Multi-Writer Problem: Why One Hypercore Isn't Enough</h2>
 
-<p>A Hypercore is powerful, but it has a fundamental constraint: one keypair, one writer. The owner of the Ed25519 secret key is the only person who can append blocks. Everyone else is a verifier.</p>
+<p>A Hypercore is powerful, but by default it has a fundamental constraint: one keypair, one writer. The owner of the Ed25519 secret key is the only person who can append blocks. Everyone else is a verifier. (A Hypercore 11 manifest can list several signers with a quorum — that is how Autobase signs its own view core — but that still produces one linear log, not concurrent independent writers.)</p>
 <p>This works for publishing — one author, many readers. But think about a shared document, a group chat, or a collaborative database. Alice, Bob, and Carol each need to write. They&#39;re on different continents, behind different NATs, often offline. When they reconnect, their independent histories need to merge into a coherent whole.</p>
 <p>You can&#39;t just throw three Hypercores at the problem. Each core has its own ordering, its own signature chain, its own Merkle tree. If Alice writes &quot;set salary to 50k&quot; and Bob writes &quot;set salary to 60k&quot; at the same time, which one wins? Both are cryptographically valid. Neither references the other. Without a server to timestamp them, there&#39;s no natural ordering.</p>
 <p>This is the multi-writer problem. And the naive solutions all fail:</p>
@@ -53,7 +45,7 @@
 <p>Imagine three tributaries flowing into a single river. Each tributary carries water (events) from a different mountain (writer). Where two tributaries meet, the water merges. Downstream, a single river flows — and everyone standing at the river sees the same water in the same order.</p>
 <p>The tributaries are independent Hypercores. The merge points are the places where one writer references another&#39;s work. The river is the linearized view — a single ordered sequence that every peer computes identically.</p>
 <blockquote class="callout-feynman">
-<p><strong>Feynman Moment:</strong> The analogy hides the hardest part: in a real river, physics determines the merge. In a distributed system, <em>consensus</em> determines it. Two peers who have seen different subsets of the tributaries might temporarily disagree about the river&#39;s ordering. Autobase solves this with a quorum mechanism — once a majority of designated writers have acknowledged a merge point, the ordering at that point becomes permanent. Before the quorum confirms it, the ordering is provisional and may change as new information arrives.</p>
+<p><strong>Feynman Moment:</strong> The analogy hides the hardest part: in a real river, physics determines the merge. In a distributed system, <em>consensus</em> determines it. Two peers who have seen different subsets of the tributaries might temporarily disagree about the river&#39;s ordering. Autobase solves this with a quorum mechanism — once a majority of designated writers have acknowledged a merge point, and a majority have seen that acknowledgement, the ordering at that point becomes permanent — as long as no rival quorum is racing it. Before the quorum confirms it, the ordering is provisional and may change as new information arrives.</p>
 </blockquote>
 
 <hr>
@@ -85,6 +77,95 @@
 <hr>
 <h2 id="the-causal-dag-tracking-what-happened-before-what">The Causal DAG: Tracking What Happened Before What</h2>
 
+<!-- wp:html -->
+<div class="vg-embed" data-vg-mode="stepper" data-vg-snippet="autobase/causal-dag-pipeline" data-vg-steps='["Writer A appends","Writer B appends","DAG formed","Linearizer sorts","View output"]'>
+  <div class="vg-card vg-card--wide">
+          <div class="vg-card-visual">
+            <svg class="vg-svg" viewBox="0 0 700 300" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <text x="60" y="25" fill="#00d4ff" font-size="11" font-weight="600" style="font-size:11px;font-weight:600">Writer A</text>
+              <rect x="20" y="35" width="40" height="30" rx="3" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.5"/>
+              <rect x="65" y="35" width="40" height="30" rx="3" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.5"/>
+              <rect x="110" y="35" width="40" height="30" rx="3" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.5"/>
+              <text x="40" y="54" text-anchor="middle" fill="#00d4ff" font-size="9" style="font-size:9px">a0</text>
+              <text x="85" y="54" text-anchor="middle" fill="#00d4ff" font-size="9" style="font-size:9px">a1</text>
+              <text x="130" y="54" text-anchor="middle" fill="#00d4ff" font-size="9" style="font-size:9px">a2</text>
+              <text x="60" y="95" fill="#ff00cc" font-size="11" font-weight="600" style="font-size:11px;font-weight:600">Writer B</text>
+              <rect x="20" y="105" width="40" height="30" rx="3" fill="#0a1628" stroke="#ff00cc" stroke-opacity="0.5"/>
+              <rect x="65" y="105" width="40" height="30" rx="3" fill="#0a1628" stroke="#ff00cc" stroke-opacity="0.5"/>
+              <text x="40" y="124" text-anchor="middle" fill="#ff00cc" font-size="9" style="font-size:9px">b0</text>
+              <text x="85" y="124" text-anchor="middle" fill="#ff00cc" font-size="9" style="font-size:9px">b1</text>
+              <line x1="105" y1="50" x2="75" y2="105" stroke="#f5a623" stroke-opacity="0.3" stroke-width="1" stroke-dasharray="3 3"/>
+              <text x="80" y="80" fill="#f5a623" font-size="7" style="font-size:7px">b1 saw a1</text>
+              <rect x="200" y="30" width="140" height="120" rx="8" fill="#0a1628" stroke="#f5a623" stroke-opacity="0.3"/>
+              <text x="270" y="52" text-anchor="middle" fill="#f5a623" font-size="11" font-weight="600" style="font-size:11px;font-weight:600">Causal DAG</text>
+              <circle cx="230" cy="75" r="10" fill="#00d4ff" fill-opacity="0.2" stroke="#00d4ff" stroke-opacity="0.5"/>
+              <circle cx="270" cy="75" r="10" fill="#00d4ff" fill-opacity="0.2" stroke="#00d4ff" stroke-opacity="0.5"/>
+              <circle cx="310" cy="75" r="10" fill="#00d4ff" fill-opacity="0.2" stroke="#00d4ff" stroke-opacity="0.5"/>
+              <circle cx="240" cy="110" r="10" fill="#ff00cc" fill-opacity="0.2" stroke="#ff00cc" stroke-opacity="0.5"/>
+              <circle cx="280" cy="110" r="10" fill="#ff00cc" fill-opacity="0.2" stroke="#ff00cc" stroke-opacity="0.5"/>
+              <text x="230" y="79" text-anchor="middle" fill="#00d4ff" font-size="7" style="font-size:7px">a0</text>
+              <text x="270" y="79" text-anchor="middle" fill="#00d4ff" font-size="7" style="font-size:7px">a1</text>
+              <text x="310" y="79" text-anchor="middle" fill="#00d4ff" font-size="7" style="font-size:7px">a2</text>
+              <text x="240" y="114" text-anchor="middle" fill="#ff00cc" font-size="7" style="font-size:7px">b0</text>
+              <text x="280" y="114" text-anchor="middle" fill="#ff00cc" font-size="7" style="font-size:7px">b1</text>
+              <line x1="240" y1="75" x2="260" y2="75" stroke="#636e7b" stroke-opacity="0.3" stroke-width="1"/>
+              <line x1="280" y1="75" x2="300" y2="75" stroke="#636e7b" stroke-opacity="0.3" stroke-width="1"/>
+              <line x1="250" y1="110" x2="270" y2="110" stroke="#636e7b" stroke-opacity="0.3" stroke-width="1"/>
+              <line x1="270" y1="82" x2="280" y2="103" stroke="#f5a623" stroke-opacity="0.4" stroke-width="1"/>
+              <text x="270" y="142" text-anchor="middle" fill="#636e7b" font-size="8" style="font-size:8px">Causal ordering</text>
+              <line x1="340" y1="90" x2="370" y2="90" stroke="#a855f7" stroke-opacity="0.4" stroke-width="1.5"/>
+              <polygon points="367,85 377,90 367,95" fill="#a855f7" fill-opacity="0.5"/>
+              <rect x="380" y="45" width="100" height="90" rx="6" fill="#0a1628" stroke="#a855f7" stroke-opacity="0.4"/>
+              <text x="430" y="72" text-anchor="middle" fill="#a855f7" font-size="10" font-weight="600" style="font-size:10px;font-weight:600">Linearizer</text>
+              <text x="430" y="88" text-anchor="middle" fill="#636e7b" font-size="8" style="font-size:8px">Deterministic</text>
+              <text x="430" y="100" text-anchor="middle" fill="#636e7b" font-size="8" style="font-size:8px">topological sort</text>
+              <text x="430" y="112" text-anchor="middle" fill="#636e7b" font-size="8" style="font-size:8px">of the DAG</text>
+              <line x1="480" y1="90" x2="510" y2="90" stroke="#a855f7" stroke-opacity="0.4" stroke-width="1.5"/>
+              <polygon points="507,85 517,90 507,95" fill="#a855f7" fill-opacity="0.5"/>
+              <rect x="520" y="45" width="90" height="90" rx="6" fill="#0a1628" stroke="#00ff88" stroke-opacity="0.4"/>
+              <text x="565" y="72" text-anchor="middle" fill="#00ff88" font-size="10" font-weight="600" style="font-size:10px;font-weight:600">apply()</text>
+              <text x="565" y="88" text-anchor="middle" fill="#636e7b" font-size="8" style="font-size:8px">Your custom</text>
+              <text x="565" y="100" text-anchor="middle" fill="#636e7b" font-size="8" style="font-size:8px">view builder</text>
+              <line x1="610" y1="90" x2="635" y2="90" stroke="#00ff88" stroke-opacity="0.4" stroke-width="1.5"/>
+              <polygon points="632,85 642,90 632,95" fill="#00ff88" fill-opacity="0.5"/>
+              <rect x="645" y="65" width="50" height="50" rx="5" fill="#00ff88" fill-opacity="0.06" stroke="#00ff88" stroke-opacity="0.4"/>
+              <text x="670" y="88" text-anchor="middle" fill="#00ff88" font-size="9" font-weight="500" style="font-size:9px;font-weight:500">View</text>
+              <text x="670" y="102" text-anchor="middle" fill="#636e7b" font-size="7" style="font-size:7px">Hyperbee</text>
+              <rect x="200" y="175" width="490" height="55" rx="6" fill="#a855f7" fill-opacity="0.04" stroke="#a855f7" stroke-opacity="0.15"/>
+              <text x="220" y="195" fill="#a855f7" font-size="10" font-weight="600" style="font-size:10px;font-weight:600">Bootstrap Key</text>
+              <text x="220" y="212" fill="#636e7b" font-size="9" style="font-size:9px">Shared key that all peers use to find each other and identify the Autobase. Derives the output</text>
+              <text x="220" y="224" fill="#636e7b" font-size="9" style="font-size:9px">Hypercore's identity. Pass the same bootstrap key → get the same deterministic output everywhere.</text>
+              <text x="430" y="155" text-anchor="middle" fill="#636e7b" font-size="9" style="font-size:9px">Input cores → DAG → Linearizer → apply() → View</text>
+              <text x="350" y="260" text-anchor="middle" fill="#636e7b" font-size="10" style="font-size:10px">Every peer runs the same pipeline → identical view, regardless of network arrival order</text>
+              <rect x="20" y="175" width="165" height="55" rx="6" fill="#f5a623" fill-opacity="0.04" stroke="#f5a623" stroke-opacity="0.15"/>
+              <text x="30" y="195" fill="#f5a623" font-size="10" font-weight="600" style="font-size:10px;font-weight:600">Causal Ordering</text>
+              <text x="30" y="210" fill="#636e7b" font-size="8" style="font-size:8px">Each node references what it</text>
+              <text x="30" y="222" fill="#636e7b" font-size="8" style="font-size:8px">"saw" — builds a DAG, not clocks</text>
+            </svg>
+          </div>
+          <div class="vg-card-body">
+            <div class="vg-card-title">Two-Phase Pipeline: Linearize → Apply</div>
+            <div class="vg-card-text">Autobase works in two phases. First, the <strong>linearizer</strong> builds a causal DAG — each node records what it had "seen" when written. The DAG is topologically sorted into a deterministic sequence. Second, your <strong>apply()</strong> function processes those nodes in order to build a view (typically a Hyperbee). The <strong>bootstrap key</strong> identifies the Autobase; all peers with the same key produce the same output.</div>
+            <div class="vg-code"><span class="cmt">// Bootstrap key: shared identifier for this Autobase</span>
+  <span class="kw">const</span> base = <span class="kw">new</span> <span class="fn">Autobase</span>(store, bootstrapKey, {
+    <span class="fn">apply</span>: <span class="kw">async</span> (nodes, view, base) => {
+      <span class="kw">for</span> (<span class="kw">const</span> node <span class="kw">of</span> nodes) {
+        <span class="kw">await</span> view.<span class="fn">append</span>(node.value)
+      }
+    },
+    open: (store) => store.<span class="fn">get</span>(<span class="str">'view'</span>),
+    valueEncoding: <span class="str">'json'</span>
+  })
+  
+  <span class="kw">await</span> base.<span class="fn">addWriter</span>(peerKey)
+  <span class="kw">await</span> base.<span class="fn">append</span>({ action: <span class="str">'post'</span>, text: <span class="str">'hello from peer!'</span> })</div>
+          </div>
+        </div>
+  <div data-vg-anim="vg-p-2" style="display:none">CiAgKGZ1bmN0aW9uKCkgewogIGlmICghd2luZG93LnZnUnVudGltZSkgcmV0dXJuOwogIHZhciB3cmFwID0gZG9jdW1lbnQucXVlcnlTZWxlY3RvcignW2RhdGEtdmctc25pcHBldD0iYXV0b2Jhc2UvY2F1c2FsLWRhZy1waXBlbGluZSJdJyk7CiAgaWYgKCF3cmFwKSByZXR1cm47CiAgdmFyIGNhcmQgPSB3cmFwLnF1ZXJ5U2VsZWN0b3IoJy52Zy1jYXJkJyk7CiAgdmFyIHN2ZyA9IGNhcmQucXVlcnlTZWxlY3RvcignLnZnLXN2ZycpOwogIGlmICghc3ZnKSB7IGlmICh0eXBlb2YgZ3NhcCAhPT0gJ3VuZGVmaW5lZCcpIGdzYXAuc2V0KGNhcmQsIHsgb3BhY2l0eTogMSwgeTogMCB9KTsgcmV0dXJuOyB9CiAgdmFyIHRsID0gdmdSdW50aW1lLmNhcmRUTChjYXJkKTsKICB2YXIgcmVjdHMgPSBzdmcucXVlcnlTZWxlY3RvckFsbCgncmVjdCcpOwogIHZhciB0ZXh0cyA9IHN2Zy5xdWVyeVNlbGVjdG9yQWxsKCd0ZXh0Jyk7CiAgdmFyIGxpbmVzID0gc3ZnLnF1ZXJ5U2VsZWN0b3JBbGwoJ2xpbmUnKTsKICB2YXIgY2lyY2xlcyA9IHN2Zy5xdWVyeVNlbGVjdG9yQWxsKCdjaXJjbGUnKTsKICB2YXIgcG9seWdvbnMgPSBzdmcucXVlcnlTZWxlY3RvckFsbCgncG9seWdvbicpOwoKICAvLyBzdGVwLTA6IFdyaXRlciBBIGxhYmVsICsgV3JpdGVyIEEgYmxvY2tzIChyZWN0cyAwLTIpICsgbGFiZWxzIChhMCxhMSxhMikKICB0bC5mcm9tKHRleHRzWzBdLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjIgfSwgMC40NSk7CiAgdGwuZnJvbShbcmVjdHNbMF0sIHJlY3RzWzFdLCByZWN0c1syXV0sIHsgb3BhY2l0eTogMCwgeDogLTE1LCBkdXJhdGlvbjogMC4yNSwgc3RhZ2dlcjogMC4wNiB9LCAnPicpOwogIHRsLmZyb20oW3RleHRzWzFdLCB0ZXh0c1syXSwgdGV4dHNbM11dLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjIsIHN0YWdnZXI6IDAuMDQgfSwgJz4tMC4xJyk7CiAgdGwuYWRkTGFiZWwoJ3N0ZXAtMCcpOwogIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnV3JpdGVycyBhcHBlbmQgdG8gdGhlaXIgb3duIGlucHV0IEh5cGVyY29yZXMnXSk7CgogIC8vIHN0ZXAtMTogV3JpdGVyIEIgbGFiZWwgKyBXcml0ZXIgQiBibG9ja3MgKHJlY3RzIDMtNCkgKyBsYWJlbHMgKGIwLGIxKSArIGNhdXNhbCBsaW5rICsgImIxIHNhdyBhMSIKICB0bC5mcm9tKHRleHRzWzRdLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjIgfSwgJz4nKTsKICB0bC5mcm9tKFtyZWN0c1szXSwgcmVjdHNbNF1dLCB7IG9wYWNpdHk6IDAsIHg6IC0xNSwgZHVyYXRpb246IDAuMjUsIHN0YWdnZXI6IDAuMDYgfSwgJz4nKTsKICB0bC5mcm9tKFt0ZXh0c1s1XSwgdGV4dHNbNl1dLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjIsIHN0YWdnZXI6IDAuMDQgfSwgJz4tMC4xJyk7CiAgdGwuZnJvbShsaW5lc1swXSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4zIH0sICc+MC4wNScpOwogIHRsLmZyb20odGV4dHNbN10sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiB9LCAnPi0wLjEnKTsKICB0bC5hZGRMYWJlbCgnc3RlcC0xJyk7CiAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsICdDYXVzYWwgbGlua3MgdHJhY2sgd2hhdCBlYWNoIHdyaXRlciBoYWQgc2VlbiddKTsKCiAgLy8gc3RlcC0yOiBEQUcgY29udGFpbmVyIHJlY3QgKyBjaXJjbGVzIHdpdGggbGFiZWxzICsgREFHIGludGVybmFsIGVkZ2VzIChsaW5lcyAxLTQsIE5PVCBsaW5lc1swXSkKICB0bC5mcm9tKHJlY3RzWzVdLCB7IG9wYWNpdHk6IDAsIHNjYWxlOiAwLjksIHRyYW5zZm9ybU9yaWdpbjogJ2NlbnRlcicsIGR1cmF0aW9uOiAwLjM1IH0sICc+Jyk7CiAgdGwuZnJvbSh0ZXh0c1s4XSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yIH0sICc+LTAuMScpOwogIHRsLmZyb20oY2lyY2xlcywgeyBvcGFjaXR5OiAwLCBzY2FsZTogMC40LCB0cmFuc2Zvcm1PcmlnaW46ICdjZW50ZXInLCBkdXJhdGlvbjogMC4yNSwgc3RhZ2dlcjogMC4wNSwgZWFzZTogJ2JhY2sub3V0KDEuNSknIH0sICc+LTAuMScpOwogIHRsLmZyb20oW3RleHRzWzldLCB0ZXh0c1sxMF0sIHRleHRzWzExXSwgdGV4dHNbMTJdLCB0ZXh0c1sxM11dLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjIsIHN0YWdnZXI6IDAuMDQgfSwgJz4tMC4xJyk7CiAgdGwuZnJvbShbbGluZXNbMV0sIGxpbmVzWzJdLCBsaW5lc1szXSwgbGluZXNbNF1dLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjMsIHN0YWdnZXI6IDAuMDQgfSwgJz4tMC4xJyk7CiAgdGwuZnJvbSh0ZXh0c1sxNF0sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiB9LCAnPi0wLjA1Jyk7CiAgdGwuYWRkTGFiZWwoJ3N0ZXAtMicpOwogIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnREFHIGZvcm1lZCBcdTIwMTQgbm9kZXMgcmVmZXJlbmNlIHRoZWlyIGNhdXNhbCBoaXN0b3J5J10pOwoKICAvLyBzdGVwLTM6IExpbmVhcml6ZXIgYXJyb3cgKyByZWN0ICsgdGV4dHMKICB0bC5mcm9tKGxpbmVzWzVdLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjI1IH0sICc+Jyk7CiAgdGwuZnJvbShwb2x5Z29uc1swXSwgeyBvcGFjaXR5OiAwLCB4OiAtOCwgZHVyYXRpb246IDAuMjUgfSwgJz4tMC4xJyk7CiAgdGwuZnJvbShyZWN0c1s2XSwgeyBvcGFjaXR5OiAwLCB4OiAtMTUsIGR1cmF0aW9uOiAwLjMgfSwgJz4tMC4wNScpOwogIHRsLmZyb20oW3RleHRzWzE1XSwgdGV4dHNbMTZdLCB0ZXh0c1sxN10sIHRleHRzWzE4XV0sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiwgc3RhZ2dlcjogMC4wNCB9LCAnPi0wLjEnKTsKICB0bC5hZGRMYWJlbCgnc3RlcC0zJyk7CiAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsICdMaW5lYXJpemVyOiBkZXRlcm1pbmlzdGljIHRvcG9sb2dpY2FsIHNvcnQgb2YgdGhlIERBRyddKTsKCiAgLy8gc3RlcC00OiBhcHBseSgpIGFycm93ICsgcmVjdCArIHRleHRzICsgVmlldyBhcnJvdyArIHJlY3QgKyB0ZXh0cyArIGluZm8gYm94ZXMgKyByZW1haW5pbmcKICB0bC5mcm9tKGxpbmVzWzZdLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjI1IH0sICc+Jyk7CiAgdGwuZnJvbShwb2x5Z29uc1sxXSwgeyBvcGFjaXR5OiAwLCB4OiAtOCwgZHVyYXRpb246IDAuMjUgfSwgJz4tMC4xJyk7CiAgdGwuZnJvbShyZWN0c1s3XSwgeyBvcGFjaXR5OiAwLCB4OiAtMTUsIGR1cmF0aW9uOiAwLjMgfSwgJz4tMC4wNScpOwogIHRsLmZyb20oW3RleHRzWzE5XSwgdGV4dHNbMjBdLCB0ZXh0c1syMV1dLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjIsIHN0YWdnZXI6IDAuMDQgfSwgJz4tMC4xJyk7CiAgdGwuZnJvbShsaW5lc1s3XSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yNSB9LCAnPjAuMDUnKTsKICB0bC5mcm9tKHBvbHlnb25zWzJdLCB7IG9wYWNpdHk6IDAsIHg6IC04LCBkdXJhdGlvbjogMC4yNSB9LCAnPi0wLjEnKTsKICB0bC5mcm9tKHJlY3RzWzhdLCB7IG9wYWNpdHk6IDAsIHg6IC0xNSwgZHVyYXRpb246IDAuMyB9LCAnPi0wLjA1Jyk7CiAgdGwuZnJvbShbdGV4dHNbMjJdLCB0ZXh0c1syM11dLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjIsIHN0YWdnZXI6IDAuMDQgfSwgJz4tMC4xJyk7CiAgdGwuZnJvbShbcmVjdHNbOV0sIHJlY3RzWzEwXV0sIHsgb3BhY2l0eTogMCwgeTogMTAsIGR1cmF0aW9uOiAwLjMsIHN0YWdnZXI6IDAuMDggfSwgJz4wLjEnKTsKICB0bC5mcm9tKFt0ZXh0c1syNF0sIHRleHRzWzI1XSwgdGV4dHNbMjZdLCB0ZXh0c1syN10sIHRleHRzWzI4XSwgdGV4dHNbMjldLCB0ZXh0c1szMF0sIHRleHRzWzMxXV0sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiwgc3RhZ2dlcjogMC4wMyB9LCAnPi0wLjE1Jyk7CiAgdGwuYWRkTGFiZWwoJ3N0ZXAtNCcpOwogIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnYXBwbHkoKSBidWlsZHMgdGhlIHZpZXcgXHUyMDE0IHNhbWUgaW5wdXQgXHUyMTkyIHNhbWUgb3V0cHV0IG9uIGV2ZXJ5IHBlZXInXSk7CiAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsICcnXSwgJz4xJyk7Cn0pKCk7CiAg</div>
+</div>
+
+<!-- /wp:html -->
+
 <p>When Alice appends an entry to her Hypercore, she doesn&#39;t just write her data — she also records which entries from other writers she has seen. These references create a <strong>directed acyclic graph</strong> where edges represent the &quot;happens-before&quot; relationship.</p>
 <h3 id="how-it-works">How It Works</h3>
 
@@ -94,18 +175,19 @@
 <tr><th>Field</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td>**value**</td><td>The user's data (encoded via `valueEncoding`)</td></tr>
-<tr><td>**heads**</td><td>References to the current DAG heads at the time of writing</td></tr>
-<tr><td>**clock**</td><td>A vector clock computed from the node's dependencies</td></tr>
-<tr><td>**writer**</td><td>Which writer produced this node</td></tr>
-<tr><td>**length**</td><td>Sequence number within that writer's core</td></tr>
+<tr><td><strong>value</strong></td><td>The user&#39;s data (encoded via <code>valueEncoding</code>)</td></tr>
+<tr><td><strong>heads</strong></td><td>References (<code>{ key, length }</code>) to the current DAG heads at the time of writing</td></tr>
+<tr><td><strong>clock</strong></td><td>A vector clock Autobase derives in memory from <code>heads</code> — not stored in the block</td></tr>
+<tr><td><strong>writer</strong></td><td>Which writer produced this node (<code>node.from</code> in <code>apply</code>)</td></tr>
+<tr><td><strong>length</strong></td><td>Position within that writer&#39;s core, counted from 1 — the core&#39;s length after this entry</td></tr>
 </tbody>
 </table></figure>
 
+<p>On disk the node inside a block is just <code>{ heads, batch, value }</code> — clock, writer and length are rebuilt when the DAG is loaded. The block wrapping it also carries a version, a digest, and, for indexers, a checkpoint.</p>
 <p>The <code>heads</code> field is the causal link. When Alice writes her third entry, she records whatever DAG heads she currently knows about — perhaps Bob&#39;s second entry and her own previous entry. This means Alice&#39;s third entry <em>causally depends on</em> (happens after) Bob&#39;s second entry.</p>
 <pre><code>Alice:   [A1] ─────────── [A2] ─────────── [A3]
-              \                             /
-Bob:           └─── [B1] ─── [B2] ────────┘
+                                            /
+Bob:                [B1] ─── [B2] ────────┘
                              /
 Carol:              [C1] ───┘</code></pre>
 
@@ -113,13 +195,13 @@ Carol:              [C1] ───┘</code></pre>
 <p>But <code>A2</code> and <code>B1</code> might not reference each other at all — they were written concurrently by peers who hadn&#39;t yet seen each other&#39;s work. These are <strong>causally concurrent</strong> events, and ordering them is where linearization comes in.</p>
 <h3 id="vector-clocks">Vector Clocks</h3>
 
-<p>Each node carries a <strong>vector clock</strong> — a map from writer public keys to sequence numbers. The clock is computed by merging the clocks of all referenced heads:</p>
+<p>Each node gets a <strong>vector clock</strong> — a map from <em>indexer</em> public keys to positions, built in memory by merging the clocks of all referenced heads. Non-indexing writers never appear in a clock; their entries are placed through <code>heads</code> alone. With Alice, Bob, and Carol all indexers:</p>
 <pre><code>Node A3's clock:
   Alice:  3  (A3 is Alice's 3rd entry)
   Bob:    2  (A3 has transitively seen up to Bob's 2nd entry)
   Carol:  1  (A3 has transitively seen up to Carol's 1st entry)</code></pre>
 
-<p>The clock answers a key question: <code>clock.includes(writerKey, seq)</code> — &quot;has this node (directly or transitively) seen the given writer&#39;s entry at sequence <code>seq</code>?&quot; This is how Autobase determines causal ordering without synchronized timestamps.</p>
+<p>The clock answers a key question: <code>clock.includes(writerKey, length)</code> — &quot;has this node (directly or transitively) seen the given writer&#39;s first <code>length</code> entries?&quot; This is how Autobase determines causal ordering without synchronized timestamps.</p>
 <blockquote class="callout-term">
 <p><strong>Terminology:</strong> The <strong>happens-before</strong> relationship (written <code>a → b</code>) means event <code>a</code> is in event <code>b</code>&#39;s causal history. If <code>a → b</code>, then <code>b</code> has seen <code>a</code> (directly or transitively). If neither <code>a → b</code> nor <code>b → a</code>, the events are <strong>concurrent</strong> — they were produced independently without knowledge of each other.</p>
 </blockquote>
@@ -132,15 +214,15 @@ Carol:              [C1] ───┘</code></pre>
 <ol>
 <li><p><strong>Causal ordering is preserved.</strong> If <code>a → b</code>, then <code>a</code> appears before <code>b</code> in the linearized output. This is non-negotiable — the laws of causality are respected.</p>
 </li>
-<li><p><strong>Concurrent events are ordered by writer key.</strong> When two events are causally concurrent, Autobase breaks the tie with a deterministic comparison: <code>Buffer.compare(writerA.key, writerB.key)</code>. Lexicographically smaller keys go first.</p>
+<li><p><strong>Concurrent events are ordered deterministically.</strong> When two events are causally concurrent, Autobase breaks the tie with a deterministic comparison — at a minimum, <code>Buffer.compare(writerA.key, writerB.key)</code> (lexicographically smaller keys go first). The actual linearizer is more sophisticated, using batch boundaries and DAG structure in addition to key comparison, but the principle is the same: a deterministic rule that every peer applies identically.</p>
 </li>
 </ol>
 <p>The result is a single ordered sequence that every peer computes identically — regardless of the order in which they received the events. Two peers who have seen the same set of events will always produce the same linearization.</p>
-<pre><code>DAG:                     Linearized:
-  A1 ─── A2              1. A1
-  B1 ─── B2              2. B1  (concurrent with A2, key tiebreak)
-  C1                      3. C1  (concurrent with A2/B1, key tiebreak)
-                          4. A2  (depends on A1)
+<pre><code>DAG:                     Linearized (key A &lt; key B &lt; key C):
+  A1 ─── A2              1. A1  (concurrent with B1/C1, lowest key)
+  B1 ─── B2              2. A2  (depends on A1; still concurrent with B1/C1, lowest key)
+  C1                      3. B1  (concurrent with C1, key tiebreak)
+                          4. C1
 A3 ─┐ depends on         5. B2  (depends on B1, C1)
     │ B2 and A2           6. A3  (depends on A2, B2)</code></pre>
 
@@ -164,9 +246,9 @@ graph LR
 
     subgraph "Linearized View"
         L1["1. A1"]:::view
-        L2["2. B1"]:::view
-        L3["3. C1"]:::view
-        L4["4. A2"]:::view
+        L2["2. A2"]:::view
+        L3["3. B1"]:::view
+        L4["4. C1"]:::view
         L5["5. B2"]:::view
         L6["6. A3"]:::view
     end
@@ -180,8 +262,8 @@ graph LR
     classDef view fill:#22272e,stroke:#57ab5a,color:#e6edf3
 </pre></div>
 
-<p><em>Figure 1: From independent writer cores (blue) through the causal DAG (purple) to the deterministic linearized view (green). Concurrent events (like A2, B1, C1) are ordered by lexicographic key comparison.</em></p>
-<p>Notice that the DAG preserves all causal relationships — B2 depends on C1, and A3 depends on B2. The linearization respects these dependencies absolutely. Only the ordering of <em>concurrent</em> events (those with no causal relationship) is decided by the tiebreaker.</p>
+<p><em>Figure 1: From independent writer cores (blue) through the causal DAG (purple) to the deterministic linearized view (green). Concurrent events (like A2, B1, C1) are ordered by lexicographic key comparison — here Alice&#39;s key sorts lowest, so A2 lands before B1 even though it was written later.</em></p>
+<p>Notice that the DAG preserves all causal relationships — B2 depends on C1, and A3 depends on B2. The linearization respects these dependencies. Only the ordering of <em>concurrent</em> events (those with no causal relationship) is decided by the tiebreaker.</p>
 <blockquote class="callout-insight">
 <p><strong>Key Insight:</strong> The tiebreaker being the public key means the ordering is deterministic and verifiable — no randomness, no timestamps, no coordination. Any peer who knows the same set of events will produce the exact same sequence. The choice of lexicographic key comparison is arbitrary but consistent, which is all that matters.</p>
 </blockquote>
@@ -193,19 +275,19 @@ graph LR
 <p>Two user-defined functions control this:</p>
 <h3 id="open-store-host">open(store, host)</h3>
 
-<p>Creates the view data structure. Called once during initialization.</p>
+<p>Creates the view data structure. Autobase calls it at construction — that result is <code>base.view</code> — and again, internally, whenever it rebuilds its apply state, so keep it cheap and derive everything from <code>store</code>.</p>
 <pre><code class="language-js">function open (store, host) {
   // Return a view backed by a named Hypercore
   return store.get('my-view', { valueEncoding: 'json' })
 }</code></pre>
 
-<p>The <code>store</code> is an <code>AutoStore</code> that provides <code>store.get(name)</code> to create named Hypercores for the view. The <code>host</code> argument provides access to the Autobase instance. The returned object becomes <code>base.view</code>.</p>
+<p>The <code>store</code> is an <code>AutoStore</code> that provides <code>store.get(name)</code> to create named Hypercores for the view. The <code>host</code> argument is a thin handle on the base — <code>host.key</code>, <code>host.discoveryKey</code>, <code>host.id</code> — not the Autobase instance itself; its writer-management calls only work inside <code>apply</code>. The returned object becomes <code>base.view</code>.</p>
 <h3 id="apply-nodes-view-host">apply(nodes, view, host)</h3>
 
 <p>Processes linearized events and updates the view. Called repeatedly as new events are linearized.</p>
 <pre><code class="language-js">async function apply (nodes, view, host) {
   for (const node of nodes) {
-    if (node.value === null) continue  // Skip ack-only nodes
+    if (node.value === null) continue  // acks never reach apply; guard only against your own null payloads
 
     const { value } = node
 
@@ -229,14 +311,52 @@ graph LR
 <p><strong>Gotcha:</strong> The <code>apply</code> function must be <strong>pure and deterministic</strong>. It must only modify the <code>view</code> argument — no external state, no network calls, no <code>Date.now()</code>, no <code>Math.random()</code>. Why? Because Autobase may <em>undo and replay</em> the apply function during reordering. If apply wrote to an external database, the undo wouldn&#39;t roll back that write. If apply used <code>Date.now()</code>, two replays would produce different results. Purity is a design contract, not runtime-enforced — Autobase won&#39;t throw if you break it, but your application state will silently diverge between peers.</p>
 </blockquote>
 
+<blockquote>
+<p><strong>Note:</strong> When you genuinely need a timestamp inside <code>apply</code>, derive it from the view rather than a wall clock — <code>view.length</code> at the moment you append, or a counter you keep in the view. Nodes carry no view-position field — <code>node.length</code> is the position in the <em>writer&#39;s</em> core, not the view — and a node&#39;s position isn&#39;t fixed until the indexers confirm it: a concurrent write can arrive later and sort earlier, in which case Autobase truncates the view and calls <code>apply</code> again for the same node at its new position. Because the view is rewound with the reordering, a value like <code>view.length * 1000 + slotOffset</code> is a monotonic, replica-skew-free clock that every peer agrees on once the node is confirmed. Reach for <code>Date.now()</code> only <em>outside</em> <code>apply</code> — when projecting a confirmed view to the user.</p>
+</blockquote>
+
 <hr>
 <h2 id="writer-roles-not-everyone-votes">Writer Roles: Not Everyone Votes</h2>
+
+<!-- wp:html -->
+<div class="vg-embed" data-vg-snippet="autobase/writer-management">
+  <div class="vg-card">
+          <div class="vg-card-visual">
+            <svg class="vg-svg" viewBox="0 0 420 220" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <text x="210" y="25" text-anchor="middle" fill="#cdd9e5" font-size="13" font-weight="600" style="font-size:13px;font-weight:600">Writer Management</text>
+              <rect x="30" y="45" width="360" height="60" rx="6" fill="#0a1628" stroke="#a855f7" stroke-opacity="0.3"/>
+              <text x="210" y="68" text-anchor="middle" fill="#a855f7" font-size="11" font-weight="500" style="font-size:11px;font-weight:500">Majority Quorum Required</text>
+              <text x="210" y="88" text-anchor="middle" fill="#636e7b" font-size="9" style="font-size:9px">Adding/removing writers needs majority consensus</text>
+              <rect x="40" y="125" width="90" height="70" rx="5" fill="#0a1628" stroke="#00ff88" stroke-opacity="0.4"/>
+              <text x="85" y="150" text-anchor="middle" fill="#00ff88" font-size="10" font-weight="500" style="font-size:10px;font-weight:500">Writer A</text>
+              <text x="85" y="165" text-anchor="middle" fill="#636e7b" font-size="8" style="font-size:8px">✓ addWriter(C)</text>
+              <text x="85" y="178" text-anchor="middle" fill="#00ff88" font-size="8" style="font-size:8px">voted YES</text>
+              <rect x="165" y="125" width="90" height="70" rx="5" fill="#0a1628" stroke="#00ff88" stroke-opacity="0.4"/>
+              <text x="210" y="150" text-anchor="middle" fill="#00ff88" font-size="10" font-weight="500" style="font-size:10px;font-weight:500">Writer B</text>
+              <text x="210" y="165" text-anchor="middle" fill="#636e7b" font-size="8" style="font-size:8px">✓ addWriter(C)</text>
+              <text x="210" y="178" text-anchor="middle" fill="#00ff88" font-size="8" style="font-size:8px">voted YES</text>
+              <rect x="290" y="125" width="90" height="70" rx="5" fill="#0a1628" stroke="#f5a623" stroke-opacity="0.4" stroke-dasharray="4 3"/>
+              <text x="335" y="150" text-anchor="middle" fill="#f5a623" font-size="10" font-weight="500" style="font-size:10px;font-weight:500">Writer C</text>
+              <text x="335" y="165" text-anchor="middle" fill="#636e7b" font-size="8" style="font-size:8px">pending...</text>
+              <text x="335" y="178" text-anchor="middle" fill="#f5a623" font-size="8" class="vg-pulse" style="font-size:8px">2/2 = added</text>
+              <text x="210" y="215" text-anchor="middle" fill="#636e7b" font-size="9" style="font-size:9px">Prevents rogue writers — authorization is consensus-based</text>
+            </svg>
+          </div>
+          <div class="vg-card-body">
+            <div class="vg-card-title">Consensus-Based Writer Auth</div>
+            <div class="vg-card-text">Writers aren't added unilaterally. Adding or removing a writer requires a <strong>majority quorum</strong> of existing writers to agree. This prevents a single compromised peer from granting write access to arbitrary keys.</div>
+          </div>
+        </div>
+  <div data-vg-anim="vg-p-3" style="display:none">CiAgKGZ1bmN0aW9uKCkgewogIGlmICghd2luZG93LnZnUnVudGltZSkgcmV0dXJuOwogIHZhciB3cmFwID0gZG9jdW1lbnQucXVlcnlTZWxlY3RvcignW2RhdGEtdmctc25pcHBldD0iYXV0b2Jhc2Uvd3JpdGVyLW1hbmFnZW1lbnQiXScpOwogIGlmICghd3JhcCkgcmV0dXJuOwogIHZhciBjYXJkID0gd3JhcC5xdWVyeVNlbGVjdG9yKCcudmctY2FyZCcpOwogIHZhciBzdmcgPSBjYXJkLnF1ZXJ5U2VsZWN0b3IoJy52Zy1zdmcnKTsKICBpZiAoIXN2ZykgeyBpZiAodHlwZW9mIGdzYXAgIT09ICd1bmRlZmluZWQnKSBnc2FwLnNldChjYXJkLCB7IG9wYWNpdHk6IDEsIHk6IDAgfSk7IHJldHVybjsgfQogIHZhciB0bCA9IHZnUnVudGltZS5jYXJkVEwoY2FyZCk7CiAgdmFyIHJlY3RzID0gc3ZnLnF1ZXJ5U2VsZWN0b3JBbGwoJ3JlY3QnKTsKICB2YXIgdGV4dHMgPSBzdmcucXVlcnlTZWxlY3RvckFsbCgndGV4dCcpOwoKICAvLyBQaGFzZSAxOiBUaXRsZSArIHF1b3J1bSByZWN0ICsgcXVvcnVtIHRleHRzCiAgdGwuZnJvbSh0ZXh0c1swXSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yIH0sIDAuMyk7CiAgdGwuZnJvbShyZWN0c1swXSwgeyBvcGFjaXR5OiAwLCB5OiAtMTAsIGR1cmF0aW9uOiAwLjMgfSwgJz4tMC4wNScpOwogIHRsLmZyb20oW3RleHRzWzFdLCB0ZXh0c1syXV0sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiwgc3RhZ2dlcjogMC4wNCB9LCAnPi0wLjEnKTsKICB0bC5jYWxsKHZnUnVudGltZS5jYXB0aW9uLCBbd3JhcCwgJ0FkZGluZyBhIHdyaXRlciByZXF1aXJlcyBtYWpvcml0eSBxdW9ydW0nXSk7CgogIC8vIFBoYXNlIDI6IFdyaXRlciBBIHJlY3QgKyB0ZXh0cyArIFdyaXRlciBCIHJlY3QgKyB0ZXh0cwogIHRsLmZyb20ocmVjdHNbMV0sIHsgb3BhY2l0eTogMCwgeDogLTIwLCBkdXJhdGlvbjogMC4zIH0sICc+MC4xJyk7CiAgdGwuZnJvbShbdGV4dHNbM10sIHRleHRzWzRdLCB0ZXh0c1s1XV0sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiwgc3RhZ2dlcjogMC4wNCB9LCAnPi0wLjEnKTsKICB0bC5mcm9tKHJlY3RzWzJdLCB7IG9wYWNpdHk6IDAsIHg6IC0yMCwgZHVyYXRpb246IDAuMyB9LCAnPjAuMDUnKTsKICB0bC5mcm9tKFt0ZXh0c1s2XSwgdGV4dHNbN10sIHRleHRzWzhdXSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yLCBzdGFnZ2VyOiAwLjA0IH0sICc+LTAuMScpOwogIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnV3JpdGVycyBBIGFuZCBCIHZvdGUgWUVTIOKAlCAyLzIgY29uc2Vuc3VzIHJlYWNoZWQnXSk7CgogIC8vIFBoYXNlIDM6IFdyaXRlciBDIHJlY3QgKyB0ZXh0cyArIHB1bHNlCiAgdGwuZnJvbShyZWN0c1szXSwgeyBvcGFjaXR5OiAwLCB4OiAtMjAsIGR1cmF0aW9uOiAwLjMgfSwgJz4wLjEnKTsKICB0bC5mcm9tKFt0ZXh0c1s5XSwgdGV4dHNbMTBdLCB0ZXh0c1sxMV1dLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjIsIHN0YWdnZXI6IDAuMDQgfSwgJz4tMC4xJyk7CiAgdmFyIHB1bHNFbCA9IHN2Zy5xdWVyeVNlbGVjdG9yKCcudmctcHVsc2UnKTsKICBpZiAocHVsc0VsKSB0bC5jYWxsKGZ1bmN0aW9uICgpIHsgdmdSdW50aW1lLnB1bHNlKFtwdWxzRWxdLCB7IGR1cjogMC45IH0pOyB9KTsKICB0bC5jYWxsKHZnUnVudGltZS5jYXB0aW9uLCBbd3JhcCwgJ1dyaXRlciBDIGFkbWl0dGVkIOKAlCBhdXRob3JpemF0aW9uIGlzIGNvbnNlbnN1cy1iYXNlZCwgbm90IHVuaWxhdGVyYWwnXSk7CgogIC8vIFBoYXNlIDQ6IEJvdHRvbSBzdW1tYXJ5ICsgY2xlYXIgY2FwdGlvbgogIHRsLmZyb20odGV4dHNbMTJdLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjIgfSwgJz4wLjEnKTsKICB0bC5jYWxsKHZnUnVudGltZS5jYXB0aW9uLCBbd3JhcCwgJyddLCAnPjEnKTsKfSkoKTsKICA=</div>
+</div>
+
+<!-- /wp:html -->
 
 <p>Autobase defines three roles for writers, each with different consensus participation:</p>
 <h3 id="indexing-writers-indexers">Indexing Writers (Indexers)</h3>
 
 <p>Their references count toward quorum. Only indexers can advance the consensus frontier. When an indexer appends a node that references other nodes, that reference is a <strong>vote</strong> — it signals &quot;I have seen these events.&quot;</p>
-<p>Indexers are the consensus participants. Use odd numbers (3, 5, 7) to prevent quorum ties.</p>
+<p>Indexers are the consensus participants. A quorum is a strict majority — <code>floor(n/2) + 1</code> — so ties can&#39;t happen, but still use odd numbers (3, 5, 7): a fourth indexer raises the quorum to 3 without letting you lose any more nodes than 3 indexers already do.</p>
 <h3 id="non-indexing-writers">Non-Indexing Writers</h3>
 
 <p>Submit entries that are included in the DAG and the linearized view, but don&#39;t count toward quorum. Their references don&#39;t advance consensus.</p>
@@ -259,6 +379,10 @@ graph LR
     // ... handle application data ...
   }
 }</code></pre>
+
+<blockquote class="callout-gotcha">
+<p><strong>Gotcha:</strong> When a <em>new</em> peer joins a running system, don&#39;t make them an indexer — and note that <code>host.addWriter(key)</code> does exactly that by default. Pass <code>{ indexer: false }</code>: the peer can append freely, and their blocks sit in the DAG as pending until an existing indexer&#39;s next node references them — any normal append does, and so does the <code>null</code> ack Autobase writes on its <code>ackInterval</code> timer (10 s by default) or when you call <code>base.ack()</code>. Promoting an unknown peer straight to indexer inflates the quorum (a majority of the indexer set) and risks stalls if they go offline before contributing acks. Reserve <code>indexer: true</code> for the operator-managed core set. (<code>host.ackWriter(key)</code> is a different tool: it accepts an <em>optimistic</em> block from a peer who isn&#39;t a writer at all.)</p>
+</blockquote>
 
 <blockquote class="callout-insight">
 <p><strong>Key Insight:</strong> Writer roles separate <em>write access</em> from <em>consensus participation</em>. A chat app might have hundreds of users (non-indexing writers) but only 3-5 server nodes as indexers. The ordering converges quickly because the quorum is small, while all users can still contribute messages.</p>
@@ -285,7 +409,7 @@ graph LR
 
 <h3 id="the-confirmation-rule">The Confirmation Rule</h3>
 
-<p>A node&#39;s ordering becomes immutable once it achieves a quorum degree <strong>2 higher</strong> than any competing quorum. In the common case with no competing quorums, this means double quorum is sufficient. But if two concurrent branches both achieve single quorum independently, each needs to reach triple quorum (degree 3) to resolve the race.</p>
+<p>As described in the <a href="https://github.com/holepunchto/autobase/blob/main/DESIGN.md" target="_blank">Autobase DESIGN.md</a>, a node&#39;s ordering becomes immutable once it achieves a quorum degree <strong>2 higher</strong> than any competing quorum. In the common case with no competing quorums, this means double quorum is sufficient. But if two concurrent branches both achieve single quorum independently, each needs to reach triple quorum (degree 3) to resolve the race. These rules may evolve as Autobase matures.</p>
 <p>In practice, with 3 indexers actively acknowledging each other, confirmation happens within a few round-trips after all indexers have seen the events.</p>
 <h3 id="ack-the-consensus-engine">ack() — The Consensus Engine</h3>
 
@@ -296,19 +420,59 @@ graph LR
   ackInterval: 1000  // Auto-ack every 1 second
 })</code></pre>
 
-<p>Each <code>ack()</code> call:</p>
+<p>When an ack is written:</p>
 <ol>
-<li>Appends a <code>null</code> value to the local writer&#39;s core</li>
+<li>A <code>null</code> value is appended to the local writer&#39;s core</li>
 <li>The null node records the current DAG heads as dependencies</li>
 <li>This reference serves as a vote, advancing the quorum</li>
 </ol>
-<p>The <code>ackInterval</code> option (default: 10 seconds) configures automatic periodic acks. Without acks, the quorum never advances and ordering never stabilizes.</p>
+<p><code>ack()</code> is not unconditional: it appends when the linearizer decides a fresh reference would help — another writer&#39;s head that your last node hasn&#39;t seen, or a node one vote short of quorum — or when this indexer still owes a checkpoint signature, and returns without writing otherwise. Non-indexers never write acks. The <code>ackInterval</code> option (default: 10 seconds) runs that same check on a timer. Acks aren&#39;t the only votes, either: every ordinary append by an indexer carries heads too, so a base whose indexers write data steadily confirms without them. Acks are what keeps the quorum moving when indexers have nothing else to say.</p>
 <blockquote class="callout-gotcha">
-<p><strong>Gotcha:</strong> Your <code>apply</code> function will receive nodes with <code>null</code> values — these are ack-only nodes. Always check for null: <code>if (node.value === null) continue</code>. They carry no application data, but their causal references are critical for consensus.</p>
+<p><strong>Gotcha:</strong> Ack nodes never reach your <code>apply</code> function — Autobase drops <code>null</code>-valued nodes before building the batch, so <code>apply</code> only ever sees real application data. Their causal references still do their job; the linearizer reads them from the DAG, not from <code>apply</code>. If you ever see <code>null</code> in <code>apply</code>, it&#39;s your own payload, not an ack.</p>
 </blockquote>
 
 <hr>
 <h2 id="reordering-the-price-of-decentralization">Reordering: The Price of Decentralization</h2>
+
+<!-- wp:html -->
+<div class="vg-embed" data-vg-snippet="autobase/view-rebuild">
+  <div class="vg-card">
+          <div class="vg-card-visual">
+            <svg class="vg-svg" viewBox="0 0 420 220" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <text x="210" y="25" text-anchor="middle" fill="#cdd9e5" font-size="13" font-weight="600" style="font-size:13px;font-weight:600">View Rebuilds</text>
+              <text x="210" y="43" text-anchor="middle" fill="#636e7b" font-size="10" style="font-size:10px">When causal history changes, the view re-applies</text>
+              <text x="30" y="75" fill="#636e7b" font-size="9" style="font-size:9px">Before:</text>
+              <rect x="90" y="60" width="35" height="25" rx="3" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.4"/>
+              <rect x="130" y="60" width="35" height="25" rx="3" fill="#0a1628" stroke="#ff00cc" stroke-opacity="0.4"/>
+              <rect x="170" y="60" width="35" height="25" rx="3" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.4"/>
+              <text x="107" y="77" text-anchor="middle" fill="#00d4ff" font-size="8" style="font-size:8px">a0</text>
+              <text x="147" y="77" text-anchor="middle" fill="#ff00cc" font-size="8" style="font-size:8px">b0</text>
+              <text x="187" y="77" text-anchor="middle" fill="#00d4ff" font-size="8" style="font-size:8px">a1</text>
+              <text x="30" y="120" fill="#f5a623" font-size="9" style="font-size:9px">New data:</text>
+              <rect x="130" y="105" width="35" height="25" rx="3" fill="#f5a623" fill-opacity="0.1" stroke="#f5a623" stroke-opacity="0.5" class="vg-pulse"/>
+              <text x="147" y="122" text-anchor="middle" fill="#f5a623" font-size="8" style="font-size:8px">c0</text>
+              <text x="200" y="122" fill="#636e7b" font-size="8" style="font-size:8px">← was before b0 causally</text>
+              <text x="30" y="170" fill="#00ff88" font-size="9" style="font-size:9px">After:</text>
+              <rect x="90"  y="155" width="35" height="25" rx="3" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.4"/>
+              <rect x="130" y="155" width="35" height="25" rx="3" fill="#0a1628" stroke="#f5a623" stroke-opacity="0.4"/>
+              <rect x="170" y="155" width="35" height="25" rx="3" fill="#0a1628" stroke="#ff00cc" stroke-opacity="0.4"/>
+              <rect x="210" y="155" width="35" height="25" rx="3" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.4"/>
+              <text x="107" y="172" text-anchor="middle" fill="#00d4ff" font-size="8" style="font-size:8px">a0</text>
+              <text x="147" y="172" text-anchor="middle" fill="#f5a623" font-size="8" style="font-size:8px">c0</text>
+              <text x="187" y="172" text-anchor="middle" fill="#ff00cc" font-size="8" style="font-size:8px">b0</text>
+              <text x="227" y="172" text-anchor="middle" fill="#00d4ff" font-size="8" style="font-size:8px">a1</text>
+              <text x="210" y="205" text-anchor="middle" fill="#00ff88" font-size="9" style="font-size:9px">View is torn down and rebuilt with correct causal order</text>
+            </svg>
+          </div>
+          <div class="vg-card-body">
+            <div class="vg-card-title">Automatic Rebasing</div>
+            <div class="vg-card-text">When new data arrives that changes the causal order, Autobase <strong>tears down the affected portion of the view and re-applies</strong>. Because apply() is deterministic, every peer reaches the same view after rebasing.</div>
+          </div>
+        </div>
+  <div data-vg-anim="vg-p-4" style="display:none">CiAgKGZ1bmN0aW9uKCkgewogIGlmICghd2luZG93LnZnUnVudGltZSkgcmV0dXJuOwogIHZhciB3cmFwID0gZG9jdW1lbnQucXVlcnlTZWxlY3RvcignW2RhdGEtdmctc25pcHBldD0iYXV0b2Jhc2Uvdmlldy1yZWJ1aWxkIl0nKTsKICBpZiAoIXdyYXApIHJldHVybjsKICB2YXIgY2FyZCA9IHdyYXAucXVlcnlTZWxlY3RvcignLnZnLWNhcmQnKTsKICB2YXIgc3ZnID0gY2FyZC5xdWVyeVNlbGVjdG9yKCcudmctc3ZnJyk7CiAgaWYgKCFzdmcpIHsgaWYgKHR5cGVvZiBnc2FwICE9PSAndW5kZWZpbmVkJykgZ3NhcC5zZXQoY2FyZCwgeyBvcGFjaXR5OiAxLCB5OiAwIH0pOyByZXR1cm47IH0KICB2YXIgdGwgPSB2Z1J1bnRpbWUuY2FyZFRMKGNhcmQpOwogIHZhciByZWN0cyA9IHN2Zy5xdWVyeVNlbGVjdG9yQWxsKCdyZWN0Jyk7CiAgdmFyIHRleHRzID0gc3ZnLnF1ZXJ5U2VsZWN0b3JBbGwoJ3RleHQnKTsKCiAgLy8gUGhhc2UgMTogVGl0bGUgKyBzdWJ0aXRsZSArICJCZWZvcmU6IiBsYWJlbCArIGJlZm9yZSByZWN0cyArIHRoZWlyIGxhYmVscwogIHRsLmZyb20oW3RleHRzWzBdLCB0ZXh0c1sxXV0sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiwgc3RhZ2dlcjogMC4wNCB9LCAwLjMpOwogIHRsLmZyb20odGV4dHNbMl0sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiB9LCAnPi0wLjA1Jyk7CiAgdGwuZnJvbShbcmVjdHNbMF0sIHJlY3RzWzFdLCByZWN0c1syXV0sIHsgb3BhY2l0eTogMCwgeTogLTgsIGR1cmF0aW9uOiAwLjIsIHN0YWdnZXI6IDAuMDYgfSwgJz4tMC4wNScpOwogIHRsLmZyb20oW3RleHRzWzNdLCB0ZXh0c1s0XSwgdGV4dHNbNV1dLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjIsIHN0YWdnZXI6IDAuMDQgfSwgJz4tMC4xJyk7CiAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsICdDdXJyZW50IHZpZXc6IGEwIFx1MjE5MiBiMCBcdTIxOTIgYTEnXSk7CgogIC8vIFBoYXNlIDI6ICJOZXcgZGF0YToiIGxhYmVsICsgbmV3IGJsb2NrIHJlY3QgKyBjMCBsYWJlbCArIGNhdXNhbCBub3RlICsgcHVsc2UKICB0bC5mcm9tKHRleHRzWzZdLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjIgfSwgJz4wLjInKTsKICB0bC5mcm9tKHJlY3RzWzNdLCB7IG9wYWNpdHk6IDAsIHNjYWxlOiAwLjUsIHRyYW5zZm9ybU9yaWdpbjogJ2NlbnRlcicsIGR1cmF0aW9uOiAwLjQsIGVhc2U6ICdiYWNrLm91dCgyKScgfSwgJz4tMC4wNScpOwogIHRsLmZyb20odGV4dHNbN10sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiB9LCAnPi0wLjEnKTsKICB0bC5mcm9tKHRleHRzWzhdLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjIgfSwgJz4tMC4wNScpOwogIHZhciBwdWxzRWwgPSBzdmcucXVlcnlTZWxlY3RvcignLnZnLXB1bHNlJyk7CiAgaWYgKHB1bHNFbCkgdGwuY2FsbChmdW5jdGlvbiAoKSB7IHZnUnVudGltZS5wdWxzZShbcHVsc0VsXSwgeyBkdXI6IDEgfSk7IH0pOwogIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnTmV3IGRhdGEgYzAgYXJyaXZlcyBcdTIwMTQgY2F1c2FsbHkgYmVmb3JlIGIwJ10pOwoKICAvLyBQaGFzZSAzOiAiQWZ0ZXI6IiBsYWJlbCArIGFmdGVyIHJlY3RzICsgdGhlaXIgbGFiZWxzICsgYm90dG9tIG5vdGUgKyBjbGVhcgogIHRsLmZyb20odGV4dHNbOV0sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiB9LCAnPjAuMicpOwogIHRsLmZyb20oW3JlY3RzWzRdLCByZWN0c1s1XSwgcmVjdHNbNl0sIHJlY3RzWzddXSwgeyBvcGFjaXR5OiAwLCB5OiA4LCBkdXJhdGlvbjogMC4yLCBzdGFnZ2VyOiAwLjA2IH0sICc+LTAuMDUnKTsKICB0bC5mcm9tKFt0ZXh0c1sxMF0sIHRleHRzWzExXSwgdGV4dHNbMTJdLCB0ZXh0c1sxM11dLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjIsIHN0YWdnZXI6IDAuMDQgfSwgJz4tMC4xJyk7CiAgdGwuZnJvbSh0ZXh0c1sxNF0sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMiB9LCAnPjAuMDUnKTsKICB0bC5jYWxsKHZnUnVudGltZS5jYXB0aW9uLCBbd3JhcCwgJ1ZpZXcgcmVidWlsdDogYTAgXHUyMTkyIGMwIFx1MjE5MiBiMCBcdTIxOTIgYTEgXHUyMDE0IGNvcnJlY3QgY2F1c2FsIG9yZGVyJ10pOwogIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnJ10sICc+MScpOwp9KSgpOwo=</div>
+</div>
+
+<!-- /wp:html -->
 
 <p>Here&#39;s the uncomfortable truth about multi-writer P2P: ordering can change. Before quorum confirmation, the linearized order of events is provisional. When new causal information arrives — a previously unseen writer&#39;s entries, or a new reference chain — Autobase may need to reorder events.</p>
 <h3 id="what-happens-during-a-reorder">What Happens During a Reorder</h3>
@@ -323,22 +487,22 @@ graph LR
 <p>This is why <code>apply</code> must be pure and deterministic — it might be called multiple times with different orderings of the same events. And this is why <code>open</code> must return a view derived solely from its <code>store</code> argument — the view must be reconstructable from the apply history alone.</p>
 <h3 id="signedlength-vs-length">signedLength vs. length</h3>
 
-<p>Autobase exposes two length markers on the view:</p>
+<p>A Hypercore view exposes two length markers:</p>
 <figure class="wp-block-table"><table>
 <thead>
 <tr><th>Property</th><th>Meaning</th></tr>
 </thead>
 <tbody>
-<tr><td>`base.view.length`</td><td>Total entries including unconfirmed tip</td></tr>
-<tr><td>`base.signedLength`</td><td>Confirmed entries (quorum-locked, will never reorder)</td></tr>
+<tr><td><code>base.view.length</code></td><td>Total view entries including the unconfirmed tip</td></tr>
+<tr><td><code>base.view.signedLength</code></td><td>View entries signed by an indexer quorum (will never reorder)</td></tr>
 </tbody>
 </table></figure>
 
-<p>Everything between <code>signedLength</code> and <code>length</code> is provisional — it represents the best current guess at the ordering, but it may change. Everything before <code>signedLength</code> is permanent.</p>
+<p>Everything between <code>view.signedLength</code> and <code>view.length</code> is provisional — it represents the best current guess at the ordering, but it may change. Everything before <code>view.signedLength</code> is permanent. (<code>base.length</code> and <code>base.signedLength</code> exist too, but they measure Autobase&#39;s internal <em>system</em> core, not your view — never mix them with <code>base.view.length</code>.) One more trap: those two markers belong to the Hypercore <code>open</code> returns. If <code>open</code> wraps it — a Hyperbee, as in the example below — <code>base.view.length</code> and <code>base.view.signedLength</code> are <code>undefined</code> and <code>base.view.get(0)</code> is a key lookup, not an index lookup; read <code>base.view.core.length</code> and <code>base.view.core.signedLength</code> instead. The same goes for <code>view.length</code> inside <code>apply</code>.</p>
 <div class="code-filename">ordering-awareness.js</div>
 <pre><code class="language-js">await base.update()
 
-const confirmed = base.signedLength
+const confirmed = base.view.signedLength
 const total = base.view.length
 const provisional = total - confirmed
 
@@ -389,7 +553,7 @@ async function apply (nodes, view, host) {
   const batch = view.batch()
 
   for (const node of nodes) {
-    if (node.value === null) continue  // Ack-only node
+    if (node.value === null) continue  // acks never reach apply; guard only against your own null payloads
 
     const { type, key, value } = node.value
 
@@ -452,7 +616,7 @@ await base.ready()
 
 <p>When a peer has been offline for a long time, replaying the entire DAG history through <code>apply</code> would be expensive. Autobase supports <strong>fast-forward</strong>: if the confirmed checkpoint has advanced significantly, a behind peer can jump directly to the checkpoint state without replaying intermediate history.</p>
 <p>This works because confirmed data (before <code>signedLength</code>) is immutable — the view at that point has been signed by a quorum of indexers. A behind peer can verify the checkpoint cryptographically (Hypercore&#39;s Merkle proofs validate every block retrieved) and start processing only from the checkpoint forward.</p>
-<p>Fast-forward is enabled by default (<code>fastForward: true</code> in the constructor). It triggers automatically when the gap between the local state and the remote checkpoint is large enough.</p>
+<p>Fast-forward is enabled by default (<code>fastForward: true</code> in the constructor). It triggers automatically when a peer&#39;s signed checkpoint is at least 16 system-core blocks ahead of your local copy; a failed attempt is retried after five minutes.</p>
 <hr>
 <h2 id="the-tradeoffs">The Tradeoffs</h2>
 
@@ -463,7 +627,7 @@ await base.ready()
 <tbody>
 <tr><td>Multiple independent writers — no single bottleneck</td><td>Ordering is provisional until quorum confirms it</td></tr>
 <tr><td>Deterministic linearization — every peer computes the same order</td><td>Concurrent events are ordered by key comparison (arbitrary but consistent)</td></tr>
-<tr><td>Causal ordering preserved — events never precede their dependencies</td><td>Vector clocks add metadata overhead to every entry</td></tr>
+<tr><td>Causal ordering preserved — events never precede their dependencies</td><td>Every entry stores its head references and a digest alongside the payload; only an indexer adds a checkpoint, and only from its second block on — the first has nothing to point at yet</td></tr>
 <tr><td>Quorum-confirmed checkpoints — ordering becomes permanent</td><td>Requires a majority of indexers to be active for progress</td></tr>
 <tr><td>Apply function builds rich views (Hyperbee, custom stores)</td><td>Apply must be pure — no side effects, no non-determinism</td></tr>
 <tr><td>Fast-forward for catching up after long offline periods</td><td>Behind peers must verify the quorum-signed checkpoint</td></tr>
@@ -479,9 +643,9 @@ await base.ready()
 </li>
 <li><p><strong>The causal DAG tracks &quot;happens-before&quot; via head references.</strong> Every entry records the current DAG heads at the time of writing. Vector clocks computed from these references tell you exactly what each entry has seen.</p>
 </li>
-<li><p><strong>Quorum consensus makes ordering permanent.</strong> A vote = an indexer referencing a node. Single quorum = a majority have voted. Double quorum = a majority know about the single quorum. Once achieved, the ordering at that point will never change.</p>
+<li><p><strong>Quorum consensus makes ordering permanent.</strong> A vote = an indexer referencing a node. Single quorum = a majority have voted. Double quorum = a majority know about the single quorum. With no rival quorum in play, that locks the ordering at that point for good.</p>
 </li>
-<li><p><strong>Three writer roles: indexer, non-indexer, relayed.</strong> Indexers vote and advance consensus. Non-indexers contribute data without voting. Relayed writers&#39; entries only appear if referenced by a confirmed writer. Use odd numbers of indexers (3, 5, 7) to avoid ties.</p>
+<li><p><strong>Three writer roles: indexer, non-indexer, relayed.</strong> Indexers vote and advance consensus. Non-indexers contribute data without voting. Relayed writers&#39; entries only appear if referenced by a confirmed writer. Use odd numbers of indexers (3, 5, 7) — an even count widens the quorum without adding fault tolerance.</p>
 </li>
 <li><p><strong>The apply function must be pure and deterministic.</strong> It may be called multiple times during reordering. Only modify the view argument. No external state, no <code>Date.now()</code>, no network calls. This is a design contract, not runtime-enforced.</p>
 </li>
@@ -489,10 +653,24 @@ await base.ready()
 </li>
 </ul>
 <hr>
+<h2 id="frequently-asked-questions">Frequently Asked Questions</h2>
+
+<h3 id="how-does-autobase-handle-multiple-writers">How does Autobase handle multiple writers?</h3>
+
+<p>Each writer appends to their own Hypercore. Autobase arranges all entries into a causal DAG using head references, then linearizes them into a deterministic total order. Causal relationships are always preserved, and concurrent events are ordered by lexicographic key comparison so every peer computes the same sequence.</p>
+<h3 id="what-is-the-difference-between-autobase-and-crdts">What is the difference between Autobase and CRDTs?</h3>
+
+<p>CRDTs merge state automatically without coordination by designing data types whose concurrent operations commute. Autobase linearizes events into a single ordered sequence using quorum consensus, then replays them through a user-defined apply function. CRDTs are conflict-free by design; Autobase provides a deterministic ordering that applications can use to resolve conflicts however they choose.</p>
+<h3 id="what-is-signedlength">What is signedLength?</h3>
+
+<p><code>base.view.signedLength</code> — or <code>base.view.core.signedLength</code> when <code>open</code> wraps the core in a Hyperbee — marks the boundary between confirmed (quorum-locked) entries and provisional entries whose ordering might still change. Everything before it has been signed by a quorum of indexers and will never reorder. Everything after is the best current guess and may shift as new causal information arrives.</p>
+<hr>
 <h2 id="what-s-next">What's Next</h2>
 
 <p>We&#39;ve built the full collaboration stack: encrypted connections, verified data, peer discovery, and multi-writer consensus. But we&#39;ve been trusting the <em>people</em> at each end. What if a peer is malicious? What if they flood the DHT with fake nodes? What if they try to impersonate someone else?</p>
 <p>In <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7</a>, we&#39;ll examine the security model of the entire Holepunch stack — from Sybil resistance in the DHT, to Eclipse attack prevention, to the complete Merkle verification chain that makes data poisoning detectable. We&#39;ll also look at how identity works without a central authority, including blind pairing for safe peer introduction.</p>
+<p>[heartit_lab title="p2p-one-truth" cmd="npx @heart-it/p2p-one-truth new" desc="Two writers, no server: type in both terminals and watch the same numbered view converge on each side." repo="https://github.com/heart-IT/p2p-from-scratch-labs" note="needs Node.js 18+ · two terminals — the first prints the join command"]</p>
+<p>[heartit_lab title="p2p-quorum" cmd="npx @heart-it/p2p-quorum new" desc="Three indexers, visible quorum: kill one terminal and the majority keeps the checkpoint advancing; rejoin and watch it converge." repo="https://github.com/heart-IT/p2p-from-scratch-labs" note="needs Node.js 18+ · three terminals — the first prints the join command"]</p>
 <hr>
 <h2 id="references-further-reading">References & Further Reading</h2>
 
@@ -510,33 +688,21 @@ await base.ready()
 <hr>
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <strong>Part 6: Many Writers, One Truth (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Building for Humans</a></p>
+<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: NAT Hole Punching Explained</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: P2P Encryption with the Noise Protocol</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Merkle Trees and Append-Only Logs</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: Building P2P Databases with Hyperbee and Hyperdrive</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Peer Discovery with Kademlia DHT</a> | <strong>Part 6: Multi-Writer Consensus with Autobase (You are here)</strong> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: P2P Security — Threats, Defenses, and Trust</a> | <a href="https://heartit.tech/p2p-from-scratch-part-8-building-for-humans/">Part 8: Offline-First UX for P2P Applications</a></p>
 </blockquote>
 
 
 <!-- Mermaid.js — renders <pre class="mermaid"> blocks -->
-<script type="module">
-import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-mermaid.initialize({
-  startOnLoad: true,
-  theme: 'dark',
-  themeVariables: {
-    primaryColor: '#2d333b',
-    primaryTextColor: '#8b949e',
-    primaryBorderColor: '#373e47',
-    lineColor: '#539bf5',
-    secondaryColor: '#22272e',
-    tertiaryColor: '#1b1f24',
-    noteBkgColor: '#2d333b',
-    noteTextColor: '#8b949e',
-    noteBorderColor: '#986ee2',
-    actorBkg: '#2d333b',
-    actorBorder: '#373e47',
-    actorTextColor: '#cdd9e5',
-    actorLineColor: '#373e47',
-    signalColor: '#539bf5',
-    signalTextColor: '#8b949e',
-    sequenceNumberColor: '#1b1f24'
-  }
-});
-</script>
+<div data-vg-mod="vg-p-7" style="display:none">CmltcG9ydCBtZXJtYWlkIGZyb20gJ2h0dHBzOi8vY2RuLmpzZGVsaXZyLm5ldC9ucG0vbWVybWFpZEAxMS4xNC4wL2Rpc3QvbWVybWFpZC5lc20ubWluLm1qcyc7Cm1lcm1haWQuaW5pdGlhbGl6ZSh7CiAgc3RhcnRPbkxvYWQ6IHRydWUsCiAgdGhlbWU6ICdkYXJrJywKICB0aGVtZVZhcmlhYmxlczogewogICAgcHJpbWFyeUNvbG9yOiAnIzJkMzMzYicsCiAgICBwcmltYXJ5VGV4dENvbG9yOiAnIzhiOTQ5ZScsCiAgICBwcmltYXJ5Qm9yZGVyQ29sb3I6ICcjMzczZTQ3JywKICAgIGxpbmVDb2xvcjogJyM1MzliZjUnLAogICAgc2Vjb25kYXJ5Q29sb3I6ICcjMjIyNzJlJywKICAgIHRlcnRpYXJ5Q29sb3I6ICcjMWIxZjI0JywKICAgIG5vdGVCa2dDb2xvcjogJyMyZDMzM2InLAogICAgbm90ZVRleHRDb2xvcjogJyM4Yjk0OWUnLAogICAgbm90ZUJvcmRlckNvbG9yOiAnIzk4NmVlMicsCiAgICBhY3RvckJrZzogJyMyZDMzM2InLAogICAgYWN0b3JCb3JkZXI6ICcjMzczZTQ3JywKICAgIGFjdG9yVGV4dENvbG9yOiAnI2NkZDllNScsCiAgICBhY3RvckxpbmVDb2xvcjogJyMzNzNlNDcnLAogICAgc2lnbmFsQ29sb3I6ICcjNTM5YmY1JywKICAgIHNpZ25hbFRleHRDb2xvcjogJyM4Yjk0OWUnLAogICAgc2VxdWVuY2VOdW1iZXJDb2xvcjogJyMxYjFmMjQnCiAgfQp9KTsK</div>
+
+<!-- wp:html -->
+<!-- Visual Guide Dependencies -->
+<div data-vg-css="vg-p-0" style="display:none">Ci8qIFZpc3VhbCBHdWlkZSBFbWJlZCBTdHlsZXMg4oCUIGV4dHJhY3RlZCBmcm9tIHZpc3VhbC1ndWlkZS5odG1sICovCgovKiDilIDilIAgU2NvcGVkIGJveC1zaXppbmcgKGF2b2lkcyBicmVha2luZyBXb3JkUHJlc3MgZ2xvYmFscykg4pSA4pSAICovCi52Zy1lbWJlZCwgLnZnLWVtYmVkICosIC52Zy1lbWJlZCAqOjpiZWZvcmUsIC52Zy1lbWJlZCAqOjphZnRlciB7CiAgYm94LXNpemluZzogYm9yZGVyLWJveDsKfQoKLyog4pSA4pSAIEJhc2UgZGVzaWduIHRva2VucyAoZnJvbSBoZWFydGl0LWJsb2cuY3NzKSDilIDilIAgKi8KOnJvb3QgewogIC0tYmctY29kZTogIzE2MWExZjsKICAtLXRleHQtcHJpbWFyeTogI2NkZDllNTsKICAtLXRleHQtc2Vjb25kYXJ5OiAjOGI5NDllOwogIC0tdGV4dC1tdXRlZDogIzYzNmU3YjsKICAtLWZvbnQtc2FuczogJ1NwYWNlIEdyb3Rlc2snLCAnSW50ZXInLCAtYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsICdTZWdvZSBVSScsIHN5c3RlbS11aSwgc2Fucy1zZXJpZjsKICAtLWZvbnQtYm9keTogJ0ludGVyJywgLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCAnU2Vnb2UgVUknLCBzeXN0ZW0tdWksIHNhbnMtc2VyaWY7CiAgLS1mb250LW1vbm86ICdKZXRCcmFpbnMgTW9ubycsICdGaXJhIENvZGUnLCAnU0YgTW9ubycsICdDYXNjYWRpYSBDb2RlJywgJ0NvbnNvbGFzJywgbW9ub3NwYWNlOwogIC0tc3BhY2UtMTogNHB4OwogIC0tc3BhY2UtMjogOHB4OwogIC0tc3BhY2UtMzogMTJweDsKICAtLXNwYWNlLTQ6IDE2cHg7CiAgLS1zcGFjZS01OiAyNHB4OwogIC0tc3BhY2UtNjogMzJweDsKICAtLXNwYWNlLTc6IDQ4cHg7CiAgLS1zcGFjZS04OiA2NHB4OwogIC0tc3BhY2UtOTogOTZweDsKCiAgLyogVmlzdWFsIGd1aWRlIHRva2VucyAqLwogIC0tdmctY3lhbjogIzAwZDRmZjsKICAtLXZnLWN5YW4tZGltOiByZ2JhKDAsIDIxMiwgMjU1LCAwLjE1KTsKICAtLXZnLW1hZ2VudGE6ICNmZjAwY2M7CiAgLS12Zy1tYWdlbnRhLWRpbTogcmdiYSgyNTUsIDAsIDIwNCwgMC4xMik7CiAgLS12Zy1ncmVlbjogIzAwZmY4ODsKICAtLXZnLWdyZWVuLWRpbTogcmdiYSgwLCAyNTUsIDEzNiwgMC4xMik7CiAgLS12Zy1hbWJlcjogI2Y1YTYyMzsKICAtLXZnLWFtYmVyLWRpbTogcmdiYSgyNDUsIDE2NiwgMzUsIDAuMTIpOwogIC0tdmctcHVycGxlOiAjYTg1NWY3OwogIC0tdmctcHVycGxlLWRpbTogcmdiYSgxNjgsIDg1LCAyNDcsIDAuMTIpOwogIC0tdmctcmVkOiAjZmY2YjZiOwogIC0tdmctcmVkLWRpbTogcmdiYSgyNTUsIDEwNywgMTA3LCAwLjEyKTsKICAtLXZnLWJnOiAjMDUwODEwOwogIC0tdmctYmctY2FyZDogIzBhMGYxYTsKICAtLXZnLWJnLWNhcmQtaG92ZXI6ICMwZjE1MjU7CiAgLS12Zy1ib3JkZXI6ICMxYTIwMzU7CiAgLS12Zy1ib3JkZXItZ2xvdzogcmdiYSgwLCAyMTIsIDI1NSwgMC4yKTsKICAtLXZnLW1heC13OiAxMTAwcHg7CiAgLS12Zy1uYXYtaDogNTJweDsKfQoKCi8qIOKUgOKUgCBDYXJkcyDilIDilIAgKi8KLnZnLWRpYWdyYW0tZ3JpZCB7IGRpc3BsYXk6IGdyaWQ7IGdyaWQtdGVtcGxhdGUtY29sdW1uczogMWZyOyBnYXA6IDI0cHg7IH0KLnZnLWNhcmQgewogIGJhY2tncm91bmQ6IHZhcigtLXZnLWJnLWNhcmQpOyBib3JkZXI6IDFweCBzb2xpZCB2YXIoLS12Zy1ib3JkZXIpOwogIGJvcmRlci1yYWRpdXM6IDhweDsgb3ZlcmZsb3c6IGhpZGRlbjsKICB0cmFuc2l0aW9uOiBib3JkZXItY29sb3IgMC4zcywgYm94LXNoYWRvdyAwLjNzOwogIG9wYWNpdHk6IDA7IHRyYW5zZm9ybTogdHJhbnNsYXRlWSgyNHB4KTsgd2lsbC1jaGFuZ2U6IG9wYWNpdHksIHRyYW5zZm9ybTsKfQoudmctY2FyZDpob3ZlciB7IGJvcmRlci1jb2xvcjogdmFyKC0tdmctYm9yZGVyLWdsb3cpOyBib3gtc2hhZG93OiAwIDAgMzBweCByZ2JhKDAsMjEyLDI1NSwwLjA2KTsgfQoudmctY2FyZC12aXN1YWwgewogIHBhZGRpbmc6IDMycHggMjRweDsgZGlzcGxheTogZmxleDsgYWxpZ24taXRlbXM6IGNlbnRlcjsganVzdGlmeS1jb250ZW50OiBjZW50ZXI7CiAgbWluLWhlaWdodDogMjYwcHg7IHBvc2l0aW9uOiByZWxhdGl2ZTsgb3ZlcmZsb3c6IGhpZGRlbjsKfQoudmctY2FyZC1ib2R5IHsgcGFkZGluZzogMjBweCAyNHB4IDI0cHg7IGJvcmRlci10b3A6IDFweCBzb2xpZCB2YXIoLS12Zy1ib3JkZXIpOyB9Ci52Zy1jYXJkLXRpdGxlIHsgZm9udC1mYW1pbHk6IHZhcigtLWZvbnQtc2Fucyk7IGZvbnQtc2l6ZTogMTZweDsgZm9udC13ZWlnaHQ6IDYwMDsgY29sb3I6IHZhcigtLXRleHQtcHJpbWFyeSk7IG1hcmdpbi1ib3R0b206IDZweDsgfQoudmctY2FyZC10ZXh0IHsgZm9udC1mYW1pbHk6IHZhcigtLWZvbnQtYm9keSk7IGZvbnQtc2l6ZTogMTRweDsgY29sb3I6IHZhcigtLXRleHQtc2Vjb25kYXJ5KTsgbGluZS1oZWlnaHQ6IDEuNjsgfQoudmctY2FyZC0td2lkZSB7IGdyaWQtY29sdW1uOiAxIC8gLTE7IH0KLnZnLWNhcmQtLXdpZGUgLnZnLWNhcmQtdmlzdWFsIHsgbWluLWhlaWdodDogMzIwcHg7IH0KCi8qIOKUgOKUgCBDb2RlIOKUgOKUgCAqLwoudmctY29kZSB7CiAgYmFja2dyb3VuZDogdmFyKC0tYmctY29kZSk7IGJvcmRlcjogMXB4IHNvbGlkIHZhcigtLXZnLWJvcmRlcik7CiAgYm9yZGVyLXJhZGl1czogNnB4OyBwYWRkaW5nOiAxNnB4IDIwcHg7IGZvbnQtZmFtaWx5OiB2YXIoLS1mb250LW1vbm8pOwogIGZvbnQtc2l6ZTogMTNweDsgbGluZS1oZWlnaHQ6IDEuNjsgY29sb3I6IHZhcigtLXRleHQtc2Vjb25kYXJ5KTsKICBvdmVyZmxvdy14OiBhdXRvOyBtYXJnaW4tdG9wOiAxMnB4OyB3aGl0ZS1zcGFjZTogcHJlOwp9Ci52Zy1jb2RlIC5rdyAgeyBjb2xvcjogdmFyKC0tdmctY3lhbik7IH0KLnZnLWNvZGUgLmZuICB7IGNvbG9yOiAjNmNiNmZmOyB9Ci52Zy1jb2RlIC5zdHIgeyBjb2xvcjogdmFyKC0tdmctZ3JlZW4pOyB9Ci52Zy1jb2RlIC5jbXQgeyBjb2xvcjogdmFyKC0tdGV4dC1tdXRlZCk7IH0KLnZnLWNvZGUgLm51bSB7IGNvbG9yOiB2YXIoLS12Zy1hbWJlcik7IH0KCi8qIOKUgOKUgCBTVkcg4pSA4pSAICovCi52Zy1zdmcgeyB3aWR0aDogMTAwJTsgbWF4LXdpZHRoOiA3MDBweDsgaGVpZ2h0OiBhdXRvOyBvdmVyZmxvdzogaGlkZGVuOyB9Ci52Zy1zdmcgdGV4dCB7IGZvbnQtZmFtaWx5OiAnSmV0QnJhaW5zIE1vbm8nLCAnU0YgTW9ubycsIG1vbm9zcGFjZTsgfQoudmctcHVsc2UsIC52Zy1yaXBwbGUsIC52Zy1nbG93LWxpbmUsIC52Zy1mbG93LXJpZ2h0LCAudmctZmxvdy1kb3duLCAudmctb3JiaXQgeyBhbmltYXRpb246IG5vbmUgIWltcG9ydGFudDsgfQpub3NjcmlwdCB+IC52Zy13cmFwIC52Zy1jYXJkLCAudmctY2FyZC52Zy1uby1nc2FwIHsgb3BhY2l0eTogMSAhaW1wb3J0YW50OyB0cmFuc2Zvcm06IG5vbmUgIWltcG9ydGFudDsgfQoKLyog4pSA4pSAIExlZ2VuZCDilIDilIAgKi8KLnZnLWxlZ2VuZCB7IGRpc3BsYXk6IGZsZXg7IGZsZXgtd3JhcDogd3JhcDsgZ2FwOiAxMnB4OyBtYXJnaW4tdG9wOiAxMnB4OyB9Ci52Zy1sZWdlbmQtaXRlbSB7IGRpc3BsYXk6IGZsZXg7IGFsaWduLWl0ZW1zOiBjZW50ZXI7IGdhcDogNnB4OyBmb250LWZhbWlseTogdmFyKC0tZm9udC1tb25vKTsgZm9udC1zaXplOiAxMXB4OyBjb2xvcjogdmFyKC0tdGV4dC1tdXRlZCk7IH0KLnZnLWxlZ2VuZC1kb3QgeyB3aWR0aDogOHB4OyBoZWlnaHQ6IDhweDsgYm9yZGVyLXJhZGl1czogNTAlOyBmbGV4LXNocmluazogMDsgfQoKLyog4pSA4pSAIFJlc3BvbnNpdmUgKGVtYmVkKSDilIDilIAgKi8KQG1lZGlhIChtYXgtd2lkdGg6IDY5OXB4KSB7CiAgLnZnLWNhcmQtdmlzdWFsIHsgcGFkZGluZzogMjRweCAxNnB4OyBtaW4taGVpZ2h0OiAyMDBweDsgfQp9CgovKiDilIDilIAgRW1iZWQgd3JhcHBlciDilIDilIAgKi8KLnZnLWVtYmVkIHsKICBtYXJnaW46IDJlbSAwOwogIG1heC13aWR0aDogMTAwJTsKICBvdmVyZmxvdzogaGlkZGVuOwp9Ci52Zy1lbWJlZCAudmctY2FyZCB7CiAgb3BhY2l0eTogMDsKICB0cmFuc2Zvcm06IHRyYW5zbGF0ZVkoMjRweCk7CiAgd2lsbC1jaGFuZ2U6IG9wYWNpdHksIHRyYW5zZm9ybTsKfQoudmctZW1iZWQgLnZnLWNhcmQudmctbm8tZ3NhcCwKLnZnLWVtYmVkLnZnLW5vLWdzYXAgLnZnLWNhcmQgewogIG9wYWNpdHk6IDEgIWltcG9ydGFudDsKICB0cmFuc2Zvcm06IG5vbmUgIWltcG9ydGFudDsKfQoKCi8qIOKUgOKUgCBBbWJpZW50IGNhcHRpb25zIOKUgOKUgCAqLwoudmctY2FwdGlvbiB7CiAgcG9zaXRpb246IGFic29sdXRlOwogIGJvdHRvbTogMTBweDsKICBsZWZ0OiAxNnB4OwogIHJpZ2h0OiAxNnB4OwogIGZvbnQtZmFtaWx5OiB2YXIoLS1mb250LW1vbm8pOwogIGZvbnQtc2l6ZTogMTFweDsKICBsaW5lLWhlaWdodDogMS41OwogIGNvbG9yOiB2YXIoLS12Zy1jeWFuKTsKICBiYWNrZ3JvdW5kOiByZ2JhKDUsIDgsIDE2LCAwLjg1KTsKICBiYWNrZHJvcC1maWx0ZXI6IGJsdXIoNnB4KTsKICAtd2Via2l0LWJhY2tkcm9wLWZpbHRlcjogYmx1cig2cHgpOwogIHBhZGRpbmc6IDZweCAxMnB4OwogIGJvcmRlci1yYWRpdXM6IDRweDsKICBib3JkZXI6IDFweCBzb2xpZCByZ2JhKDAsIDIxMiwgMjU1LCAwLjEyKTsKICBvcGFjaXR5OiAwOwogIHBvaW50ZXItZXZlbnRzOiBub25lOwogIHRleHQtYWxpZ246IGNlbnRlcjsKICB6LWluZGV4OiAxMDsKfQoK</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js" integrity="sha384-g4NTh/Iv5PPU4xPyhEWqPcwtNXOvdaDI8LLnyYfyNZOjKJeYQyjzQ9X5275eBjpt" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js" integrity="sha384-Z3REaz79l2IaAZqJsSABtTbhjgOUYyV3p90XNnAPCSHg3EMTz1fouunq9WZRtj3d" crossorigin="anonymous"></script>
+<div data-vg-dep="vg-p-5" style="display:none">Ci8qKgogKiBWaXN1YWwgR3VpZGUgUnVudGltZSDigJQgc2hhcmVkIEdTQVAgaGVscGVycyBmb3IgZW1iZWRkZWQgc25pcHBldHMKICogRXh0cmFjdGVkIGZyb20gdmlzdWFsLWd1aWRlLmh0bWwKICovCihmdW5jdGlvbiAoKSB7CiAgJ3VzZSBzdHJpY3QnOwoKICAvLyBHdWFyZDogaWYgR1NBUCBmYWlsZWQgdG8gbG9hZCwgbWFrZSBhbGwgZW1iZWRzIHZpc2libGUKICBpZiAodHlwZW9mIGdzYXAgPT09ICd1bmRlZmluZWQnIHx8IHR5cGVvZiBTY3JvbGxUcmlnZ2VyID09PSAndW5kZWZpbmVkJykgewogICAgZG9jdW1lbnQucXVlcnlTZWxlY3RvckFsbCgnLnZnLWVtYmVkIC52Zy1jYXJkJykuZm9yRWFjaChmdW5jdGlvbiAoYykgewogICAgICBjLnN0eWxlLm9wYWNpdHkgPSAnMSc7CiAgICAgIGMuc3R5bGUudHJhbnNmb3JtID0gJ25vbmUnOwogICAgfSk7CiAgICB3aW5kb3cudmdSdW50aW1lID0gbnVsbDsKICAgIHJldHVybjsKICB9CgogIGdzYXAucmVnaXN0ZXJQbHVnaW4oU2Nyb2xsVHJpZ2dlcik7CgogIC8qKiBDcmVhdGUgYSBzY3JvbGwtdHJpZ2dlcmVkIHRpbWVsaW5lIGZvciBhIGNhcmQgZWxlbWVudCAqLwogIGZ1bmN0aW9uIGNhcmRUTChjYXJkKSB7CiAgICB2YXIgdGwgPSBnc2FwLnRpbWVsaW5lKHsKICAgICAgc2Nyb2xsVHJpZ2dlcjogewogICAgICAgIHRyaWdnZXI6IGNhcmQsCiAgICAgICAgc3RhcnQ6ICd0b3AgODglJywKICAgICAgICB0b2dnbGVBY3Rpb25zOiAncGxheSBub25lIG5vbmUgbm9uZScKICAgICAgfQogICAgfSk7CiAgICB0bC50byhjYXJkLCB7IG9wYWNpdHk6IDEsIHk6IDAsIGR1cmF0aW9uOiAwLjQ1LCBlYXNlOiAncG93ZXIyLm91dCcgfSk7CiAgICBjYXJkLl92Z1RpbWVsaW5lID0gdGw7CiAgICByZXR1cm4gdGw7CiAgfQoKICAvKiogU3RhZ2dlci1mYWRlIFNWRyBjaGlsZHJlbiBtYXRjaGluZyBzZWxlY3RvciBpbnNpZGUgYSBjb250YWluZXIgKi8KICBmdW5jdGlvbiBmYWRlSW4odGwsIHBhcmVudCwgc2VsLCBvcHRzKSB7CiAgICB2YXIgZWxzID0gcGFyZW50LnF1ZXJ5U2VsZWN0b3JBbGwoc2VsKTsKICAgIGlmICghZWxzLmxlbmd0aCkgcmV0dXJuOwogICAgdmFyIG8gPSBvcHRzIHx8IHt9OwogICAgdGwuZnJvbShlbHMsIHsKICAgICAgb3BhY2l0eTogMCwKICAgICAgeTogby55IHx8IDAsCiAgICAgIHg6IG8ueCB8fCAwLAogICAgICBzY2FsZTogby5zY2FsZSB8fCAxLAogICAgICBkdXJhdGlvbjogby5kdXIgfHwgMC4zLAogICAgICBzdGFnZ2VyOiBvLnN0YWdnZXIgfHwgMC4wOCwKICAgICAgZWFzZTogby5lYXNlIHx8ICdwb3dlcjIub3V0JwogICAgfSwgby5hdCB8fCAnPi0wLjE1Jyk7CiAgfQoKICAvKiogTG9vcGluZyBwdWxzZSAob3BhY2l0eSkgb24gZWxlbWVudHMg4oCUIGlkZW1wb3RlbnQgKGtpbGxzIGV4aXN0aW5nIGxvb3BzIGZpcnN0KSAqLwogIGZ1bmN0aW9uIHB1bHNlKGVscywgb3B0cykgewogICAgdmFyIG8gPSBvcHRzIHx8IHt9OwogICAgZ3NhcC5raWxsVHdlZW5zT2YoZWxzKTsKICAgIGdzYXAudG8oZWxzLCB7CiAgICAgIG9wYWNpdHk6IG8ubWluIHx8IDAuMzUsCiAgICAgIGR1cmF0aW9uOiBvLmR1ciB8fCAxLAogICAgICByZXBlYXQ6IC0xLAogICAgICB5b3lvOiB0cnVlLAogICAgICBlYXNlOiAnc2luZS5pbk91dCcsCiAgICAgIGRlbGF5OiBvLmRlbGF5IHx8IDAKICAgIH0pOwogIH0KCiAgLyoqIExvb3BpbmcgZ2xvdyBvbiBzdHJva2Utb3BhY2l0eSDigJQgaWRlbXBvdGVudCAoa2lsbHMgZXhpc3RpbmcgbG9vcHMgZmlyc3QpICovCiAgZnVuY3Rpb24gZ2xvd1N0cm9rZShlbHMsIG9wdHMpIHsKICAgIHZhciBvID0gb3B0cyB8fCB7fTsKICAgIGdzYXAua2lsbFR3ZWVuc09mKGVscyk7CiAgICBnc2FwLmZyb21UbyhlbHMsCiAgICAgIHsgYXR0cjogeyAnc3Ryb2tlLW9wYWNpdHknOiAwLjE1IH0gfSwKICAgICAgeyBhdHRyOiB7ICdzdHJva2Utb3BhY2l0eSc6IDAuOCB9LCBkdXJhdGlvbjogby5kdXIgfHwgMS41LCByZXBlYXQ6IC0xLCB5b3lvOiB0cnVlLCBlYXNlOiAnc2luZS5pbk91dCcsIGRlbGF5OiBvLmRlbGF5IHx8IDAgfQogICAgKTsKICB9CgogIC8qKiBEcmF3IGEgbGluZSBmcm9tIG5vdGhpbmcgKHN0cm9rZS1kYXNob2Zmc2V0IHRyaWNrKSAqLwogIGZ1bmN0aW9uIGRyYXdMaW5lcyh0bCwgcGFyZW50LCBzZWwsIG9wdHMpIHsKICAgIHZhciBsaW5lcyA9IHBhcmVudC5xdWVyeVNlbGVjdG9yQWxsKHNlbCk7CiAgICBpZiAoIWxpbmVzLmxlbmd0aCkgcmV0dXJuOwogICAgdmFyIG8gPSBvcHRzIHx8IHt9OwogICAgbGluZXMuZm9yRWFjaChmdW5jdGlvbiAobGluZSkgewogICAgICB2YXIgbGVuID0gbGluZS5nZXRUb3RhbExlbmd0aCA/IGxpbmUuZ2V0VG90YWxMZW5ndGgoKSA6IDEwMDsKICAgICAgZ3NhcC5zZXQobGluZSwgeyBhdHRyOiB7ICdzdHJva2UtZGFzaGFycmF5JzogbGVuLCAnc3Ryb2tlLWRhc2hvZmZzZXQnOiBsZW4gfSB9KTsKICAgIH0pOwogICAgdGwudG8obGluZXMsIHsKICAgICAgYXR0cjogeyAnc3Ryb2tlLWRhc2hvZmZzZXQnOiAwIH0sCiAgICAgIGR1cmF0aW9uOiBvLmR1ciB8fCAwLjUsCiAgICAgIHN0YWdnZXI6IG8uc3RhZ2dlciB8fCAwLjA2LAogICAgICBlYXNlOiBvLmVhc2UgfHwgJ3Bvd2VyMS5pbk91dCcKICAgIH0sIG8uYXQgfHwgJz4tMC4xJyk7CiAgfQoKICAvKiogU2hvdyBhbiBhbWJpZW50IGNhcHRpb24gaW5zaWRlIHRoZSBjYXJkIHZpc3VhbCBhcmVhLgogICAqICBVc2FnZSBmcm9tIGFuaW1hdGlvbiBzY3JpcHRzOgogICAqICAgIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnRGF0YSBibG9ja3MgYXQgZXZlbiBpbmRpY2VzLi4uJ10pOwogICAqICAgIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnJ10pOyAgLy8gY2xlYXIKICAgKi8KICBmdW5jdGlvbiBjYXB0aW9uKHdyYXAsIHRleHQpIHsKICAgIGlmICghd3JhcCkgcmV0dXJuOwogICAgLy8gU3VwcHJlc3MgY2FwdGlvbnMgd2hlbiB0aW1lbGluZSBpcyByZXZlcnNpbmcgKHNjcm9sbC1iYWNrIGRlY29uc3RydWN0aW9uKQogICAgdmFyIGNhcmQgPSB3cmFwLnF1ZXJ5U2VsZWN0b3IoJy52Zy1jYXJkJyk7CiAgICBpZiAoY2FyZCAmJiBjYXJkLl92Z1RpbWVsaW5lICYmIGNhcmQuX3ZnVGltZWxpbmUucmV2ZXJzZWQoKSkgewogICAgICAvLyBPbiByZXZlcnNlLCBqdXN0IGhpZGUgYW55IHZpc2libGUgY2FwdGlvbiBpbW1lZGlhdGVseQogICAgICB2YXIgZXhpc3RpbmcgPSB3cmFwLnF1ZXJ5U2VsZWN0b3IoJy52Zy1jYXB0aW9uJyk7CiAgICAgIGlmIChleGlzdGluZykgZ3NhcC5zZXQoZXhpc3RpbmcsIHsgb3BhY2l0eTogMCB9KTsKICAgICAgcmV0dXJuOwogICAgfQogICAgdmFyIGVsID0gd3JhcC5xdWVyeVNlbGVjdG9yKCcudmctY2FwdGlvbicpOwogICAgaWYgKCFlbCkgewogICAgICBlbCA9IGRvY3VtZW50LmNyZWF0ZUVsZW1lbnQoJ2RpdicpOwogICAgICBlbC5jbGFzc05hbWUgPSAndmctY2FwdGlvbic7CiAgICAgIHZhciB2aXN1YWwgPSB3cmFwLnF1ZXJ5U2VsZWN0b3IoJy52Zy1jYXJkLXZpc3VhbCcpOwogICAgICBpZiAodmlzdWFsKSB7CiAgICAgICAgdmlzdWFsLmFwcGVuZENoaWxkKGVsKTsKICAgICAgfSBlbHNlIHsKICAgICAgICByZXR1cm47CiAgICAgIH0KICAgIH0KICAgIGlmICghdGV4dCkgewogICAgICBnc2FwLnRvKGVsLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjI1IH0pOwogICAgICByZXR1cm47CiAgICB9CiAgICAvLyBJZiBhbHJlYWR5IHNob3dpbmcgdGV4dCwgY3Jvc3NmYWRlCiAgICBpZiAoZWwudGV4dENvbnRlbnQgJiYgZWwuc3R5bGUub3BhY2l0eSAhPT0gJzAnKSB7CiAgICAgIGdzYXAudG8oZWwsIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMTUsIG9uQ29tcGxldGU6IGZ1bmN0aW9uICgpIHsKICAgICAgICBlbC50ZXh0Q29udGVudCA9IHRleHQ7CiAgICAgICAgZ3NhcC50byhlbCwgeyBvcGFjaXR5OiAxLCBkdXJhdGlvbjogMC4yNSB9KTsKICAgICAgfX0pOwogICAgfSBlbHNlIHsKICAgICAgZWwudGV4dENvbnRlbnQgPSB0ZXh0OwogICAgICBnc2FwLnRvKGVsLCB7IG9wYWNpdHk6IDEsIGR1cmF0aW9uOiAwLjMgfSk7CiAgICB9CiAgfQoKICB3aW5kb3cudmdSdW50aW1lID0gewogICAgY2FyZFRMOiBjYXJkVEwsCiAgICBmYWRlSW46IGZhZGVJbiwKICAgIHB1bHNlOiBwdWxzZSwKICAgIGdsb3dTdHJva2U6IGdsb3dTdHJva2UsCiAgICBkcmF3TGluZXM6IGRyYXdMaW5lcywKICAgIGNhcHRpb246IGNhcHRpb24KICB9Owp9KSgpOwoK</div>
+<div data-vg-css="vg-p-1" style="display:none">Ci8qIOKUgOKUgCBWaXN1YWwgR3VpZGUgU3RlcHBlciBVSSDilIDilIAgKi8KLnZnLXN0ZXBwZXIgewogIGRpc3BsYXk6IGZsZXg7CiAgYWxpZ24taXRlbXM6IGNlbnRlcjsKICBqdXN0aWZ5LWNvbnRlbnQ6IHNwYWNlLWJldHdlZW47CiAgcGFkZGluZzogMTJweCAxNnB4OwogIGJvcmRlci10b3A6IDFweCBzb2xpZCB2YXIoLS12Zy1ib3JkZXIpOwogIGJhY2tncm91bmQ6IHZhcigtLXZnLWJnLWNhcmQpOwogIGZvbnQtZmFtaWx5OiB2YXIoLS1mb250LW1vbm8pOwp9Cgoudmctc3RlcHBlci10ZXh0IHsKICBmbGV4OiAxOwogIHRleHQtYWxpZ246IGNlbnRlcjsKICBmb250LXNpemU6IDEycHg7CiAgY29sb3I6IHZhcigtLXRleHQtc2Vjb25kYXJ5KTsKICBsaW5lLWhlaWdodDogMS41OwogIHBhZGRpbmc6IDAgMTJweDsKfQoKLnZnLXN0ZXBwZXItbGFiZWwgewogIGNvbG9yOiB2YXIoLS12Zy1jeWFuKTsKICBmb250LXNpemU6IDExcHg7CiAgZm9udC13ZWlnaHQ6IDYwMDsKICBkaXNwbGF5OiBibG9jazsKICBtYXJnaW4tYm90dG9tOiAycHg7Cn0KCi52Zy1zdGVwcGVyLWJ0biB7CiAgYmFja2dyb3VuZDogbm9uZTsKICBib3JkZXI6IDFweCBzb2xpZCB2YXIoLS12Zy1ib3JkZXIpOwogIGJvcmRlci1yYWRpdXM6IDRweDsKICBjb2xvcjogdmFyKC0tdGV4dC1zZWNvbmRhcnkpOwogIGZvbnQtZmFtaWx5OiB2YXIoLS1mb250LW1vbm8pOwogIGZvbnQtc2l6ZTogMTJweDsKICBwYWRkaW5nOiA2cHggMTRweDsKICBjdXJzb3I6IHBvaW50ZXI7CiAgdHJhbnNpdGlvbjogY29sb3IgMC4ycywgYm9yZGVyLWNvbG9yIDAuMnM7CiAgZmxleC1zaHJpbms6IDA7Cn0KLnZnLXN0ZXBwZXItYnRuOmhvdmVyIHsKICBjb2xvcjogdmFyKC0tdmctY3lhbik7CiAgYm9yZGVyLWNvbG9yOiB2YXIoLS12Zy1ib3JkZXItZ2xvdyk7Cn0KLnZnLXN0ZXBwZXItYnRuOmRpc2FibGVkIHsKICBvcGFjaXR5OiAwLjM7CiAgY3Vyc29yOiBkZWZhdWx0Owp9Ci52Zy1zdGVwcGVyLWJ0bjpkaXNhYmxlZDpob3ZlciB7CiAgY29sb3I6IHZhcigtLXRleHQtc2Vjb25kYXJ5KTsKICBib3JkZXItY29sb3I6IHZhcigtLXZnLWJvcmRlcik7Cn0KCi52Zy1zdGVwcGVyLWRvdHMgewogIGRpc3BsYXk6IGZsZXg7CiAgZ2FwOiA2cHg7CiAganVzdGlmeS1jb250ZW50OiBjZW50ZXI7CiAgbWFyZ2luLXRvcDogNnB4Owp9Ci52Zy1zdGVwcGVyLWRvdCB7CiAgd2lkdGg6IDZweDsKICBoZWlnaHQ6IDZweDsKICBib3JkZXItcmFkaXVzOiA1MCU7CiAgYmFja2dyb3VuZDogdmFyKC0tdmctYm9yZGVyKTsKICB0cmFuc2l0aW9uOiBiYWNrZ3JvdW5kIDAuMnM7Cn0KLnZnLXN0ZXBwZXItZG90LmFjdGl2ZSB7CiAgYmFja2dyb3VuZDogdmFyKC0tdmctY3lhbik7Cn0KCkBtZWRpYSAobWF4LXdpZHRoOiA0ODBweCkgewogIC52Zy1zdGVwcGVyIHsgcGFkZGluZzogMTBweCAxMnB4OyB9CiAgLnZnLXN0ZXBwZXItYnRuIHsgcGFkZGluZzogNXB4IDEwcHg7IGZvbnQtc2l6ZTogMTFweDsgfQogIC52Zy1zdGVwcGVyLXRleHQgeyBmb250LXNpemU6IDExcHg7IH0KfQoK</div>
+<div data-vg-dep="vg-p-6" style="display:none">Ci8qKgogKiBWaXN1YWwgR3VpZGUgU3RlcHBlciBDb250cm9sbGVyCiAqCiAqIEZpbmRzIGFsbCBbZGF0YS12Zy1tb2RlPSJzdGVwcGVyIl0gY29udGFpbmVycywgcGF1c2VzIHRoZWlyIHRpbWVsaW5lcywKICogaW5qZWN0cyBwcmV2L25leHQgVUksIGFuZCB3aXJlcyBidXR0b25zIHRvIHRsLnR3ZWVuVG8obGFiZWwpLgogKgogKiBSZXF1aXJlbWVudHM6CiAqIC0gU25pcHBldCBhbmltYXRpb24gc2NyaXB0cyBtdXN0IGFkZCBHU0FQIGxhYmVsczogdGwuYWRkTGFiZWwoJ3N0ZXAtMCcsIDApLCBldGMuCiAqIC0gU25pcHBldCB3cmFwcGVyIG11c3QgaGF2ZSBkYXRhLXZnLXN0ZXBzIEpTT04gYXR0cmlidXRlIHdpdGggc3RlcCBkZXNjcmlwdGlvbnMuCiAqCiAqIEV4YW1wbGU6CiAqICAgPGRpdiBjbGFzcz0idmctZW1iZWQiIGRhdGEtdmctc25pcHBldD0iaHlwZXJjb3JlL2ZsYXQtbWVya2xlLXRyZWUiCiAqICAgICAgICBkYXRhLXZnLW1vZGU9InN0ZXBwZXIiCiAqICAgICAgICBkYXRhLXZnLXN0ZXBzPSdbIlRyZWUgc3RydWN0dXJlIiwiSGlnaGxpZ2h0IGJsb2NrIiwiU2libGluZyBoYXNoIiwiVW5jbGUgaGFzaCIsIlJvb3QgY2hlY2siXSc+CiAqLwooZnVuY3Rpb24gKCkgewogICd1c2Ugc3RyaWN0JzsKCiAgaWYgKHR5cGVvZiBnc2FwID09PSAndW5kZWZpbmVkJykgcmV0dXJuOwoKICAvLyBXYWl0IGZvciBhbGwgc25pcHBldCBhbmltYXRpb24gc2NyaXB0cyB0byBydW4gZmlyc3QKICBzZXRUaW1lb3V0KGluaXRTdGVwcGVycywgMTAwKTsKCiAgZnVuY3Rpb24gaW5pdFN0ZXBwZXJzICgpIHsKICAgIHZhciBzdGVwcGVyRWxzID0gZG9jdW1lbnQucXVlcnlTZWxlY3RvckFsbCgnW2RhdGEtdmctbW9kZT0ic3RlcHBlciJdJyk7CiAgICBzdGVwcGVyRWxzLmZvckVhY2goZnVuY3Rpb24gKHdyYXApIHsKICAgICAgdmFyIGNhcmQgPSB3cmFwLnF1ZXJ5U2VsZWN0b3IoJy52Zy1jYXJkJyk7CiAgICAgIGlmICghY2FyZCkgcmV0dXJuOwoKICAgICAgLy8gRmluZCB0aGUgdGltZWxpbmUgYXR0YWNoZWQgdG8gdGhpcyBjYXJkJ3MgU2Nyb2xsVHJpZ2dlcgogICAgICB2YXIgdHJpZ2dlcnMgPSBTY3JvbGxUcmlnZ2VyLmdldEFsbCgpOwogICAgICB2YXIgY2FyZFRyaWdnZXIgPSBudWxsOwogICAgICBmb3IgKHZhciBpID0gMDsgaSA8IHRyaWdnZXJzLmxlbmd0aDsgaSsrKSB7CiAgICAgICAgaWYgKHRyaWdnZXJzW2ldLnRyaWdnZXIgPT09IGNhcmQpIHsKICAgICAgICAgIGNhcmRUcmlnZ2VyID0gdHJpZ2dlcnNbaV07CiAgICAgICAgICBicmVhazsKICAgICAgICB9CiAgICAgIH0KICAgICAgaWYgKCFjYXJkVHJpZ2dlciB8fCAhY2FyZFRyaWdnZXIuYW5pbWF0aW9uKSByZXR1cm47CgogICAgICB2YXIgdGwgPSBjYXJkVHJpZ2dlci5hbmltYXRpb247CgogICAgICAvLyBHZXQgc3RlcCBsYWJlbHMgZnJvbSB0aGUgdGltZWxpbmUKICAgICAgdmFyIGxhYmVscyA9IHRsLmxhYmVsczsKICAgICAgdmFyIHN0ZXBMYWJlbHMgPSBbXTsKICAgICAgZm9yICh2YXIga2V5IGluIGxhYmVscykgewogICAgICAgIGlmIChrZXkuaW5kZXhPZignc3RlcC0nKSA9PT0gMCkgewogICAgICAgICAgc3RlcExhYmVscy5wdXNoKHsgbmFtZToga2V5LCB0aW1lOiBsYWJlbHNba2V5XSB9KTsKICAgICAgICB9CiAgICAgIH0KICAgICAgaWYgKHN0ZXBMYWJlbHMubGVuZ3RoID09PSAwKSByZXR1cm47CgogICAgICAvLyBTb3J0IGJ5IHRpbWUKICAgICAgc3RlcExhYmVscy5zb3J0KGZ1bmN0aW9uIChhLCBiKSB7IHJldHVybiBhLnRpbWUgLSBiLnRpbWU7IH0pOwoKICAgICAgLy8gR2V0IHN0ZXAgZGVzY3JpcHRpb25zIGZyb20gZGF0YSBhdHRyaWJ1dGUKICAgICAgdmFyIHN0ZXBzSlNPTiA9IHdyYXAuZ2V0QXR0cmlidXRlKCdkYXRhLXZnLXN0ZXBzJyk7CiAgICAgIHZhciBzdGVwRGVzY3MgPSBbXTsKICAgICAgaWYgKHN0ZXBzSlNPTikgewogICAgICAgIHRyeSB7IHN0ZXBEZXNjcyA9IEpTT04ucGFyc2Uoc3RlcHNKU09OKTsgfSBjYXRjaCAoZSkgeyAvKiBpZ25vcmUgKi8gfQogICAgICB9CgogICAgICAvLyBLaWxsIHRoZSBTY3JvbGxUcmlnZ2VyIHNvIHRpbWVsaW5lIGlzIGZ1bGx5IG1hbnVhbAogICAgICBjYXJkVHJpZ2dlci5raWxsKCk7CiAgICAgIC8vIE1ha2UgY2FyZCB2aXNpYmxlIGltbWVkaWF0ZWx5CiAgICAgIGdzYXAuc2V0KGNhcmQsIHsgb3BhY2l0eTogMSwgeTogMCB9KTsKICAgICAgLy8gUGF1c2UgdGltZWxpbmUgYXQgc3RlcCAwCiAgICAgIHRsLnBhdXNlKHN0ZXBMYWJlbHNbMF0udGltZSk7CgogICAgICB2YXIgY3VycmVudFN0ZXAgPSAwOwogICAgICB2YXIgdG90YWxTdGVwcyA9IHN0ZXBMYWJlbHMubGVuZ3RoOwoKICAgICAgLy8gQnVpbGQgc3RlcHBlciBVSQogICAgICB2YXIgc3RlcHBlciA9IGRvY3VtZW50LmNyZWF0ZUVsZW1lbnQoJ2RpdicpOwogICAgICBzdGVwcGVyLmNsYXNzTmFtZSA9ICd2Zy1zdGVwcGVyJzsKCiAgICAgIHZhciBwcmV2QnRuID0gZG9jdW1lbnQuY3JlYXRlRWxlbWVudCgnYnV0dG9uJyk7CiAgICAgIHByZXZCdG4uY2xhc3NOYW1lID0gJ3ZnLXN0ZXBwZXItYnRuJzsKICAgICAgcHJldkJ0bi50ZXh0Q29udGVudCA9ICdcdTIxOTAgUHJldic7CiAgICAgIHByZXZCdG4uZGlzYWJsZWQgPSB0cnVlOwoKICAgICAgdmFyIG5leHRCdG4gPSBkb2N1bWVudC5jcmVhdGVFbGVtZW50KCdidXR0b24nKTsKICAgICAgbmV4dEJ0bi5jbGFzc05hbWUgPSAndmctc3RlcHBlci1idG4nOwogICAgICBuZXh0QnRuLnRleHRDb250ZW50ID0gJ05leHQgXHUyMTkyJzsKCiAgICAgIHZhciB0ZXh0V3JhcCA9IGRvY3VtZW50LmNyZWF0ZUVsZW1lbnQoJ2RpdicpOwogICAgICB0ZXh0V3JhcC5jbGFzc05hbWUgPSAndmctc3RlcHBlci10ZXh0JzsKCiAgICAgIHZhciBsYWJlbCA9IGRvY3VtZW50LmNyZWF0ZUVsZW1lbnQoJ3NwYW4nKTsKICAgICAgbGFiZWwuY2xhc3NOYW1lID0gJ3ZnLXN0ZXBwZXItbGFiZWwnOwoKICAgICAgdmFyIGRvdHNXcmFwID0gZG9jdW1lbnQuY3JlYXRlRWxlbWVudCgnZGl2Jyk7CiAgICAgIGRvdHNXcmFwLmNsYXNzTmFtZSA9ICd2Zy1zdGVwcGVyLWRvdHMnOwoKICAgICAgdmFyIGRvdHMgPSBbXTsKICAgICAgZm9yICh2YXIgZCA9IDA7IGQgPCB0b3RhbFN0ZXBzOyBkKyspIHsKICAgICAgICB2YXIgZG90ID0gZG9jdW1lbnQuY3JlYXRlRWxlbWVudCgnc3BhbicpOwogICAgICAgIGRvdC5jbGFzc05hbWUgPSAndmctc3RlcHBlci1kb3QnICsgKGQgPT09IDAgPyAnIGFjdGl2ZScgOiAnJyk7CiAgICAgICAgZG90c1dyYXAuYXBwZW5kQ2hpbGQoZG90KTsKICAgICAgICBkb3RzLnB1c2goZG90KTsKICAgICAgfQoKICAgICAgdGV4dFdyYXAuYXBwZW5kQ2hpbGQobGFiZWwpOwogICAgICB0ZXh0V3JhcC5hcHBlbmRDaGlsZChkb3RzV3JhcCk7CiAgICAgIHN0ZXBwZXIuYXBwZW5kQ2hpbGQocHJldkJ0bik7CiAgICAgIHN0ZXBwZXIuYXBwZW5kQ2hpbGQodGV4dFdyYXApOwogICAgICBzdGVwcGVyLmFwcGVuZENoaWxkKG5leHRCdG4pOwoKICAgICAgLy8gSW5zZXJ0IHN0ZXBwZXIgYWZ0ZXIgdGhlIGNhcmQgYm9keQogICAgICB2YXIgY2FyZEJvZHkgPSBjYXJkLnF1ZXJ5U2VsZWN0b3IoJy52Zy1jYXJkLWJvZHknKTsKICAgICAgaWYgKGNhcmRCb2R5KSB7CiAgICAgICAgY2FyZEJvZHkucGFyZW50Tm9kZS5pbnNlcnRCZWZvcmUoc3RlcHBlciwgY2FyZEJvZHkubmV4dFNpYmxpbmcpOwogICAgICB9IGVsc2UgewogICAgICAgIGNhcmQuYXBwZW5kQ2hpbGQoc3RlcHBlcik7CiAgICAgIH0KCiAgICAgIGZ1bmN0aW9uIHVwZGF0ZVVJICgpIHsKICAgICAgICBsYWJlbC50ZXh0Q29udGVudCA9ICdTdGVwICcgKyAoY3VycmVudFN0ZXAgKyAxKSArICcvJyArIHRvdGFsU3RlcHMgKwogICAgICAgICAgKHN0ZXBEZXNjc1tjdXJyZW50U3RlcF0gPyAnIFx1MjAxNCAnICsgc3RlcERlc2NzW2N1cnJlbnRTdGVwXSA6ICcnKTsKICAgICAgICBwcmV2QnRuLmRpc2FibGVkID0gY3VycmVudFN0ZXAgPT09IDA7CiAgICAgICAgbmV4dEJ0bi5kaXNhYmxlZCA9IGN1cnJlbnRTdGVwID09PSB0b3RhbFN0ZXBzIC0gMTsKICAgICAgICBkb3RzLmZvckVhY2goZnVuY3Rpb24gKGRvdCwgaSkgewogICAgICAgICAgZG90LmNsYXNzTmFtZSA9ICd2Zy1zdGVwcGVyLWRvdCcgKyAoaSA8PSBjdXJyZW50U3RlcCA/ICcgYWN0aXZlJyA6ICcnKTsKICAgICAgICB9KTsKICAgICAgfQoKICAgICAgZnVuY3Rpb24gZ29Ub1N0ZXAgKGlkeCkgewogICAgICAgIGlmIChpZHggPCAwIHx8IGlkeCA+PSB0b3RhbFN0ZXBzKSByZXR1cm47CiAgICAgICAgY3VycmVudFN0ZXAgPSBpZHg7CiAgICAgICAgdGwudHdlZW5UbyhzdGVwTGFiZWxzW2lkeF0udGltZSArIDAuMDAxLCB7IGR1cmF0aW9uOiAwLjQsIGVhc2U6ICdwb3dlcjIuaW5PdXQnIH0pOwogICAgICAgIHVwZGF0ZVVJKCk7CiAgICAgIH0KCiAgICAgIHByZXZCdG4uYWRkRXZlbnRMaXN0ZW5lcignY2xpY2snLCBmdW5jdGlvbiAoKSB7IGdvVG9TdGVwKGN1cnJlbnRTdGVwIC0gMSk7IH0pOwogICAgICBuZXh0QnRuLmFkZEV2ZW50TGlzdGVuZXIoJ2NsaWNrJywgZnVuY3Rpb24gKCkgeyBnb1RvU3RlcChjdXJyZW50U3RlcCArIDEpOyB9KTsKCiAgICAgIC8vIEtleWJvYXJkIG5hdmlnYXRpb24gd2hlbiBjb250YWluZXIgaXMgZm9jdXNlZAogICAgICB3cmFwLnNldEF0dHJpYnV0ZSgndGFiaW5kZXgnLCAnMCcpOwogICAgICB3cmFwLmFkZEV2ZW50TGlzdGVuZXIoJ2tleWRvd24nLCBmdW5jdGlvbiAoZSkgewogICAgICAgIGlmIChlLmtleSA9PT0gJ0Fycm93TGVmdCcpIHsgZ29Ub1N0ZXAoY3VycmVudFN0ZXAgLSAxKTsgZS5wcmV2ZW50RGVmYXVsdCgpOyB9CiAgICAgICAgaWYgKGUua2V5ID09PSAnQXJyb3dSaWdodCcpIHsgZ29Ub1N0ZXAoY3VycmVudFN0ZXAgKyAxKTsgZS5wcmV2ZW50RGVmYXVsdCgpOyB9CiAgICAgIH0pOwoKICAgICAgdXBkYXRlVUkoKTsKICAgIH0pOwogIH0KfSkoKTsKCg==</div>
+<!-- /wp:html -->
+
+<script>!function(){var d=document,b=atob,r=function(q,t){d.querySelectorAll(q).forEach(function(e){var s=d.createElement(t||`script`);s.textContent=b(e.textContent);e.parentNode.replaceChild(s,e)})};r(`[data-vg-css]`,`style`);r(`[data-vg-dep]`);r(`[data-vg-anim]`);d.querySelectorAll(`[data-vg-mod]`).forEach(function(e){var s=d.createElement(`script`);s.type=`module`;s.textContent=b(e.textContent);e.parentNode.replaceChild(s,e)})}()</script>

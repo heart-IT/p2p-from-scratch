@@ -1,19 +1,4 @@
-<!--
-  WORDPRESS IMPORT INSTRUCTIONS
-  ==============================
-  1. Create a new Post in WordPress
-  2. Switch to the Code Editor (⋮ menu > Code editor)
-  3. Select ALL text below this comment block and paste
-  4. Switch back to Visual Editor to verify
-
-  Plugins required:
-  - Prismatic (syntax highlighting)
-
-  Mermaid diagrams are loaded via CDN (no plugin needed).
-  The <script> tag at the bottom handles rendering.
--->
-
-<h1 id="p2p-from-scratch-part-8-building-for-humans">P2P from Scratch — Part 8: Building for Humans</h1>
+<h1 id="p2p-from-scratch-part-8-offline-first-ux-for-p2p-applications">P2P from Scratch — Part 8: Offline-First UX for P2P Applications</h1>
 
 <blockquote>
 <p>&quot;The purpose of computing is insight, not numbers.&quot;
@@ -21,20 +6,27 @@
 </blockquote>
 
 <p><strong>Excerpt:</strong> The Holepunch stack gives you cryptographic identity, verified data, and decentralized discovery. But none of that matters if the app feels broken when you&#39;re on the subway. This final post covers the hardest part of P2P engineering: making it invisible — offline-first design, managing the consistency spectrum, mobile lifecycle with suspend/resume, availability strategies, and the observability tools that keep a serverless system debuggable.</p>
+<!-- meta-description: Offline-first design, signedLength consistency, suspend/resume, availability strategies, and observability for production P2P applications. -->
+<!-- meta-labs: p2p-sync-states -->
+
 
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <strong>Part 8: Building for Humans (You are here)</strong></p>
+<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: NAT Hole Punching Explained</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: P2P Encryption with the Noise Protocol</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Merkle Trees and Append-Only Logs</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: Building P2P Databases with Hyperbee and Hyperdrive</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Peer Discovery with Kademlia DHT</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Multi-Writer Consensus with Autobase</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: P2P Security — Threats, Defenses, and Trust</a> | <strong>Part 8: Offline-First UX for P2P Applications (You are here)</strong></p>
 </blockquote>
 
 <hr>
+<blockquote>
+<p><strong>Verified against:</strong> hypercore 11.35.2 · corestore 7.12.2 · hypercore-storage 3.2.1 · autobase 7.28.1 · hyperswarm 4.17.0 — checked 2026-09-03. Every constant, default and byte count in this post is asserted in <a href="https://github.com/heart-IT/p2p-from-scratch-labs/tree/main/verify"><code>verify/</code></a>, which installs whatever Holepunch publishes today and fails if the stack has moved.</p>
+</blockquote>
+
 <h2 id="quick-recap">Quick Recap</h2>
 
 <p>Parts <a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">1</a>–<a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">6</a> built the technical stack: connectivity, encryption, data structures, discovery, and consensus. <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7</a> mapped the security model. The engineering is sound — now we need to make it feel invisible to users.</p>
 <hr>
-<h2 id="the-problem-technology-isn-t-the-hard-part">The Problem: Technology Isn't the Hard Part</h2>
+<h2 id="the-ux-challenge-why-p2p-apps-feel-broken">The UX Challenge: Why P2P Apps Feel Broken</h2>
 
-<p>We&#39;ve spent seven posts building an extraordinary stack. Encrypted pipes. Merkle-verified data. Distributed discovery. Multi-writer consensus. Six layers of security. Every component is cryptographically sound, mathematically correct, and elegantly designed.</p>
+<p>Building an offline-first application on a P2P stack is the real challenge. We&#39;ve spent seven posts building an extraordinary stack. Encrypted pipes. Merkle-verified data. Distributed discovery. Multi-writer consensus. Six layers of security. Every component is cryptographically sound, mathematically correct, and elegantly designed.</p>
 <p>And none of your users will care.</p>
 <p>They&#39;ll care that a message they sent appears instantly — even with no internet. They&#39;ll care that opening the app on Monday shows the same data they saw on Friday. They&#39;ll care that syncing with a collaborator doesn&#39;t require a computer science degree. They&#39;ll care that the app doesn&#39;t drain their battery while they sleep.</p>
 <p>The gap between &quot;technically correct&quot; and &quot;feels right&quot; is where most P2P applications fail. The cryptography is the easy part. The UX is where you earn trust or lose users.</p>
@@ -68,9 +60,9 @@ await base.append({ type: 'put', key: 'meeting-notes', value: { text: 'Draft age
 <tr><th>State</th><th>What the User Sees</th><th>What It Means</th></tr>
 </thead>
 <tbody>
-<tr><td>**Local**</td><td>Their data, visible instantly</td><td>Written to local Hypercore, not yet seen by peers</td></tr>
-<tr><td>**Synced**</td><td>Data visible to collaborators</td><td>Replicated to connected peers</td></tr>
-<tr><td>**Confirmed**</td><td>Permanently ordered</td><td>Past `signedLength` — quorum-locked, will never reorder</td></tr>
+<tr><td><strong>Local</strong></td><td>Their data, visible instantly</td><td>Written to local Hypercore, not yet seen by peers</td></tr>
+<tr><td><strong>Synced</strong></td><td>Data visible to collaborators</td><td>Replicated to connected peers</td></tr>
+<tr><td><strong>Confirmed</strong></td><td>Permanently ordered</td><td>Past the view&#39;s <code>signedLength</code> — quorum-locked, will never reorder</td></tr>
 </tbody>
 </table></figure>
 
@@ -81,16 +73,21 @@ await base.append({ type: 'put', key: 'meeting-notes', value: { text: 'Draft age
 <hr>
 <h2 id="the-consistency-spectrum-signedlength-in-practice">The Consistency Spectrum: signedLength in Practice</h2>
 
-<p>From <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6</a>, we know Autobase exposes two markers: <code>base.signedLength</code> (confirmed, quorum-locked) and <code>base.view.length</code> (total including provisional). The gap between them is the <strong>consistency spectrum</strong> — data that exists but whose ordering might change.</p>
+<p>From <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6</a>, we know every Autobase view core carries two markers: <code>signedLength</code> (confirmed, quorum-locked) and <code>length</code> (total including provisional). The gap between them is the <strong>consistency spectrum</strong> — data that exists but whose ordering might change. (<code>base.signedLength</code> is the same marker on Autobase&#39;s internal <em>system</em> core — a different log, so never compare it against a view length.)</p>
+<p>Where you read those markers depends on what your <code>open</code> handler returned. If the view <em>is</em> a Hypercore, they sit on <code>base.view</code> directly. If you wrapped it — a Hyperbee, as in the capstone at the end of this post — <code>base.view</code> is the wrapper and the markers live one level down. Don&#39;t reach for <code>base.view.core || base.view</code> to paper over the difference: a Hypercore has a <code>.core</code> too, an internal object that carries neither marker, so that idiom silently reads <code>undefined</code> on exactly the case it was meant to handle. Test for the marker instead, once, and work from what you get back.</p>
 <p>Your application must make this spectrum visible without overwhelming users:</p>
 <div class="code-filename">consistency-aware-ui.js</div>
 <pre><code class="language-js">await base.update()
 
-const confirmed = base.signedLength
-const total = base.view.length
+// The view's core: `base.view` itself when open() returned a Hypercore,
+// `base.view.core` when it returned a Hyperbee or another wrapper
+const core = typeof base.view.signedLength === 'number' ? base.view : base.view.core
+
+const confirmed = core.signedLength
+const total = core.length
 
 for (let i = 0; i &lt; total; i++) {
-  const entry = await base.view.get(i)
+  const entry = await core.get(i)
   const isConfirmed = i &lt; confirmed
 
   renderEntry(entry, {
@@ -108,10 +105,10 @@ for (let i = 0; i &lt; total; i++) {
 <tr><th>Pattern</th><th>When to Use</th><th>How It Works</th></tr>
 </thead>
 <tbody>
-<tr><td>**Fade unconfirmed**</td><td>Chat apps, feeds</td><td>Provisional messages appear slightly dimmed; they solidify as quorum confirms</td></tr>
-<tr><td>**"Syncing" badge**</td><td>Collaborative docs</td><td>A small indicator shows entries are provisional; disappears on confirmation</td></tr>
-<tr><td>**Optimistic + undo**</td><td>Real-time editing</td><td>Apply changes immediately; if reordering changes the outcome, show a notification</td></tr>
-<tr><td>**Confirm before acting**</td><td>Financial, permissions</td><td>Block irreversible actions until `signedLength` advances past the relevant entry</td></tr>
+<tr><td><strong>Fade unconfirmed</strong></td><td>Chat apps, feeds</td><td>Provisional messages appear slightly dimmed; they solidify as quorum confirms</td></tr>
+<tr><td><strong>&quot;Syncing&quot; badge</strong></td><td>Collaborative docs</td><td>A small indicator shows entries are provisional; disappears on confirmation</td></tr>
+<tr><td><strong>Optimistic + undo</strong></td><td>Real-time editing</td><td>Apply changes immediately; if reordering changes the outcome, show a notification</td></tr>
+<tr><td><strong>Confirm before acting</strong></td><td>Financial, permissions</td><td>Block irreversible actions until the view&#39;s <code>signedLength</code> advances past the relevant entry</td></tr>
 </tbody>
 </table></figure>
 
@@ -135,6 +132,48 @@ graph LR
 <hr>
 <h2 id="sparse-replication-download-only-what-you-need">Sparse Replication: Download Only What You Need</h2>
 
+<!-- wp:html -->
+<div class="vg-embed" data-vg-snippet="corestore/managed-collections">
+  <div class="vg-card vg-card--wide">
+          <div class="vg-card-visual">
+            <svg class="vg-svg" viewBox="0 0 600 220" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="50" y="20" width="500" height="170" rx="10" fill="#0a1628" stroke="#ff00cc" stroke-opacity="0.3" stroke-width="1.5"/>
+              <text x="300" y="50" text-anchor="middle" fill="#ff00cc" font-size="14" font-weight="600" style="font-size:14px;font-weight:600">Corestore</text>
+              <text x="300" y="68" text-anchor="middle" fill="#636e7b" font-size="10" style="font-size:10px">./storage</text>
+              <rect x="80" y="85" width="110" height="50" rx="5" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.4"/>
+              <text x="135" y="107" text-anchor="middle" fill="#00d4ff" font-size="10" style="font-size:10px">Core A</text>
+              <text x="135" y="122" text-anchor="middle" fill="#636e7b" font-size="8" style="font-size:8px">name: 'main'</text>
+              <rect x="210" y="85" width="110" height="50" rx="5" fill="#0a1628" stroke="#00ff88" stroke-opacity="0.4"/>
+              <text x="265" y="107" text-anchor="middle" fill="#00ff88" font-size="10" style="font-size:10px">Core B</text>
+              <text x="265" y="122" text-anchor="middle" fill="#636e7b" font-size="8" style="font-size:8px">name: 'data'</text>
+              <rect x="340" y="85" width="110" height="50" rx="5" fill="#0a1628" stroke="#f5a623" stroke-opacity="0.4"/>
+              <text x="395" y="107" text-anchor="middle" fill="#f5a623" font-size="10" style="font-size:10px">Core C</text>
+              <text x="395" y="122" text-anchor="middle" fill="#636e7b" font-size="8" style="font-size:8px">by public key</text>
+              <rect x="470" y="85" width="60" height="50" rx="5" fill="#0a1628" stroke="#636e7b" stroke-opacity="0.3" stroke-dasharray="4 3"/>
+              <text x="500" y="115" text-anchor="middle" fill="#636e7b" font-size="20" style="font-size:20px">+</text>
+              <text x="300" y="165" text-anchor="middle" fill="#a855f7" font-size="10" style="font-size:10px">Single replication stream handles all cores</text>
+              <line x1="300" y1="190" x2="300" y2="210" stroke="#a855f7" stroke-width="1.5" stroke-opacity="0.4"/>
+              <text x="300" y="220" text-anchor="middle" fill="#636e7b" font-size="9" style="font-size:9px">store.replicate(socket)</text>
+            </svg>
+          </div>
+          <div class="vg-card-body">
+            <div class="vg-card-title">Managed Core Collections</div>
+            <div class="vg-card-text">Get cores by name (<code>{ name: 'chat' }</code> → deterministic key) or by public key. One <code>store.replicate(socket)</code> call handles all active cores over a single connection.</div>
+            <div class="vg-code"><span class="kw">const</span> store = <span class="kw">new</span> <span class="fn">Corestore</span>(<span class="str">'./storage'</span>)
+  
+  <span class="kw">const</span> main = store.<span class="fn">get</span>({ name: <span class="str">'main'</span> })
+  <span class="kw">const</span> remote = store.<span class="fn">get</span>({ key: pubKey })
+  
+  swarm.<span class="fn">on</span>(<span class="str">'connection'</span>, (socket) => {
+    store.<span class="fn">replicate</span>(socket)  <span class="cmt">// replicates ALL cores</span>
+  })</div>
+          </div>
+        </div>
+  <div data-vg-anim="vg-p-1" style="display:none">CiAgKGZ1bmN0aW9uKCkgewogIGlmICghd2luZG93LnZnUnVudGltZSkgcmV0dXJuOwogIHZhciB3cmFwID0gZG9jdW1lbnQucXVlcnlTZWxlY3RvcignW2RhdGEtdmctc25pcHBldD0iY29yZXN0b3JlL21hbmFnZWQtY29sbGVjdGlvbnMiXScpOwogIGlmICghd3JhcCkgcmV0dXJuOwogIHZhciBjYXJkID0gd3JhcC5xdWVyeVNlbGVjdG9yKCcudmctY2FyZCcpOwogIHZhciBzdmcgPSBjYXJkLnF1ZXJ5U2VsZWN0b3IoJy52Zy1zdmcnKTsKICBpZiAoIXN2ZykgeyBpZiAodHlwZW9mIGdzYXAgIT09ICd1bmRlZmluZWQnKSBnc2FwLnNldChjYXJkLCB7IG9wYWNpdHk6IDEsIHk6IDAgfSk7IHJldHVybjsgfQogIHZhciB0bCA9IHZnUnVudGltZS5jYXJkVEwoY2FyZCk7CiAgdmFyIHJlY3RzID0gc3ZnLnF1ZXJ5U2VsZWN0b3JBbGwoJ3JlY3QnKTsKICB2YXIgdGV4dHMgPSBzdmcucXVlcnlTZWxlY3RvckFsbCgndGV4dCcpOwogIC8vIFBoYXNlIDE6IE91dGVyIGNvbnRhaW5lciByZWN0ICsgIkNvcmVzdG9yZSIgdGl0bGUgKyAiLi9zdG9yYWdlIiBzdWJ0aXRsZQogIHRsLmZyb20ocmVjdHNbMF0sIHsgb3BhY2l0eTogMCwgc2NhbGU6IDAuOTUsIHRyYW5zZm9ybU9yaWdpbjogJ2NlbnRlcicsIGR1cmF0aW9uOiAwLjQsIGVhc2U6ICdwb3dlcjIub3V0JyB9LCAwLjMpOwogIHRsLmZyb20oW3RleHRzWzBdLCB0ZXh0c1sxXV0sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMjUsIHN0YWdnZXI6IDAuMDggfSwgMC40KTsKICB0bC5jYWxsKHZnUnVudGltZS5jYXB0aW9uLCBbd3JhcCwgJ0NvcmVzdG9yZSBcdTIwMTQgb25lIHN0b3JhZ2UgZGlyZWN0b3J5IGZvciBhbGwgSHlwZXJjb3JlcyddKTsKICAvLyBQaGFzZSAyOiBDb3JlIHJlY3RzICsgdGhlaXIgbGFiZWxzICsgIisiIHJlY3QKICB2YXIgY29yZVJlY3RzID0gQXJyYXkucHJvdG90eXBlLnNsaWNlLmNhbGwocmVjdHMsIDEpOwogIHZhciBjb3JlVGV4dHMgPSBBcnJheS5wcm90b3R5cGUuc2xpY2UuY2FsbCh0ZXh0cywgMiwgOSk7CiAgdGwuZnJvbShjb3JlUmVjdHMsIHsgb3BhY2l0eTogMCwgeTogMTIsIGR1cmF0aW9uOiAwLjI1LCBzdGFnZ2VyOiAwLjA4LCBlYXNlOiAnYmFjay5vdXQoMS4zKScgfSwgJz4wLjEnKTsKICB0bC5mcm9tKGNvcmVUZXh0cywgeyBvcGFjaXR5OiAwLCB5OiA4LCBkdXJhdGlvbjogMC4yLCBzdGFnZ2VyOiAwLjA0IH0sICc8MC4wNScpOwogIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnR2V0IGNvcmVzIGJ5IG5hbWUgb3IgcHVibGljIGtleSBcdTIwMTQgZGV0ZXJtaW5pc3RpYyBpZGVudGl0eSddKTsKICAvLyBQaGFzZSAzOiBSZXBsaWNhdGlvbiB0ZXh0ICsgbGluZSArIHN0b3JlLnJlcGxpY2F0ZSB0ZXh0CiAgdGwuZnJvbSh0ZXh0c1s5XSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yNSB9LCAnPjAuMScpOwogIHZnUnVudGltZS5kcmF3TGluZXModGwsIHN2ZywgJ2xpbmUnLCB7IGR1cjogMC4zIH0pOwogIHRsLmZyb20odGV4dHNbMTBdLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjI1IH0sICc8MC4xJyk7CiAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsICdTaW5nbGUgcmVwbGljYXRlKCkgY2FsbCBoYW5kbGVzIGFsbCBjb3JlcyBvdmVyIG9uZSBjb25uZWN0aW9uJ10pOwogIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnJ10sICc+MScpOwp9KSgpOwogIA==</div>
+</div>
+
+<!-- /wp:html -->
+
 <p>Not every peer needs every block. <a href="https://github.com/holepunchto/hypercore" target="_blank">Hypercore</a>&#39;s sparse replication means <code>core.get(index)</code> is a lazy operation — it checks local storage first, and only requests from peers if the block isn&#39;t available locally:</p>
 <div class="code-filename">sparse-loading.js</div>
 <pre><code class="language-js">// Hypercore checks: local storage → bitfield → request from peers
@@ -156,11 +195,10 @@ const entry = await core.get(index, {
 <h3 id="storage-management-clear-and-truncate">Storage Management: clear() and truncate()</h3>
 
 <p>Long-lived applications accumulate data. Two APIs manage storage:</p>
-<p><strong><code>core.clear(start, end)</code></strong> — removes block <em>data</em> from local storage while preserving the Merkle tree. The blocks can be re-fetched from peers later. Use this for cache-like behavior:</p>
+<p><strong><code>core.clear(start, end)</code></strong> — removes block <em>data</em> from local storage, keeping the Merkle nodes still needed to verify whatever remains (nodes that only covered cleared blocks go too). The blocks can be re-fetched from peers later. Use this for cache-like behavior:</p>
 <div class="code-filename">storage-pruning.js</div>
 <pre><code class="language-js">// Clear old blocks to free disk space (Merkle proofs still valid)
-const result = await core.clear(0, 1000, { diff: true })
-console.log(`Freed ${result.blocks} blocks from storage`)
+await core.clear(0, 1000)
 // Blocks 0-999 can still be fetched on demand from peers</code></pre>
 
 <p><strong><code>core.truncate(newLength)</code></strong> — permanently shortens the core&#39;s logical length. This requires write access and increments the fork counter. Use this for hard pruning, not cache management.</p>
@@ -169,13 +207,17 @@ console.log(`Freed ${result.blocks} blocks from storage`)
 <tr><th>Operation</th><th>Preserves Merkle Tree</th><th>Requires Write</th><th>Recoverable</th></tr>
 </thead>
 <tbody>
-<tr><td>`clear(start, end)`</td><td>Partially (retains what's needed)</td><td>No</td><td>Yes (re-fetch from peers)</td></tr>
-<tr><td>`truncate(length)`</td><td>No (rewrites)</td><td>Yes</td><td>No (permanent)</td></tr>
+<tr><td><code>clear(start, end)</code></td><td>Partially (retains what&#39;s needed)</td><td>No</td><td>Yes (re-fetch from peers)</td></tr>
+<tr><td><code>truncate(length)</code></td><td>No (rewrites)</td><td>Yes</td><td>No (permanent)</td></tr>
 </tbody>
 </table></figure>
 
 <blockquote class="callout-insight">
 <p><strong>Key Insight:</strong> Sparse replication and <code>clear()</code> together enable a powerful pattern: download what you need, verify it once, use it, then clear it to free space. The verification metadata needed for remaining data stays intact, so re-verification on re-download is automatic. This is how mobile apps can handle large datasets without exhausting storage.</p>
+</blockquote>
+
+<blockquote class="callout-gotcha">
+<p><strong>Gotcha:</strong> Sparse replication keeps a <em>new</em> peer&#39;s first verified block cheap too — a proof is one signature plus O(log N) hashes, so verifying block 42 of a million-block core costs a few kilobytes, not the tree. What grows with history is the number of blocks an app has to <em>read</em> before it&#39;s useful: replaying a 100K-block log (or letting Autobase rebuild its view from it) is where new-peer onboarding turns into seconds to minutes. If your app will cross that threshold, plan a snapshot/pruning strategy before you get there: distribute snapshots out-of-band, lean on Autobase fast-forward (next section), or shard data across multiple cores. Retrofitting pruning onto a million-block log is painful.</p>
 </blockquote>
 
 <hr>
@@ -212,7 +254,7 @@ await store.suspend()
 // Re-open storage
 await store.resume()</code></pre>
 
-<p>Corestore&#39;s <code>suspend()</code> flushes the database before releasing resources — no data loss even during abrupt backgrounding. On Android, suspend is disabled by default (requires explicit <code>{ suspend: true }</code> opt-in); on all other platforms, it&#39;s enabled by default.</p>
+<p>Corestore&#39;s <code>suspend()</code> hands off to the storage layer, which waits for in-flight I/O to go idle and then suspends RocksDB. Through corestore 7.11 it also called <code>db.flush()</code> explicitly first; 7.12 dropped that call, so don&#39;t treat <code>suspend()</code> as a durability barrier — finish the writes you care about before you background. On Android, suspend is disabled by default (requires explicit <code>{ suspend: true }</code> opt-in); on all other platforms, it&#39;s enabled by default.</p>
 <blockquote class="callout-gotcha">
 <p><strong>Gotcha:</strong> There is no auto-resume. If your app doesn&#39;t call <code>swarm.resume()</code> on foreground, networking stays dead. Wire suspend/resume to your platform&#39;s lifecycle events (e.g., <code>visibilitychange</code> on web, <code>AppState</code> on React Native, <code>onPause</code>/<code>onResume</code> on Android).</p>
 </blockquote>
@@ -226,10 +268,10 @@ await store.resume()</code></pre>
 <tr><th>Strategy</th><th>How It Works</th><th>Availability</th><th>Sovereignty</th></tr>
 </thead>
 <tbody>
-<tr><td>**Pure mesh**</td><td>Data lives only on user devices</td><td>Low — requires overlap</td><td>Maximum</td></tr>
-<tr><td>**Seeded mesh**</td><td>Dedicated always-on peers seed popular data</td><td>Medium — baseline guaranteed</td><td>High</td></tr>
-<tr><td>**Personal node**</td><td>User runs their own always-on device (NAS, VPS)</td><td>High — user-controlled uptime</td><td>Maximum</td></tr>
-<tr><td>**Hybrid assist**</td><td>Optional infrastructure accelerates sync</td><td>Highest — infrastructure + mesh</td><td>High (infrastructure is optional)</td></tr>
+<tr><td><strong>Pure mesh</strong></td><td>Data lives only on user devices</td><td>Low — requires overlap</td><td>Maximum</td></tr>
+<tr><td><strong>Seeded mesh</strong></td><td>Dedicated always-on peers seed popular data</td><td>Medium — baseline guaranteed</td><td>High</td></tr>
+<tr><td><strong>Personal node</strong></td><td>User runs their own always-on device (NAS, VPS)</td><td>High — user-controlled uptime</td><td>Maximum</td></tr>
+<tr><td><strong>Hybrid assist</strong></td><td>Optional infrastructure accelerates sync</td><td>Highest — infrastructure + mesh</td><td>High (infrastructure is optional)</td></tr>
 </tbody>
 </table></figure>
 
@@ -246,9 +288,13 @@ const swarm = new Hyperswarm()
 // Replicate with every peer that connects
 swarm.on('connection', (socket) =&gt; store.replicate(socket))
 
-// Join the topics this seed node should keep alive
-for (const topic of topics) {
-  swarm.join(topic, { server: true, client: true })
+// Open every core this seed should mirror and keep it complete —
+// Corestore only serves cores it has open (or already on disk),
+// and only downloads blocks something asked for
+for (const key of coreKeys) {
+  const core = store.get({ key })
+  core.download({ start: 0, end: -1 })   // non-sparse: follow the log forever
+  swarm.join(core.discoveryKey, { server: true, client: true })
 }
 
 // The seed node holds data so it's available even when users are offline</code></pre>
@@ -262,7 +308,7 @@ for (const topic of topics) {
 <h2 id="fast-forward-catching-up-efficiently">Fast-Forward: Catching Up Efficiently</h2>
 
 <p>When a peer has been offline for days, replaying the entire DAG history through Autobase&#39;s <code>apply</code> function would be painfully slow. <strong>Fast-forward</strong> skips directly to the latest confirmed checkpoint.</p>
-<p>The trigger is automatic: when the gap between local state and the confirmed remote state reaches 16 or more blocks, Autobase fast-forwards — downloading the checkpoint state and all view cores at their target lengths, then atomically jumping to that point. No replay of intermediate history needed.</p>
+<p>The trigger is automatic: at the time of writing, when the gap between local state and the confirmed remote state reaches 16 or more blocks, Autobase fast-forwards — downloading the checkpoint state and all view cores at their target lengths, then atomically jumping to that point. No replay of intermediate history needed.</p>
 <div class="code-filename">fast-forward-monitoring.js</div>
 <pre><code class="language-js">// Check if we're fast-forwarding (useful for UX)
 if (base.isFastForwarding()) {
@@ -271,7 +317,8 @@ if (base.isFastForwarding()) {
 
 // After update, check how far behind we are
 await base.update()
-const behind = base.view.length - base.signedLength
+const core = typeof base.view.signedLength === 'number' ? base.view : base.view.core
+const behind = core.length - core.signedLength
 if (behind &gt; 0) {
   showStatus(`${behind} entries pending confirmation`)
 }
@@ -279,7 +326,7 @@ if (behind &gt; 0) {
 // Manual recovery if state is corrupted
 await base.repair()  // forces fast-forward regardless of threshold</code></pre>
 
-<p>If fast-forward fails (network issues, corrupted state), a 5-minute cooldown prevents retry storms. The <code>repair()</code> method bypasses this cooldown and the minimum threshold — use it for manual recovery when automatic mechanisms fail.</p>
+<p>If fast-forward fails (network issues, corrupted state), a cooldown (currently 5 minutes) prevents retry storms. The <code>repair()</code> method bypasses this cooldown and the minimum threshold — use it for manual recovery when automatic mechanisms fail.</p>
 <hr>
 <h2 id="observability-debugging-without-a-server">Observability: Debugging Without a Server</h2>
 
@@ -310,7 +357,7 @@ swarm.on('update', () =&gt; {
 for (const [key, peerInfo] of swarm.peers) {
   console.log({
     peer: key.slice(0, 8),
-    connected: peerInfo.connectedTime &gt; -1,
+    connected: peerInfo.connectedTime &gt; -1,   // set only for connections we dialed; inbound peers stay -1
     attempts: peerInfo.attempts,
     explicit: peerInfo.explicit,
     banned: peerInfo.banned
@@ -336,27 +383,75 @@ for (const peer of core.peers) {
 <tr><th>Metric</th><th>What It Tells You</th><th>Warning Threshold</th></tr>
 </thead>
 <tbody>
-<tr><td>`swarm.connections.size`</td><td>Network health</td><td>0 for > 30 seconds</td></tr>
-<tr><td>`swarm.stats.connects.client.attempted` vs `opened`</td><td>Connection success rate</td><td>< 50% success</td></tr>
-<tr><td>`base.signedLength` vs `base.view.length`</td><td>Consensus health</td><td>Gap growing over time</td></tr>
-<tr><td>`core.length` vs peer `remoteLength`</td><td>Replication progress</td><td>Falling behind</td></tr>
-<tr><td>`base.isFastForwarding()`</td><td>Catch-up status</td><td>Extended fast-forward</td></tr>
+<tr><td><code>swarm.connections.size</code></td><td>Network health</td><td>0 for &gt; 30 seconds</td></tr>
+<tr><td><code>swarm.stats.connects.client.attempted</code> vs <code>opened</code></td><td>Connection success rate</td><td>&lt; 50% success</td></tr>
+<tr><td>The view core&#39;s <code>signedLength</code> vs <code>length</code></td><td>Consensus health</td><td>Gap growing over time</td></tr>
+<tr><td><code>core.length</code> vs peer <code>remoteLength</code></td><td>Replication progress</td><td>Falling behind</td></tr>
+<tr><td><code>base.isFastForwarding()</code></td><td>Catch-up status</td><td>Extended fast-forward</td></tr>
 </tbody>
 </table></figure>
 
 <hr>
 <h2 id="distributing-with-pear-runtime">Distributing with Pear Runtime</h2>
 
+<!-- wp:html -->
+<div class="vg-embed" data-vg-snippet="pear/app-container">
+  <div class="vg-card vg-card--wide">
+          <div class="vg-card-visual">
+            <svg class="vg-svg" viewBox="0 0 700 280" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="150" y="15" width="400" height="50" rx="6" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.5"/>
+              <text x="350" y="45" text-anchor="middle" fill="#00d4ff" font-size="14" font-weight="600" style="font-size:14px;font-weight:600">Your Application Code</text>
+              <rect x="50" y="80" width="600" height="180" rx="10" fill="#0a1628" stroke="#a855f7" stroke-opacity="0.3" stroke-width="1.5"/>
+              <text x="350" y="105" text-anchor="middle" fill="#a855f7" font-size="13" font-weight="600" style="font-size:13px;font-weight:600">Pear Runtime</text>
+              <rect x="80" y="120" width="160" height="60" rx="5" fill="#0a1628" stroke="#00ff88" stroke-opacity="0.4"/>
+              <text x="160" y="147" text-anchor="middle" fill="#00ff88" font-size="11" font-weight="500" style="font-size:11px;font-weight:500">Bare</text>
+              <text x="160" y="163" text-anchor="middle" fill="#636e7b" font-size="9" style="font-size:9px">Minimal JS runtime</text>
+              <rect x="270" y="120" width="160" height="60" rx="5" fill="#0a1628" stroke="#00d4ff" stroke-opacity="0.4"/>
+              <text x="350" y="147" text-anchor="middle" fill="#00d4ff" font-size="11" font-weight="500" style="font-size:11px;font-weight:500">Holepunch Stack</text>
+              <text x="350" y="163" text-anchor="middle" fill="#636e7b" font-size="9" style="font-size:9px">Hypercore + Swarm + ...</text>
+              <rect x="460" y="120" width="160" height="60" rx="5" fill="#0a1628" stroke="#f5a623" stroke-opacity="0.4"/>
+              <text x="540" y="147" text-anchor="middle" fill="#f5a623" font-size="11" font-weight="500" style="font-size:11px;font-weight:500">UI Layer</text>
+              <text x="540" y="163" text-anchor="middle" fill="#636e7b" font-size="9" style="font-size:9px">Chromium (optional)</text>
+              <rect x="80" y="200" width="540" height="45" rx="5" fill="#a855f7" fill-opacity="0.04" stroke="#a855f7" stroke-opacity="0.15"/>
+              <text x="350" y="220" text-anchor="middle" fill="#a855f7" font-size="11" font-weight="500" style="font-size:11px;font-weight:500">Distribution: pear://&lt;key&gt;</text>
+              <text x="350" y="236" text-anchor="middle" fill="#636e7b" font-size="9" style="font-size:9px">Apps distributed as Hyperdrive bundles — no app store, no server, peer-to-peer updates</text>
+              <line x1="350" y1="65" x2="350" y2="80" stroke="#a855f7" stroke-opacity="0.3" stroke-width="1.5"/>
+            </svg>
+          </div>
+          <div class="vg-card-body">
+            <div class="vg-card-title">P2P Application Container</div>
+            <div class="vg-card-text">Pear bundles <strong>Bare</strong> (lightweight JS runtime), the <strong>Holepunch stack</strong>, and an optional <strong>Chromium UI</strong>. Apps are distributed like magnet links — no app store, no hosting costs.</div>
+            <div class="vg-code"><span class="cmt">// package.json for a Pear app</span>
+  {
+    <span class="str">"name"</span>: <span class="str">"my-p2p-app"</span>,
+    <span class="str">"main"</span>: <span class="str">"index.html"</span>,
+    <span class="str">"pear"</span>: {
+      <span class="str">"name"</span>: <span class="str">"my-p2p-app"</span>,
+      <span class="str">"type"</span>: <span class="str">"desktop"</span>
+    }
+  }
+  
+  <span class="cmt">// $ pear run .</span>
+  <span class="cmt">// $ pear release          → publishes to your Hyperdrive</span>
+  <span class="cmt">// $ pear run pear://&lt;key&gt; → anyone can run it P2P</span></div>
+          </div>
+        </div>
+  <div data-vg-anim="vg-p-2" style="display:none">CiAgKGZ1bmN0aW9uKCkgewogIGlmICghd2luZG93LnZnUnVudGltZSkgcmV0dXJuOwogIHZhciB3cmFwID0gZG9jdW1lbnQucXVlcnlTZWxlY3RvcignW2RhdGEtdmctc25pcHBldD0icGVhci9hcHAtY29udGFpbmVyIl0nKTsKICBpZiAoIXdyYXApIHJldHVybjsKICB2YXIgY2FyZCA9IHdyYXAucXVlcnlTZWxlY3RvcignLnZnLWNhcmQnKTsKICB2YXIgc3ZnID0gY2FyZC5xdWVyeVNlbGVjdG9yKCcudmctc3ZnJyk7CiAgaWYgKCFzdmcpIHsgaWYgKHR5cGVvZiBnc2FwICE9PSAndW5kZWZpbmVkJykgZ3NhcC5zZXQoY2FyZCwgeyBvcGFjaXR5OiAxLCB5OiAwIH0pOyByZXR1cm47IH0KICB2YXIgdGwgPSB2Z1J1bnRpbWUuY2FyZFRMKGNhcmQpOwogIHZhciByZWN0cyA9IHN2Zy5xdWVyeVNlbGVjdG9yQWxsKCdyZWN0Jyk7CiAgdmFyIHRleHRzID0gc3ZnLnF1ZXJ5U2VsZWN0b3JBbGwoJ3RleHQnKTsKICAvLyBQaGFzZSAxOiBBcHAgY29kZSByZWN0ICsgbGFiZWwKICB0bC5mcm9tKHJlY3RzWzBdLCB7IG9wYWNpdHk6IDAsIHk6IC0xNSwgZHVyYXRpb246IDAuMzUgfSwgMC4zKTsKICB0bC5mcm9tKHRleHRzWzBdLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjI1IH0sIDAuNCk7CiAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsICdZb3VyIGFwcGxpY2F0aW9uIGNvZGUgcnVucyBvbiB0b3AnXSk7CiAgLy8gUGhhc2UgMjogUGVhciBjb250YWluZXIgcmVjdCArIGxhYmVsICsgY29ubmVjdG9yIGxpbmUKICB0bC5mcm9tKHJlY3RzWzFdLCB7IG9wYWNpdHk6IDAsIHNjYWxlOiAwLjk1LCB0cmFuc2Zvcm1PcmlnaW46ICdjZW50ZXInLCBkdXJhdGlvbjogMC40IH0sICc+MC4xJyk7CiAgdGwuZnJvbSh0ZXh0c1sxXSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yNSB9LCAnPDAuMScpOwogIHZnUnVudGltZS5kcmF3TGluZXModGwsIHN2ZywgJ2xpbmUnLCB7IGR1cjogMC4zIH0pOwogIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnUGVhciBSdW50aW1lIHdyYXBzIHRoZSBlbnRpcmUgSG9sZXB1bmNoIHN0YWNrJ10pOwogIC8vIFBoYXNlIDM6IFRocmVlIHBpbGxhciByZWN0cyArIHRoZWlyIGxhYmVscwogIHRsLmZyb20ocmVjdHNbMl0sIHsgb3BhY2l0eTogMCwgeDogLTIwLCBkdXJhdGlvbjogMC4zIH0sICc+MC4xJyk7CiAgdGwuZnJvbShbdGV4dHNbMl0sIHRleHRzWzNdXSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yLCBzdGFnZ2VyOiAwLjA2IH0sICc8MC4wNScpOwogIHRsLmZyb20ocmVjdHNbM10sIHsgb3BhY2l0eTogMCwgeTogMTUsIGR1cmF0aW9uOiAwLjMgfSwgJzwwLjA1Jyk7CiAgdGwuZnJvbShbdGV4dHNbNF0sIHRleHRzWzVdXSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yLCBzdGFnZ2VyOiAwLjA2IH0sICc8MC4wNScpOwogIHRsLmZyb20ocmVjdHNbNF0sIHsgb3BhY2l0eTogMCwgeDogMjAsIGR1cmF0aW9uOiAwLjMgfSwgJzwwLjA1Jyk7CiAgdGwuZnJvbShbdGV4dHNbNl0sIHRleHRzWzddXSwgeyBvcGFjaXR5OiAwLCBkdXJhdGlvbjogMC4yLCBzdGFnZ2VyOiAwLjA2IH0sICc8MC4wNScpOwogIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnQmFyZSBydW50aW1lICsgUDJQIHN0YWNrICsgb3B0aW9uYWwgQ2hyb21pdW0gVUknXSk7CiAgLy8gUGhhc2UgNDogRGlzdHJpYnV0aW9uIGJhciByZWN0ICsgdGV4dHMKICB0bC5mcm9tKHJlY3RzWzVdLCB7IG9wYWNpdHk6IDAsIHk6IDEwLCBkdXJhdGlvbjogMC4zIH0sICc+MC4xNScpOwogIHRsLmZyb20oW3RleHRzWzhdLCB0ZXh0c1s5XV0sIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMjUsIHN0YWdnZXI6IDAuMDggfSwgJzwwLjEnKTsKICB0bC5jYWxsKHZnUnVudGltZS5jYXB0aW9uLCBbd3JhcCwgJ0FwcHMgZGlzdHJpYnV0ZWQgdmlhIHBlYXI6Ly8ga2V5cyBcdTIwMTQgbm8gYXBwIHN0b3JlLCBubyBzZXJ2ZXInXSk7CiAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsICcnXSwgJz4xJyk7Cn0pKCk7CiAg</div>
+</div>
+
+<!-- /wp:html -->
+
 <p><a href="https://docs.pears.com/" target="_blank">Pear Runtime</a> packages the entire Holepunch stack for end-user distribution. Applications are distributed as Hyperdrives, identified by their public key, and updated via standard Hypercore replication.</p>
 <p>The deployment workflow:</p>
-<pre><code>pear stage        →  Sync local code to application Hyperdrive
-pear release      →  Mark a version as the production release
-pear seed         →  Announce to DHT and serve to peers</code></pre>
+<pre><code>pear touch                  →  Mint the app's pear:// link (once)
+pear stage pear://&lt;key&gt; .   →  Sync local code into the link's Hyperdrive
+pear seed pear://&lt;key&gt;      →  Announce to DHT and serve to peers</code></pre>
 
+<p>There is no <code>pear release</code> any more — it was removed in Pear v3. Writing a seeded drive <em>is</em> publishing; production lines go live through <code>pear multisig … commit</code>.</p>
 <p>Users access apps via <code>pear://</code> links — the Hyperdrive public key becomes the app&#39;s permanent, unforgeable identifier. Updates propagate through the same replication mechanism as any other Hypercore data: peers discover, connect, and sync automatically.</p>
-<p>For persistent state across restarts, Pear provides <code>Pear.checkpoint(value)</code> — a simple key-value store that survives app restarts and is available as <code>Pear.app.checkpoint</code> on next launch. For clean shutdown, <code>Pear.teardown(fn)</code> registers handlers that run in order, with promises awaited between them.</p>
+<p>The old global <code>Pear</code> object — <code>Pear.checkpoint()</code>, <code>Pear.app.checkpoint</code>, <code>Pear.teardown(fn)</code> — was deprecated in Pear v2.6.5 and removed in Pear v3. A v3 app embeds the <code>pear-runtime</code> module inside its own host (Electron on desktop, a Bare worker on mobile), so persistent state lives in your own store — a Hypercore or Hyperbee under <code>pear.storage</code> — and clean shutdown is your host&#39;s teardown hook closing things in reverse-dependency order: swarm, then Autobase, then Corestore.</p>
 <blockquote class="callout-gotcha">
-<p><strong>Gotcha:</strong> <code>Pear.updates()</code> is deprecated. Use the <code>pear-updates</code> module instead for handling application update notifications.</p>
+<p><strong>Gotcha:</strong> <code>Pear.updates()</code> went away with the rest of the global API. The <code>pear-updates</code> module that replaced it in v2 has itself been archived (August 2026); under <code>pear-runtime</code> you listen on the instance&#39;s updater — <code>pear.updater.on(&#39;updating&#39;, ...)</code> and <code>pear.updater.on(&#39;updated&#39;, ...)</code> — and call <code>pear.updater.applyUpdate()</code> when you&#39;re ready to restart.</p>
 </blockquote>
 
 <hr>
@@ -372,7 +467,7 @@ pear seed         →  Announce to DHT and serve to peers</code></pre>
 <tr><td>Suspend/resume saves battery on mobile</td><td>All connections destroyed — resume reinitializes networking</td></tr>
 <tr><td>Seed nodes provide baseline availability</td><td>Seed nodes must be operated and maintained</td></tr>
 <tr><td>Fast-forward catches up efficiently</td><td>16-block threshold before triggering; 5-min cooldown on failure</td></tr>
-<tr><td>Pear distributes apps without app stores</td><td>Users need Pear Runtime installed</td></tr>
+<tr><td>Pear distributes apps without app stores</td><td>Users need the <code>pear</code> CLI (<code>pear install &lt;link&gt;</code>) — or you ship a packaged shell that embeds <code>pear-runtime</code></td></tr>
 <tr><td>Full observability via local metrics</td><td>No centralized dashboard — each peer monitors itself</td></tr>
 </tbody>
 </table></figure>
@@ -383,7 +478,7 @@ pear seed         →  Announce to DHT and serve to peers</code></pre>
 <ul>
 <li><p><strong>Offline-first is the P2P superpower.</strong> Writes happen instantly to the local Hypercore. Sync happens when peers connect. Design UX around three states: local, synced, and confirmed (<code>signedLength</code>).</p>
 </li>
-<li><p><strong>Never trigger side effects from provisional data.</strong> Everything between <code>signedLength</code> and <code>view.length</code> might reorder. Wait for confirmation before sending notifications, updating external systems, or making irreversible changes.</p>
+<li><p><strong>Never trigger side effects from provisional data.</strong> Everything between <code>view.signedLength</code> and <code>view.length</code> might reorder. Wait for confirmation before sending notifications, updating external systems, or making irreversible changes.</p>
 </li>
 <li><p><strong>Use sparse replication and <code>clear()</code> for storage management.</strong> Download on demand, verify once, clear when done. Verification metadata stays intact for re-verification. This is essential for mobile.</p>
 </li>
@@ -391,11 +486,99 @@ pear seed         →  Announce to DHT and serve to peers</code></pre>
 </li>
 <li><p><strong>Choose an availability strategy explicitly.</strong> Pure mesh, seeded mesh, personal node, or hybrid. Seed nodes improve availability without compromising sovereignty because the verification chain ensures data integrity regardless of the source.</p>
 </li>
-<li><p><strong>Build observability from day one.</strong> <code>swarm.connections.size</code>, <code>swarm.stats</code>, <code>swarm.on(&#39;update&#39;)</code>, and <code>base.signedLength</code> vs <code>base.view.length</code> are your core health indicators. Every peer must be its own monitoring system.</p>
+<li><p><strong>Build observability from day one.</strong> <code>swarm.connections.size</code>, <code>swarm.stats</code>, <code>swarm.on(&#39;update&#39;)</code>, and the view core&#39;s <code>signedLength</code> vs <code>length</code> are your core health indicators. Every peer must be its own monitoring system.</p>
 </li>
 </ul>
 <hr>
+<h2 id="frequently-asked-questions">Frequently Asked Questions</h2>
+
+<h3 id="what-is-offline-first-design">What is offline-first design?</h3>
+
+<p>Offline-first means writes happen immediately to local storage without requiring network connectivity, and sync happens opportunistically when peers connect. In the Holepunch stack, every write appends to a local Hypercore instantly, signed by the user&#39;s Ed25519 key, and replicates to peers the next time a connection exists.</p>
+<h3 id="how-do-p2p-apps-handle-data-availability">How do P2P apps handle data availability?</h3>
+
+<p>P2P apps use strategies like seed nodes (always-on mirrors), personal nodes (user-controlled VPS or NAS), or hybrid approaches to ensure data is available when the original author is offline. Seed nodes improve availability without compromising sovereignty because the Merkle verification chain ensures data integrity regardless of the source.</p>
+<h3 id="what-happens-when-p2p-data-reorders">What happens when P2P data reorders?</h3>
+
+<p>Before quorum confirmation, the ordering of concurrent events is provisional and may change as new causal information arrives. Applications should distinguish confirmed from provisional data in their UI — showing entries past signedLength as settled and everything after as tentative, using subtle visual indicators like fading or &quot;syncing&quot; badges.</p>
+<hr>
 <h2 id="putting-it-all-together">Putting It All Together</h2>
+
+<!-- wp:html -->
+<div class="vg-embed" data-vg-snippet="e2e/full-pipeline">
+  <div class="vg-card vg-card--wide">
+          <div class="vg-card-visual">
+            <svg class="vg-svg" viewBox="0 0 700 420" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="40" cy="35" r="14" fill="#00d4ff" fill-opacity="0.1" stroke="#00d4ff" stroke-opacity="0.5"/>
+              <text x="40" y="39" text-anchor="middle" fill="#00d4ff" font-size="11" font-weight="600" style="font-size:11px;font-weight:600">1</text>
+              <text x="65" y="39" fill="#cdd9e5" font-size="11" font-weight="600" style="font-size:11px;font-weight:600">Peer A writes data</text>
+              <text x="65" y="57" fill="#636e7b" font-size="9" style="font-size:9px">core.append(data) → block appended to local Hypercore</text>
+              <text x="65" y="71" fill="#636e7b" font-size="9" style="font-size:9px">Block is signed with Ed25519 secret key, Merkle tree updated</text>
+              <circle cx="40" cy="105" r="14" fill="#00ff88" fill-opacity="0.1" stroke="#00ff88" stroke-opacity="0.5"/>
+              <text x="40" y="109" text-anchor="middle" fill="#00ff88" font-size="11" font-weight="600" style="font-size:11px;font-weight:600">2</text>
+              <text x="65" y="109" fill="#cdd9e5" font-size="11" font-weight="600" style="font-size:11px;font-weight:600">Announce on DHT</text>
+              <text x="65" y="127" fill="#636e7b" font-size="9" style="font-size:9px">Hyperswarm announces discovery key = BLAKE2b(publicKey) to the DHT</text>
+              <text x="65" y="141" fill="#636e7b" font-size="9" style="font-size:9px">The public key itself is NOT announced — only its hash</text>
+              <circle cx="40" cy="175" r="14" fill="#f5a623" fill-opacity="0.1" stroke="#f5a623" stroke-opacity="0.5"/>
+              <text x="40" y="179" text-anchor="middle" fill="#f5a623" font-size="11" font-weight="600" style="font-size:11px;font-weight:600">3</text>
+              <text x="65" y="179" fill="#cdd9e5" font-size="11" font-weight="600" style="font-size:11px;font-weight:600">Peer B discovers Peer A</text>
+              <text x="65" y="197" fill="#636e7b" font-size="9" style="font-size:9px">Peer B joins the same topic on the DHT → DHT returns Peer A's address</text>
+              <text x="65" y="211" fill="#636e7b" font-size="9" style="font-size:9px">UDP hole punching establishes a direct connection (even behind NATs)</text>
+              <circle cx="40" cy="245" r="14" fill="#ff00cc" fill-opacity="0.1" stroke="#ff00cc" stroke-opacity="0.5"/>
+              <text x="40" y="249" text-anchor="middle" fill="#ff00cc" font-size="11" font-weight="600" style="font-size:11px;font-weight:600">4</text>
+              <text x="65" y="249" fill="#cdd9e5" font-size="11" font-weight="600" style="font-size:11px;font-weight:600">Noise XX handshake</text>
+              <text x="65" y="267" fill="#636e7b" font-size="9" style="font-size:9px">3-message mutual authentication → shared secret → encrypted channel</text>
+              <text x="65" y="281" fill="#636e7b" font-size="9" style="font-size:9px">ChaCha20-Poly1305 encryption, forward secrecy via ephemeral keys</text>
+              <circle cx="40" cy="315" r="14" fill="#a855f7" fill-opacity="0.1" stroke="#a855f7" stroke-opacity="0.5"/>
+              <text x="40" y="319" text-anchor="middle" fill="#a855f7" font-size="11" font-weight="600" style="font-size:11px;font-weight:600">5</text>
+              <text x="65" y="319" fill="#cdd9e5" font-size="11" font-weight="600" style="font-size:11px;font-weight:600">Protomux opens replication channel</text>
+              <text x="65" y="337" fill="#636e7b" font-size="9" style="font-size:9px">Corestore opens a Protomux channel for each shared Hypercore</text>
+              <text x="65" y="351" fill="#636e7b" font-size="9" style="font-size:9px">Messages encoded with compact-encoding, multiplexed on the single socket</text>
+              <circle cx="40" cy="385" r="14" fill="#00d4ff" fill-opacity="0.1" stroke="#00d4ff" stroke-opacity="0.5"/>
+              <text x="40" y="389" text-anchor="middle" fill="#00d4ff" font-size="11" font-weight="600" style="font-size:11px;font-weight:600">6</text>
+              <text x="65" y="389" fill="#cdd9e5" font-size="11" font-weight="600" style="font-size:11px;font-weight:600">Replication syncs missing blocks</text>
+              <text x="65" y="407" fill="#636e7b" font-size="9" style="font-size:9px">Peers exchange length + root hash → transfer only missing blocks + Merkle proofs</text>
+              <text x="65" y="421" fill="#636e7b" font-size="9" style="font-size:9px">Peer B verifies each block against the Merkle tree → data is now local and trusted</text>
+              <rect x="540" y="25" width="140" height="26" rx="4" fill="#00d4ff" fill-opacity="0.06" stroke="#00d4ff" stroke-opacity="0.2"/>
+              <text x="610" y="43" text-anchor="middle" fill="#00d4ff" font-size="9" style="font-size:9px">Hypercore</text>
+              <rect x="540" y="95" width="140" height="26" rx="4" fill="#00ff88" fill-opacity="0.06" stroke="#00ff88" stroke-opacity="0.2"/>
+              <text x="610" y="113" text-anchor="middle" fill="#00ff88" font-size="9" style="font-size:9px">Hyperswarm</text>
+              <rect x="540" y="165" width="140" height="26" rx="4" fill="#f5a623" fill-opacity="0.06" stroke="#f5a623" stroke-opacity="0.2"/>
+              <text x="610" y="183" text-anchor="middle" fill="#f5a623" font-size="9" style="font-size:9px">Hyperswarm + DHT</text>
+              <rect x="540" y="235" width="140" height="26" rx="4" fill="#ff00cc" fill-opacity="0.06" stroke="#ff00cc" stroke-opacity="0.2"/>
+              <text x="610" y="253" text-anchor="middle" fill="#ff00cc" font-size="9" style="font-size:9px">Noise Protocol</text>
+              <rect x="540" y="305" width="140" height="26" rx="4" fill="#a855f7" fill-opacity="0.06" stroke="#a855f7" stroke-opacity="0.2"/>
+              <text x="610" y="323" text-anchor="middle" fill="#a855f7" font-size="9" style="font-size:9px">Protomux + Encoding</text>
+              <rect x="540" y="375" width="140" height="26" rx="4" fill="#00d4ff" fill-opacity="0.06" stroke="#00d4ff" stroke-opacity="0.2"/>
+              <text x="610" y="393" text-anchor="middle" fill="#00d4ff" font-size="9" style="font-size:9px">Hypercore Replication</text>
+              <line x1="610" y1="51" x2="610" y2="95" stroke="#636e7b" stroke-opacity="0.15" stroke-width="1"/>
+              <line x1="610" y1="121" x2="610" y2="165" stroke="#636e7b" stroke-opacity="0.15" stroke-width="1"/>
+              <line x1="610" y1="191" x2="610" y2="235" stroke="#636e7b" stroke-opacity="0.15" stroke-width="1"/>
+              <line x1="610" y1="261" x2="610" y2="305" stroke="#636e7b" stroke-opacity="0.15" stroke-width="1"/>
+              <line x1="610" y1="331" x2="610" y2="375" stroke="#636e7b" stroke-opacity="0.15" stroke-width="1"/>
+            </svg>
+          </div>
+          <div class="vg-card-body">
+            <div class="vg-card-title">The Full Pipeline</div>
+            <div class="vg-card-text">Every layer has one job. In your code, this entire pipeline is triggered by two calls: <code>swarm.join(topic)</code> and <code>store.replicate(socket)</code>.</div>
+            <div class="vg-code"><span class="cmt">// The entire pipeline in ~10 lines</span>
+  <span class="kw">const</span> store = <span class="kw">new</span> <span class="fn">Corestore</span>(<span class="str">'./storage'</span>)
+  <span class="kw">const</span> swarm = <span class="kw">new</span> <span class="fn">Hyperswarm</span>()
+  <span class="kw">const</span> core = store.<span class="fn">get</span>({ name: <span class="str">'my-data'</span> })
+  
+  <span class="kw">await</span> core.<span class="fn">ready</span>()
+  swarm.<span class="fn">join</span>(core.discoveryKey)
+  swarm.<span class="fn">on</span>(<span class="str">'connection'</span>, (socket) => {
+    store.<span class="fn">replicate</span>(socket)
+  })
+  
+  <span class="kw">await</span> core.<span class="fn">append</span>(<span class="str">'hello world'</span>)</div>
+          </div>
+        </div>
+  <div data-vg-anim="vg-p-3" style="display:none">CiAgKGZ1bmN0aW9uKCkgewogIGlmICghd2luZG93LnZnUnVudGltZSkgcmV0dXJuOwogIHZhciB3cmFwID0gZG9jdW1lbnQucXVlcnlTZWxlY3RvcignW2RhdGEtdmctc25pcHBldD0iZTJlL2Z1bGwtcGlwZWxpbmUiXScpOwogIGlmICghd3JhcCkgcmV0dXJuOwogIHZhciBjYXJkID0gd3JhcC5xdWVyeVNlbGVjdG9yKCcudmctY2FyZCcpOwogIHZhciBzdmcgPSBjYXJkLnF1ZXJ5U2VsZWN0b3IoJy52Zy1zdmcnKTsKICBpZiAoIXN2ZykgeyBpZiAodHlwZW9mIGdzYXAgIT09ICd1bmRlZmluZWQnKSBnc2FwLnNldChjYXJkLCB7IG9wYWNpdHk6IDEsIHk6IDAgfSk7IHJldHVybjsgfQogIHZhciB0bCA9IHZnUnVudGltZS5jYXJkVEwoY2FyZCk7CiAgdmFyIGNpcmNsZXMgPSBzdmcucXVlcnlTZWxlY3RvckFsbCgnY2lyY2xlJyk7CiAgdmFyIHJlY3RzID0gc3ZnLnF1ZXJ5U2VsZWN0b3JBbGwoJ3JlY3QnKTsKICB2YXIgdGV4dHMgPSBzdmcucXVlcnlTZWxlY3RvckFsbCgndGV4dCcpOwogIHZhciBsaW5lcyA9IHN2Zy5xdWVyeVNlbGVjdG9yQWxsKCdsaW5lJyk7CiAgCiAgLy8gNiBzdGVwcyDigJQgZWFjaCBzdGVwIGhhczogY2lyY2xlLCBzdGVwIG51bWJlciB0ZXh0LCB0aXRsZSwgMiBkZXNjcmlwdGlvbiBsaW5lcyAoNCB0ZXh0cyBwZXIgc3RlcCkKICAvLyBSaWdodC1zaWRlOiA2IHJlY3RzIHdpdGggNiBsYWJlbCB0ZXh0cywgcGx1cyA1IGNvbm5lY3RvciBsaW5lcwogIHZhciBjYXB0aW9ucyA9IFsKICAgICdTdGVwIDE6IFBlZXIgQSB3cml0ZXMgZGF0YSBcdTIwMTQgYmxvY2sgYXBwZW5kZWQgdG8gbG9jYWwgSHlwZXJjb3JlJywKICAgICdTdGVwIDI6IERpc2NvdmVyeSBrZXkgYW5ub3VuY2VkIG9uIHRoZSBESFQnLAogICAgJ1N0ZXAgMzogUGVlciBCIGRpc2NvdmVycyBQZWVyIEEgdmlhIERIVCBsb29rdXAnLAogICAgJ1N0ZXAgNDogTm9pc2UgWFggaGFuZHNoYWtlIFx1MjAxNCBtdXR1YWwgYXV0aGVudGljYXRpb24nLAogICAgJ1N0ZXAgNTogUHJvdG9tdXggb3BlbnMgcmVwbGljYXRpb24gY2hhbm5lbCcsCiAgICAnU3RlcCA2OiBNaXNzaW5nIGJsb2NrcyBzeW5jZWQgKyBNZXJrbGUtdmVyaWZpZWQnCiAgXTsKICBmb3IgKHZhciBpID0gMDsgaSA8IDY7IGkrKykgewogICAgdmFyIHN0ZXBEZWxheSA9IDAuMyArIGkgKiAwLjM1OwogICAgdGwuY2FsbCh2Z1J1bnRpbWUuY2FwdGlvbiwgW3dyYXAsIGNhcHRpb25zW2ldXSwgc3RlcERlbGF5KTsKICAgIC8vIFN0ZXAgY2lyY2xlCiAgICBpZiAoY2lyY2xlc1tpXSkgewogICAgICB0bC5mcm9tKGNpcmNsZXNbaV0sIHsgb3BhY2l0eTogMCwgc2NhbGU6IDAsIHRyYW5zZm9ybU9yaWdpbjogJ2NlbnRlcicsIGR1cmF0aW9uOiAwLjMsIGVhc2U6ICdiYWNrLm91dCgyKScgfSwgc3RlcERlbGF5KTsKICAgIH0KICAgIC8vIFN0ZXAgbnVtYmVyICsgdGl0bGUgKyAyIGRlc2NyaXB0aW9uIGxpbmVzICg0IHRleHRzIHBlciBzdGVwKQogICAgdmFyIHRleHRTdGFydCA9IGkgKiA0OwogICAgZm9yICh2YXIgdCA9IDA7IHQgPCA0OyB0KyspIHsKICAgICAgaWYgKHRleHRzW3RleHRTdGFydCArIHRdKSB7CiAgICAgICAgdGwuZnJvbSh0ZXh0c1t0ZXh0U3RhcnQgKyB0XSwgeyBvcGFjaXR5OiAwLCB4OiAtMTAsIGR1cmF0aW9uOiAwLjIgfSwgc3RlcERlbGF5ICsgMC4wOCArIHQgKiAwLjA2KTsKICAgICAgfQogICAgfQogICAgLy8gUmlnaHQtc2lkZSBsYXllciByZWN0CiAgICBpZiAocmVjdHNbaV0pIHsKICAgICAgdGwuZnJvbShyZWN0c1tpXSwgeyBvcGFjaXR5OiAwLCB4OiAxNSwgZHVyYXRpb246IDAuMjUgfSwgc3RlcERlbGF5ICsgMC4wNSk7CiAgICB9CiAgICAvLyBSaWdodC1zaWRlIGxheWVyIGxhYmVsIHRleHQgKGFmdGVyIHRoZSAyNCBzdGVwIHRleHRzKQogICAgaWYgKHRleHRzWzI0ICsgaV0pIHsKICAgICAgdGwuZnJvbSh0ZXh0c1syNCArIGldLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjIgfSwgc3RlcERlbGF5ICsgMC4xKTsKICAgIH0KICAgIC8vIENvbm5lY3RvciBsaW5lIGJldHdlZW4gcmlnaHQtc2lkZSByZWN0cyAoNSBsaW5lcywgYWZ0ZXIgZmlyc3Qgc3RlcCkKICAgIGlmIChpID4gMCAmJiBsaW5lc1tpIC0gMV0pIHsKICAgICAgdGwuZnJvbShsaW5lc1tpIC0gMV0sIHsgb3BhY2l0eTogMCwgc2NhbGVZOiAwLCB0cmFuc2Zvcm1PcmlnaW46ICd0b3AnLCBkdXJhdGlvbjogMC4yIH0sIHN0ZXBEZWxheSArIDAuMDUpOwogICAgfQogIH0KICB0bC5jYWxsKHZnUnVudGltZS5jYXB0aW9uLCBbd3JhcCwgJyddLCAnPjEnKTsKfSkoKTsKICA=</div>
+</div>
+
+<!-- /wp:html -->
 
 <p>Here&#39;s the complete picture — a collaborative key-value store that combines every layer we&#39;ve built across this series. One file, ~50 lines, the full Holepunch stack:</p>
 <div class="code-filename">p2p-collaborative-kv.js</div>
@@ -428,31 +611,36 @@ async function apply (nodes, view, host) {
   await batch.flush()
 }
 
-// --- Setup ---
+async function main () {
+  // --- Setup ---
 
-const store = new Corestore('./p2p-storage')  // Part 4: Deterministic key derivation
-const base = new Autobase(store, null, { open, apply, valueEncoding: 'json', ackInterval: 1000 })
-await base.ready()
+  const store = new Corestore('./p2p-storage')  // Part 4: Deterministic key derivation
+  const base = new Autobase(store, null, { open, apply, valueEncoding: 'json', ackInterval: 1000 })
+  await base.ready()
 
-// --- Networking (Parts 1, 2, 5) ---
+  // --- Networking (Parts 1, 2, 5) ---
 
-const swarm = new Hyperswarm()                // Part 1: NAT traversal, Part 2: Encrypted pipes
-swarm.on('connection', (socket) =&gt; base.replicate(socket))  // Part 3: Merkle-verified replication
-swarm.join(base.discoveryKey, { server: true, client: true })
-await swarm.flush()
+  const swarm = new Hyperswarm()                // Part 1: NAT traversal, Part 2: Encrypted pipes
+  swarm.on('connection', (socket) =&gt; base.replicate(socket))  // Part 3: Merkle-verified replication
+  swarm.join(base.discoveryKey, { server: true, client: true })
+  await swarm.flush()
 
-// --- Use it ---
+  // --- Use it ---
 
-await base.append({ type: 'put', key: 'hello', value: { from: 'Part 8', msg: 'The full stack in 45 lines' } })
-await base.update()
+  await base.append({ type: 'put', key: 'hello', value: { from: 'Part 8', msg: 'The full stack in ~50 lines' } })
+  await base.update()
 
-const entry = await base.view.get('hello')
-console.log(entry.value)  // { from: 'Part 8', msg: 'The full stack in 45 lines' }
+  const entry = await base.view.get('hello')
+  console.log(entry.value)  // { from: 'Part 8', msg: 'The full stack in ~50 lines' }
 
-// --- Observability (Part 8) ---
-console.log(`Peers: ${swarm.connections.size}, Confirmed: ${base.signedLength}/${base.view.length}`)</code></pre>
+  // --- Observability (Part 8) ---
+  // The view here is a Hyperbee, so the markers are on base.view.core
+  console.log(`Peers: ${swarm.connections.size}, Confirmed: ${base.view.core.signedLength}/${base.view.core.length}`)
+}
 
-<p>Every part of this series is represented in those 45 lines. NAT traversal and encrypted pipes (Parts 1–2) happen inside <code>Hyperswarm</code>. Merkle-verified append-only logs (Part 3) power every <code>Hypercore</code> underneath. <code>Hyperbee</code> and <code>Corestore</code> (Part 4) provide the database and key management. <code>Hyperswarm</code> (Part 5) handles discovery. <code>Autobase</code> (Part 6) linearizes multiple writers. The security model (Part 7) is enforced at every layer — from the Noise XX handshake to the Ed25519 signatures. And the observability line at the bottom is where Part 8 begins.</p>
+main().catch((err) =&gt; { console.error(err); process.exit(1) })</code></pre>
+
+<p>Every part of this series is represented in those ~50 lines. NAT traversal and encrypted pipes (Parts 1–2) happen inside <code>Hyperswarm</code>. Merkle-verified append-only logs (Part 3) power every <code>Hypercore</code> underneath. <code>Hyperbee</code> and <code>Corestore</code> (Part 4) provide the database and key management. <code>Hyperswarm</code> (Part 5) handles discovery. <code>Autobase</code> (Part 6) linearizes multiple writers. The security model (Part 7) is enforced at every layer — from the Noise IK handshake to the Ed25519 signatures. And the observability line at the bottom is where Part 8 begins.</p>
 <p>A second peer joins by passing the first peer&#39;s bootstrap key — the same pattern from Part 6. From there, both peers write to their own Hypercores, Autobase linearizes everything, and the Hyperbee view stays consistent across the network.</p>
 <hr>
 <h2 id="series-wrap-up">Series Wrap-Up</h2>
@@ -460,6 +648,7 @@ console.log(`Peers: ${swarm.connections.size}, Confirmed: ${base.signedLength}/$
 <p>Eight posts ago, we started with a simple question: <em>why can&#39;t two computers just talk to each other?</em> The answer turned out to be a journey through NAT traversal, encrypted transport, append-only logs, B-trees, distributed hash tables, causal DAGs, quorum consensus, six layers of security, and finally — making it all feel invisible to users.</p>
 <p>The Holepunch stack is not simple. But the complexity serves a purpose: giving individuals sovereignty over their data without sacrificing the collaborative features we&#39;ve come to expect from centralized services. Every layer we&#39;ve explored exists to solve a specific problem that P2P uniquely faces — and together, they form a system where trust is cryptographic, identity is self-sovereign, and no single point of failure can take the network down.</p>
 <p>The technology is ready. The question now is what you&#39;ll build with it.</p>
+<p>[heartit_lab title="p2p-sync-states" cmd="npx @heart-it/p2p-sync-states write" desc="An offline-first writer and a late-joining follower with an honest sync-state line: connecting, catching up, live." repo="https://github.com/heart-IT/p2p-from-scratch-labs" note="needs Node.js 18+ · two terminals — the writer prints the follow command"]</p>
 <hr>
 <h2 id="references-further-reading">References & Further Reading</h2>
 
@@ -469,40 +658,26 @@ console.log(`Peers: ${swarm.connections.size}, Confirmed: ${base.signedLength}/$
 <li><a href="https://github.com/holepunchto/corestore" target="_blank">holepunchto/corestore — Multi-core management with suspend/resume and GC</a></li>
 <li><a href="https://github.com/holepunchto/autobase" target="_blank">holepunchto/autobase — Fast-forward, signedLength, and repair APIs</a></li>
 <li><a href="https://docs.pears.com/" target="_blank">Pear Runtime Documentation — Application distribution and lifecycle APIs</a></li>
-<li><a href="https://github.com/nicolo-ribaudo/pear-docs" target="_blank">Pear Documentation Source — Configuration reference and API details</a></li>
-<li><a href="https://github.com/nicolo-ribaudo/pear-updates" target="_blank">pear-updates — Application update notifications (replaces deprecated Pear.updates())</a></li>
+<li><a href="https://github.com/holepunchto/pear-docs" target="_blank">Pear Documentation Source — Configuration reference and API details</a></li>
+<li><a href="https://github.com/holepunchto/pear-updates" target="_blank">pear-updates — the v2 replacement for Pear.updates() (archived Aug 2026; pear-runtime&#39;s updater supersedes it)</a></li>
 <li><a href="https://github.com/holepunchto/hyperdrive" target="_blank">holepunchto/hyperdrive — Application distribution via pear:// links</a></li>
 </ol>
 <hr>
 <blockquote class="series-nav">
 <p><strong>Series: P2P from Scratch — Building on the Holepunch Stack</strong>
-<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: The Internet is Hostile</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: Encrypted Pipes</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Append-Only Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: From Logs to Databases</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Finding Peers</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Many Writers, One Truth</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: Trust No One</a> | <strong>Part 8: Building for Humans (You are here)</strong></p>
+<a href="https://heartit.tech/p2p-from-scratch-part-1-the-internet-is-hostile/">Part 1: NAT Hole Punching Explained</a> | <a href="https://heartit.tech/p2p-from-scratch-part-2-encrypted-pipes/">Part 2: P2P Encryption with the Noise Protocol</a> | <a href="https://heartit.tech/p2p-from-scratch-part-3-append-only-truth/">Part 3: Merkle Trees and Append-Only Logs</a> | <a href="https://heartit.tech/p2p-from-scratch-part-4-from-logs-to-databases/">Part 4: Building P2P Databases with Hyperbee and Hyperdrive</a> | <a href="https://heartit.tech/p2p-from-scratch-part-5-finding-peers/">Part 5: Peer Discovery with Kademlia DHT</a> | <a href="https://heartit.tech/p2p-from-scratch-part-6-many-writers-one-truth/">Part 6: Multi-Writer Consensus with Autobase</a> | <a href="https://heartit.tech/p2p-from-scratch-part-7-trust-no-one-verify-everything/">Part 7: P2P Security — Threats, Defenses, and Trust</a> | <strong>Part 8: Offline-First UX for P2P Applications (You are here)</strong></p>
 </blockquote>
 
 
 <!-- Mermaid.js — renders <pre class="mermaid"> blocks -->
-<script type="module">
-import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-mermaid.initialize({
-  startOnLoad: true,
-  theme: 'dark',
-  themeVariables: {
-    primaryColor: '#2d333b',
-    primaryTextColor: '#8b949e',
-    primaryBorderColor: '#373e47',
-    lineColor: '#539bf5',
-    secondaryColor: '#22272e',
-    tertiaryColor: '#1b1f24',
-    noteBkgColor: '#2d333b',
-    noteTextColor: '#8b949e',
-    noteBorderColor: '#986ee2',
-    actorBkg: '#2d333b',
-    actorBorder: '#373e47',
-    actorTextColor: '#cdd9e5',
-    actorLineColor: '#373e47',
-    signalColor: '#539bf5',
-    signalTextColor: '#8b949e',
-    sequenceNumberColor: '#1b1f24'
-  }
-});
-</script>
+<div data-vg-mod="vg-p-5" style="display:none">CmltcG9ydCBtZXJtYWlkIGZyb20gJ2h0dHBzOi8vY2RuLmpzZGVsaXZyLm5ldC9ucG0vbWVybWFpZEAxMS4xNC4wL2Rpc3QvbWVybWFpZC5lc20ubWluLm1qcyc7Cm1lcm1haWQuaW5pdGlhbGl6ZSh7CiAgc3RhcnRPbkxvYWQ6IHRydWUsCiAgdGhlbWU6ICdkYXJrJywKICB0aGVtZVZhcmlhYmxlczogewogICAgcHJpbWFyeUNvbG9yOiAnIzJkMzMzYicsCiAgICBwcmltYXJ5VGV4dENvbG9yOiAnIzhiOTQ5ZScsCiAgICBwcmltYXJ5Qm9yZGVyQ29sb3I6ICcjMzczZTQ3JywKICAgIGxpbmVDb2xvcjogJyM1MzliZjUnLAogICAgc2Vjb25kYXJ5Q29sb3I6ICcjMjIyNzJlJywKICAgIHRlcnRpYXJ5Q29sb3I6ICcjMWIxZjI0JywKICAgIG5vdGVCa2dDb2xvcjogJyMyZDMzM2InLAogICAgbm90ZVRleHRDb2xvcjogJyM4Yjk0OWUnLAogICAgbm90ZUJvcmRlckNvbG9yOiAnIzk4NmVlMicsCiAgICBhY3RvckJrZzogJyMyZDMzM2InLAogICAgYWN0b3JCb3JkZXI6ICcjMzczZTQ3JywKICAgIGFjdG9yVGV4dENvbG9yOiAnI2NkZDllNScsCiAgICBhY3RvckxpbmVDb2xvcjogJyMzNzNlNDcnLAogICAgc2lnbmFsQ29sb3I6ICcjNTM5YmY1JywKICAgIHNpZ25hbFRleHRDb2xvcjogJyM4Yjk0OWUnLAogICAgc2VxdWVuY2VOdW1iZXJDb2xvcjogJyMxYjFmMjQnCiAgfQp9KTsK</div>
+
+<!-- wp:html -->
+<!-- Visual Guide Dependencies -->
+<div data-vg-css="vg-p-0" style="display:none">Ci8qIFZpc3VhbCBHdWlkZSBFbWJlZCBTdHlsZXMg4oCUIGV4dHJhY3RlZCBmcm9tIHZpc3VhbC1ndWlkZS5odG1sICovCgovKiDilIDilIAgU2NvcGVkIGJveC1zaXppbmcgKGF2b2lkcyBicmVha2luZyBXb3JkUHJlc3MgZ2xvYmFscykg4pSA4pSAICovCi52Zy1lbWJlZCwgLnZnLWVtYmVkICosIC52Zy1lbWJlZCAqOjpiZWZvcmUsIC52Zy1lbWJlZCAqOjphZnRlciB7CiAgYm94LXNpemluZzogYm9yZGVyLWJveDsKfQoKLyog4pSA4pSAIEJhc2UgZGVzaWduIHRva2VucyAoZnJvbSBoZWFydGl0LWJsb2cuY3NzKSDilIDilIAgKi8KOnJvb3QgewogIC0tYmctY29kZTogIzE2MWExZjsKICAtLXRleHQtcHJpbWFyeTogI2NkZDllNTsKICAtLXRleHQtc2Vjb25kYXJ5OiAjOGI5NDllOwogIC0tdGV4dC1tdXRlZDogIzYzNmU3YjsKICAtLWZvbnQtc2FuczogJ1NwYWNlIEdyb3Rlc2snLCAnSW50ZXInLCAtYXBwbGUtc3lzdGVtLCBCbGlua01hY1N5c3RlbUZvbnQsICdTZWdvZSBVSScsIHN5c3RlbS11aSwgc2Fucy1zZXJpZjsKICAtLWZvbnQtYm9keTogJ0ludGVyJywgLWFwcGxlLXN5c3RlbSwgQmxpbmtNYWNTeXN0ZW1Gb250LCAnU2Vnb2UgVUknLCBzeXN0ZW0tdWksIHNhbnMtc2VyaWY7CiAgLS1mb250LW1vbm86ICdKZXRCcmFpbnMgTW9ubycsICdGaXJhIENvZGUnLCAnU0YgTW9ubycsICdDYXNjYWRpYSBDb2RlJywgJ0NvbnNvbGFzJywgbW9ub3NwYWNlOwogIC0tc3BhY2UtMTogNHB4OwogIC0tc3BhY2UtMjogOHB4OwogIC0tc3BhY2UtMzogMTJweDsKICAtLXNwYWNlLTQ6IDE2cHg7CiAgLS1zcGFjZS01OiAyNHB4OwogIC0tc3BhY2UtNjogMzJweDsKICAtLXNwYWNlLTc6IDQ4cHg7CiAgLS1zcGFjZS04OiA2NHB4OwogIC0tc3BhY2UtOTogOTZweDsKCiAgLyogVmlzdWFsIGd1aWRlIHRva2VucyAqLwogIC0tdmctY3lhbjogIzAwZDRmZjsKICAtLXZnLWN5YW4tZGltOiByZ2JhKDAsIDIxMiwgMjU1LCAwLjE1KTsKICAtLXZnLW1hZ2VudGE6ICNmZjAwY2M7CiAgLS12Zy1tYWdlbnRhLWRpbTogcmdiYSgyNTUsIDAsIDIwNCwgMC4xMik7CiAgLS12Zy1ncmVlbjogIzAwZmY4ODsKICAtLXZnLWdyZWVuLWRpbTogcmdiYSgwLCAyNTUsIDEzNiwgMC4xMik7CiAgLS12Zy1hbWJlcjogI2Y1YTYyMzsKICAtLXZnLWFtYmVyLWRpbTogcmdiYSgyNDUsIDE2NiwgMzUsIDAuMTIpOwogIC0tdmctcHVycGxlOiAjYTg1NWY3OwogIC0tdmctcHVycGxlLWRpbTogcmdiYSgxNjgsIDg1LCAyNDcsIDAuMTIpOwogIC0tdmctcmVkOiAjZmY2YjZiOwogIC0tdmctcmVkLWRpbTogcmdiYSgyNTUsIDEwNywgMTA3LCAwLjEyKTsKICAtLXZnLWJnOiAjMDUwODEwOwogIC0tdmctYmctY2FyZDogIzBhMGYxYTsKICAtLXZnLWJnLWNhcmQtaG92ZXI6ICMwZjE1MjU7CiAgLS12Zy1ib3JkZXI6ICMxYTIwMzU7CiAgLS12Zy1ib3JkZXItZ2xvdzogcmdiYSgwLCAyMTIsIDI1NSwgMC4yKTsKICAtLXZnLW1heC13OiAxMTAwcHg7CiAgLS12Zy1uYXYtaDogNTJweDsKfQoKCi8qIOKUgOKUgCBDYXJkcyDilIDilIAgKi8KLnZnLWRpYWdyYW0tZ3JpZCB7IGRpc3BsYXk6IGdyaWQ7IGdyaWQtdGVtcGxhdGUtY29sdW1uczogMWZyOyBnYXA6IDI0cHg7IH0KLnZnLWNhcmQgewogIGJhY2tncm91bmQ6IHZhcigtLXZnLWJnLWNhcmQpOyBib3JkZXI6IDFweCBzb2xpZCB2YXIoLS12Zy1ib3JkZXIpOwogIGJvcmRlci1yYWRpdXM6IDhweDsgb3ZlcmZsb3c6IGhpZGRlbjsKICB0cmFuc2l0aW9uOiBib3JkZXItY29sb3IgMC4zcywgYm94LXNoYWRvdyAwLjNzOwogIG9wYWNpdHk6IDA7IHRyYW5zZm9ybTogdHJhbnNsYXRlWSgyNHB4KTsgd2lsbC1jaGFuZ2U6IG9wYWNpdHksIHRyYW5zZm9ybTsKfQoudmctY2FyZDpob3ZlciB7IGJvcmRlci1jb2xvcjogdmFyKC0tdmctYm9yZGVyLWdsb3cpOyBib3gtc2hhZG93OiAwIDAgMzBweCByZ2JhKDAsMjEyLDI1NSwwLjA2KTsgfQoudmctY2FyZC12aXN1YWwgewogIHBhZGRpbmc6IDMycHggMjRweDsgZGlzcGxheTogZmxleDsgYWxpZ24taXRlbXM6IGNlbnRlcjsganVzdGlmeS1jb250ZW50OiBjZW50ZXI7CiAgbWluLWhlaWdodDogMjYwcHg7IHBvc2l0aW9uOiByZWxhdGl2ZTsgb3ZlcmZsb3c6IGhpZGRlbjsKfQoudmctY2FyZC1ib2R5IHsgcGFkZGluZzogMjBweCAyNHB4IDI0cHg7IGJvcmRlci10b3A6IDFweCBzb2xpZCB2YXIoLS12Zy1ib3JkZXIpOyB9Ci52Zy1jYXJkLXRpdGxlIHsgZm9udC1mYW1pbHk6IHZhcigtLWZvbnQtc2Fucyk7IGZvbnQtc2l6ZTogMTZweDsgZm9udC13ZWlnaHQ6IDYwMDsgY29sb3I6IHZhcigtLXRleHQtcHJpbWFyeSk7IG1hcmdpbi1ib3R0b206IDZweDsgfQoudmctY2FyZC10ZXh0IHsgZm9udC1mYW1pbHk6IHZhcigtLWZvbnQtYm9keSk7IGZvbnQtc2l6ZTogMTRweDsgY29sb3I6IHZhcigtLXRleHQtc2Vjb25kYXJ5KTsgbGluZS1oZWlnaHQ6IDEuNjsgfQoudmctY2FyZC0td2lkZSB7IGdyaWQtY29sdW1uOiAxIC8gLTE7IH0KLnZnLWNhcmQtLXdpZGUgLnZnLWNhcmQtdmlzdWFsIHsgbWluLWhlaWdodDogMzIwcHg7IH0KCi8qIOKUgOKUgCBDb2RlIOKUgOKUgCAqLwoudmctY29kZSB7CiAgYmFja2dyb3VuZDogdmFyKC0tYmctY29kZSk7IGJvcmRlcjogMXB4IHNvbGlkIHZhcigtLXZnLWJvcmRlcik7CiAgYm9yZGVyLXJhZGl1czogNnB4OyBwYWRkaW5nOiAxNnB4IDIwcHg7IGZvbnQtZmFtaWx5OiB2YXIoLS1mb250LW1vbm8pOwogIGZvbnQtc2l6ZTogMTNweDsgbGluZS1oZWlnaHQ6IDEuNjsgY29sb3I6IHZhcigtLXRleHQtc2Vjb25kYXJ5KTsKICBvdmVyZmxvdy14OiBhdXRvOyBtYXJnaW4tdG9wOiAxMnB4OyB3aGl0ZS1zcGFjZTogcHJlOwp9Ci52Zy1jb2RlIC5rdyAgeyBjb2xvcjogdmFyKC0tdmctY3lhbik7IH0KLnZnLWNvZGUgLmZuICB7IGNvbG9yOiAjNmNiNmZmOyB9Ci52Zy1jb2RlIC5zdHIgeyBjb2xvcjogdmFyKC0tdmctZ3JlZW4pOyB9Ci52Zy1jb2RlIC5jbXQgeyBjb2xvcjogdmFyKC0tdGV4dC1tdXRlZCk7IH0KLnZnLWNvZGUgLm51bSB7IGNvbG9yOiB2YXIoLS12Zy1hbWJlcik7IH0KCi8qIOKUgOKUgCBTVkcg4pSA4pSAICovCi52Zy1zdmcgeyB3aWR0aDogMTAwJTsgbWF4LXdpZHRoOiA3MDBweDsgaGVpZ2h0OiBhdXRvOyBvdmVyZmxvdzogaGlkZGVuOyB9Ci52Zy1zdmcgdGV4dCB7IGZvbnQtZmFtaWx5OiAnSmV0QnJhaW5zIE1vbm8nLCAnU0YgTW9ubycsIG1vbm9zcGFjZTsgfQoudmctcHVsc2UsIC52Zy1yaXBwbGUsIC52Zy1nbG93LWxpbmUsIC52Zy1mbG93LXJpZ2h0LCAudmctZmxvdy1kb3duLCAudmctb3JiaXQgeyBhbmltYXRpb246IG5vbmUgIWltcG9ydGFudDsgfQpub3NjcmlwdCB+IC52Zy13cmFwIC52Zy1jYXJkLCAudmctY2FyZC52Zy1uby1nc2FwIHsgb3BhY2l0eTogMSAhaW1wb3J0YW50OyB0cmFuc2Zvcm06IG5vbmUgIWltcG9ydGFudDsgfQoKLyog4pSA4pSAIExlZ2VuZCDilIDilIAgKi8KLnZnLWxlZ2VuZCB7IGRpc3BsYXk6IGZsZXg7IGZsZXgtd3JhcDogd3JhcDsgZ2FwOiAxMnB4OyBtYXJnaW4tdG9wOiAxMnB4OyB9Ci52Zy1sZWdlbmQtaXRlbSB7IGRpc3BsYXk6IGZsZXg7IGFsaWduLWl0ZW1zOiBjZW50ZXI7IGdhcDogNnB4OyBmb250LWZhbWlseTogdmFyKC0tZm9udC1tb25vKTsgZm9udC1zaXplOiAxMXB4OyBjb2xvcjogdmFyKC0tdGV4dC1tdXRlZCk7IH0KLnZnLWxlZ2VuZC1kb3QgeyB3aWR0aDogOHB4OyBoZWlnaHQ6IDhweDsgYm9yZGVyLXJhZGl1czogNTAlOyBmbGV4LXNocmluazogMDsgfQoKLyog4pSA4pSAIFJlc3BvbnNpdmUgKGVtYmVkKSDilIDilIAgKi8KQG1lZGlhIChtYXgtd2lkdGg6IDY5OXB4KSB7CiAgLnZnLWNhcmQtdmlzdWFsIHsgcGFkZGluZzogMjRweCAxNnB4OyBtaW4taGVpZ2h0OiAyMDBweDsgfQp9CgovKiDilIDilIAgRW1iZWQgd3JhcHBlciDilIDilIAgKi8KLnZnLWVtYmVkIHsKICBtYXJnaW46IDJlbSAwOwogIG1heC13aWR0aDogMTAwJTsKICBvdmVyZmxvdzogaGlkZGVuOwp9Ci52Zy1lbWJlZCAudmctY2FyZCB7CiAgb3BhY2l0eTogMDsKICB0cmFuc2Zvcm06IHRyYW5zbGF0ZVkoMjRweCk7CiAgd2lsbC1jaGFuZ2U6IG9wYWNpdHksIHRyYW5zZm9ybTsKfQoudmctZW1iZWQgLnZnLWNhcmQudmctbm8tZ3NhcCwKLnZnLWVtYmVkLnZnLW5vLWdzYXAgLnZnLWNhcmQgewogIG9wYWNpdHk6IDEgIWltcG9ydGFudDsKICB0cmFuc2Zvcm06IG5vbmUgIWltcG9ydGFudDsKfQoKCi8qIOKUgOKUgCBBbWJpZW50IGNhcHRpb25zIOKUgOKUgCAqLwoudmctY2FwdGlvbiB7CiAgcG9zaXRpb246IGFic29sdXRlOwogIGJvdHRvbTogMTBweDsKICBsZWZ0OiAxNnB4OwogIHJpZ2h0OiAxNnB4OwogIGZvbnQtZmFtaWx5OiB2YXIoLS1mb250LW1vbm8pOwogIGZvbnQtc2l6ZTogMTFweDsKICBsaW5lLWhlaWdodDogMS41OwogIGNvbG9yOiB2YXIoLS12Zy1jeWFuKTsKICBiYWNrZ3JvdW5kOiByZ2JhKDUsIDgsIDE2LCAwLjg1KTsKICBiYWNrZHJvcC1maWx0ZXI6IGJsdXIoNnB4KTsKICAtd2Via2l0LWJhY2tkcm9wLWZpbHRlcjogYmx1cig2cHgpOwogIHBhZGRpbmc6IDZweCAxMnB4OwogIGJvcmRlci1yYWRpdXM6IDRweDsKICBib3JkZXI6IDFweCBzb2xpZCByZ2JhKDAsIDIxMiwgMjU1LCAwLjEyKTsKICBvcGFjaXR5OiAwOwogIHBvaW50ZXItZXZlbnRzOiBub25lOwogIHRleHQtYWxpZ246IGNlbnRlcjsKICB6LWluZGV4OiAxMDsKfQoK</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js" integrity="sha384-g4NTh/Iv5PPU4xPyhEWqPcwtNXOvdaDI8LLnyYfyNZOjKJeYQyjzQ9X5275eBjpt" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js" integrity="sha384-Z3REaz79l2IaAZqJsSABtTbhjgOUYyV3p90XNnAPCSHg3EMTz1fouunq9WZRtj3d" crossorigin="anonymous"></script>
+<div data-vg-dep="vg-p-4" style="display:none">Ci8qKgogKiBWaXN1YWwgR3VpZGUgUnVudGltZSDigJQgc2hhcmVkIEdTQVAgaGVscGVycyBmb3IgZW1iZWRkZWQgc25pcHBldHMKICogRXh0cmFjdGVkIGZyb20gdmlzdWFsLWd1aWRlLmh0bWwKICovCihmdW5jdGlvbiAoKSB7CiAgJ3VzZSBzdHJpY3QnOwoKICAvLyBHdWFyZDogaWYgR1NBUCBmYWlsZWQgdG8gbG9hZCwgbWFrZSBhbGwgZW1iZWRzIHZpc2libGUKICBpZiAodHlwZW9mIGdzYXAgPT09ICd1bmRlZmluZWQnIHx8IHR5cGVvZiBTY3JvbGxUcmlnZ2VyID09PSAndW5kZWZpbmVkJykgewogICAgZG9jdW1lbnQucXVlcnlTZWxlY3RvckFsbCgnLnZnLWVtYmVkIC52Zy1jYXJkJykuZm9yRWFjaChmdW5jdGlvbiAoYykgewogICAgICBjLnN0eWxlLm9wYWNpdHkgPSAnMSc7CiAgICAgIGMuc3R5bGUudHJhbnNmb3JtID0gJ25vbmUnOwogICAgfSk7CiAgICB3aW5kb3cudmdSdW50aW1lID0gbnVsbDsKICAgIHJldHVybjsKICB9CgogIGdzYXAucmVnaXN0ZXJQbHVnaW4oU2Nyb2xsVHJpZ2dlcik7CgogIC8qKiBDcmVhdGUgYSBzY3JvbGwtdHJpZ2dlcmVkIHRpbWVsaW5lIGZvciBhIGNhcmQgZWxlbWVudCAqLwogIGZ1bmN0aW9uIGNhcmRUTChjYXJkKSB7CiAgICB2YXIgdGwgPSBnc2FwLnRpbWVsaW5lKHsKICAgICAgc2Nyb2xsVHJpZ2dlcjogewogICAgICAgIHRyaWdnZXI6IGNhcmQsCiAgICAgICAgc3RhcnQ6ICd0b3AgODglJywKICAgICAgICB0b2dnbGVBY3Rpb25zOiAncGxheSBub25lIG5vbmUgbm9uZScKICAgICAgfQogICAgfSk7CiAgICB0bC50byhjYXJkLCB7IG9wYWNpdHk6IDEsIHk6IDAsIGR1cmF0aW9uOiAwLjQ1LCBlYXNlOiAncG93ZXIyLm91dCcgfSk7CiAgICBjYXJkLl92Z1RpbWVsaW5lID0gdGw7CiAgICByZXR1cm4gdGw7CiAgfQoKICAvKiogU3RhZ2dlci1mYWRlIFNWRyBjaGlsZHJlbiBtYXRjaGluZyBzZWxlY3RvciBpbnNpZGUgYSBjb250YWluZXIgKi8KICBmdW5jdGlvbiBmYWRlSW4odGwsIHBhcmVudCwgc2VsLCBvcHRzKSB7CiAgICB2YXIgZWxzID0gcGFyZW50LnF1ZXJ5U2VsZWN0b3JBbGwoc2VsKTsKICAgIGlmICghZWxzLmxlbmd0aCkgcmV0dXJuOwogICAgdmFyIG8gPSBvcHRzIHx8IHt9OwogICAgdGwuZnJvbShlbHMsIHsKICAgICAgb3BhY2l0eTogMCwKICAgICAgeTogby55IHx8IDAsCiAgICAgIHg6IG8ueCB8fCAwLAogICAgICBzY2FsZTogby5zY2FsZSB8fCAxLAogICAgICBkdXJhdGlvbjogby5kdXIgfHwgMC4zLAogICAgICBzdGFnZ2VyOiBvLnN0YWdnZXIgfHwgMC4wOCwKICAgICAgZWFzZTogby5lYXNlIHx8ICdwb3dlcjIub3V0JwogICAgfSwgby5hdCB8fCAnPi0wLjE1Jyk7CiAgfQoKICAvKiogTG9vcGluZyBwdWxzZSAob3BhY2l0eSkgb24gZWxlbWVudHMg4oCUIGlkZW1wb3RlbnQgKGtpbGxzIGV4aXN0aW5nIGxvb3BzIGZpcnN0KSAqLwogIGZ1bmN0aW9uIHB1bHNlKGVscywgb3B0cykgewogICAgdmFyIG8gPSBvcHRzIHx8IHt9OwogICAgZ3NhcC5raWxsVHdlZW5zT2YoZWxzKTsKICAgIGdzYXAudG8oZWxzLCB7CiAgICAgIG9wYWNpdHk6IG8ubWluIHx8IDAuMzUsCiAgICAgIGR1cmF0aW9uOiBvLmR1ciB8fCAxLAogICAgICByZXBlYXQ6IC0xLAogICAgICB5b3lvOiB0cnVlLAogICAgICBlYXNlOiAnc2luZS5pbk91dCcsCiAgICAgIGRlbGF5OiBvLmRlbGF5IHx8IDAKICAgIH0pOwogIH0KCiAgLyoqIExvb3BpbmcgZ2xvdyBvbiBzdHJva2Utb3BhY2l0eSDigJQgaWRlbXBvdGVudCAoa2lsbHMgZXhpc3RpbmcgbG9vcHMgZmlyc3QpICovCiAgZnVuY3Rpb24gZ2xvd1N0cm9rZShlbHMsIG9wdHMpIHsKICAgIHZhciBvID0gb3B0cyB8fCB7fTsKICAgIGdzYXAua2lsbFR3ZWVuc09mKGVscyk7CiAgICBnc2FwLmZyb21UbyhlbHMsCiAgICAgIHsgYXR0cjogeyAnc3Ryb2tlLW9wYWNpdHknOiAwLjE1IH0gfSwKICAgICAgeyBhdHRyOiB7ICdzdHJva2Utb3BhY2l0eSc6IDAuOCB9LCBkdXJhdGlvbjogby5kdXIgfHwgMS41LCByZXBlYXQ6IC0xLCB5b3lvOiB0cnVlLCBlYXNlOiAnc2luZS5pbk91dCcsIGRlbGF5OiBvLmRlbGF5IHx8IDAgfQogICAgKTsKICB9CgogIC8qKiBEcmF3IGEgbGluZSBmcm9tIG5vdGhpbmcgKHN0cm9rZS1kYXNob2Zmc2V0IHRyaWNrKSAqLwogIGZ1bmN0aW9uIGRyYXdMaW5lcyh0bCwgcGFyZW50LCBzZWwsIG9wdHMpIHsKICAgIHZhciBsaW5lcyA9IHBhcmVudC5xdWVyeVNlbGVjdG9yQWxsKHNlbCk7CiAgICBpZiAoIWxpbmVzLmxlbmd0aCkgcmV0dXJuOwogICAgdmFyIG8gPSBvcHRzIHx8IHt9OwogICAgbGluZXMuZm9yRWFjaChmdW5jdGlvbiAobGluZSkgewogICAgICB2YXIgbGVuID0gbGluZS5nZXRUb3RhbExlbmd0aCA/IGxpbmUuZ2V0VG90YWxMZW5ndGgoKSA6IDEwMDsKICAgICAgZ3NhcC5zZXQobGluZSwgeyBhdHRyOiB7ICdzdHJva2UtZGFzaGFycmF5JzogbGVuLCAnc3Ryb2tlLWRhc2hvZmZzZXQnOiBsZW4gfSB9KTsKICAgIH0pOwogICAgdGwudG8obGluZXMsIHsKICAgICAgYXR0cjogeyAnc3Ryb2tlLWRhc2hvZmZzZXQnOiAwIH0sCiAgICAgIGR1cmF0aW9uOiBvLmR1ciB8fCAwLjUsCiAgICAgIHN0YWdnZXI6IG8uc3RhZ2dlciB8fCAwLjA2LAogICAgICBlYXNlOiBvLmVhc2UgfHwgJ3Bvd2VyMS5pbk91dCcKICAgIH0sIG8uYXQgfHwgJz4tMC4xJyk7CiAgfQoKICAvKiogU2hvdyBhbiBhbWJpZW50IGNhcHRpb24gaW5zaWRlIHRoZSBjYXJkIHZpc3VhbCBhcmVhLgogICAqICBVc2FnZSBmcm9tIGFuaW1hdGlvbiBzY3JpcHRzOgogICAqICAgIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnRGF0YSBibG9ja3MgYXQgZXZlbiBpbmRpY2VzLi4uJ10pOwogICAqICAgIHRsLmNhbGwodmdSdW50aW1lLmNhcHRpb24sIFt3cmFwLCAnJ10pOyAgLy8gY2xlYXIKICAgKi8KICBmdW5jdGlvbiBjYXB0aW9uKHdyYXAsIHRleHQpIHsKICAgIGlmICghd3JhcCkgcmV0dXJuOwogICAgLy8gU3VwcHJlc3MgY2FwdGlvbnMgd2hlbiB0aW1lbGluZSBpcyByZXZlcnNpbmcgKHNjcm9sbC1iYWNrIGRlY29uc3RydWN0aW9uKQogICAgdmFyIGNhcmQgPSB3cmFwLnF1ZXJ5U2VsZWN0b3IoJy52Zy1jYXJkJyk7CiAgICBpZiAoY2FyZCAmJiBjYXJkLl92Z1RpbWVsaW5lICYmIGNhcmQuX3ZnVGltZWxpbmUucmV2ZXJzZWQoKSkgewogICAgICAvLyBPbiByZXZlcnNlLCBqdXN0IGhpZGUgYW55IHZpc2libGUgY2FwdGlvbiBpbW1lZGlhdGVseQogICAgICB2YXIgZXhpc3RpbmcgPSB3cmFwLnF1ZXJ5U2VsZWN0b3IoJy52Zy1jYXB0aW9uJyk7CiAgICAgIGlmIChleGlzdGluZykgZ3NhcC5zZXQoZXhpc3RpbmcsIHsgb3BhY2l0eTogMCB9KTsKICAgICAgcmV0dXJuOwogICAgfQogICAgdmFyIGVsID0gd3JhcC5xdWVyeVNlbGVjdG9yKCcudmctY2FwdGlvbicpOwogICAgaWYgKCFlbCkgewogICAgICBlbCA9IGRvY3VtZW50LmNyZWF0ZUVsZW1lbnQoJ2RpdicpOwogICAgICBlbC5jbGFzc05hbWUgPSAndmctY2FwdGlvbic7CiAgICAgIHZhciB2aXN1YWwgPSB3cmFwLnF1ZXJ5U2VsZWN0b3IoJy52Zy1jYXJkLXZpc3VhbCcpOwogICAgICBpZiAodmlzdWFsKSB7CiAgICAgICAgdmlzdWFsLmFwcGVuZENoaWxkKGVsKTsKICAgICAgfSBlbHNlIHsKICAgICAgICByZXR1cm47CiAgICAgIH0KICAgIH0KICAgIGlmICghdGV4dCkgewogICAgICBnc2FwLnRvKGVsLCB7IG9wYWNpdHk6IDAsIGR1cmF0aW9uOiAwLjI1IH0pOwogICAgICByZXR1cm47CiAgICB9CiAgICAvLyBJZiBhbHJlYWR5IHNob3dpbmcgdGV4dCwgY3Jvc3NmYWRlCiAgICBpZiAoZWwudGV4dENvbnRlbnQgJiYgZWwuc3R5bGUub3BhY2l0eSAhPT0gJzAnKSB7CiAgICAgIGdzYXAudG8oZWwsIHsgb3BhY2l0eTogMCwgZHVyYXRpb246IDAuMTUsIG9uQ29tcGxldGU6IGZ1bmN0aW9uICgpIHsKICAgICAgICBlbC50ZXh0Q29udGVudCA9IHRleHQ7CiAgICAgICAgZ3NhcC50byhlbCwgeyBvcGFjaXR5OiAxLCBkdXJhdGlvbjogMC4yNSB9KTsKICAgICAgfX0pOwogICAgfSBlbHNlIHsKICAgICAgZWwudGV4dENvbnRlbnQgPSB0ZXh0OwogICAgICBnc2FwLnRvKGVsLCB7IG9wYWNpdHk6IDEsIGR1cmF0aW9uOiAwLjMgfSk7CiAgICB9CiAgfQoKICB3aW5kb3cudmdSdW50aW1lID0gewogICAgY2FyZFRMOiBjYXJkVEwsCiAgICBmYWRlSW46IGZhZGVJbiwKICAgIHB1bHNlOiBwdWxzZSwKICAgIGdsb3dTdHJva2U6IGdsb3dTdHJva2UsCiAgICBkcmF3TGluZXM6IGRyYXdMaW5lcywKICAgIGNhcHRpb246IGNhcHRpb24KICB9Owp9KSgpOwoK</div>
+<!-- /wp:html -->
+
+<script>!function(){var d=document,b=atob,r=function(q,t){d.querySelectorAll(q).forEach(function(e){var s=d.createElement(t||`script`);s.textContent=b(e.textContent);e.parentNode.replaceChild(s,e)})};r(`[data-vg-css]`,`style`);r(`[data-vg-dep]`);r(`[data-vg-anim]`);d.querySelectorAll(`[data-vg-mod]`).forEach(function(e){var s=d.createElement(`script`);s.type=`module`;s.textContent=b(e.textContent);e.parentNode.replaceChild(s,e)})}()</script>

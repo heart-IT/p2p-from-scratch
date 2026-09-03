@@ -1,15 +1,19 @@
-# P2P from Scratch — Part 4: From Logs to Databases
+# P2P from Scratch — Part 4: Building P2P Databases with Hyperbee and Hyperdrive
 
 > "Simple things should be simple, complex things should be possible."
-> — Alan Kay
+> — attributed to Alan Kay
 
 **Excerpt:** A Hypercore is an append-only log — you can append blocks and read them by index. That's it. But most applications need sorted key-value lookups, file systems, and range queries. This post explains how Hyperbee maps a B-tree onto Hypercore's sequential blocks, how Hyperdrive combines a Hyperbee with Hyperblobs to build a distributed file system, and how Corestore manages multiple Hypercores from a single master seed.
+<!-- meta-description: Build P2P databases with Hyperbee (B-tree on Hypercore), Hyperdrive (distributed file system), and Corestore. Full API walkthrough. -->
+<!-- meta-labs: p2p-sparse-db p2p-drop -->
 
 <!-- Series Navigation -->
 > **Series: P2P from Scratch — Building on the Holepunch Stack**
-> [Part 1: The Internet is Hostile](part-1-nat-holepunching.md) | [Part 2: Encrypted Pipes](part-2-encrypted-pipes.md) | [Part 3: Append-Only Truth](part-3-hypercore-merkle.md) | **Part 4: From Logs to Databases (You are here)** | [Part 5: Finding Peers](part-5-dht-discovery.md) | [Part 6: Many Writers, One Truth](part-6-autobase-consensus.md) | [Part 7: Trust No One](part-7-security-trust.md) | [Part 8: Building for Humans](part-8-ux-production.md)
+> [Part 1: NAT Hole Punching Explained](part-1-nat-holepunching.md) | [Part 2: P2P Encryption with the Noise Protocol](part-2-encrypted-pipes.md) | [Part 3: Merkle Trees and Append-Only Logs](part-3-hypercore-merkle.md) | **Part 4: Building P2P Databases with Hyperbee and Hyperdrive (You are here)** | [Part 5: Peer Discovery with Kademlia DHT](part-5-dht-discovery.md) | [Part 6: Multi-Writer Consensus with Autobase](part-6-autobase-consensus.md) | [Part 7: P2P Security — Threats, Defenses, and Trust](part-7-security-trust.md) | [Part 8: Offline-First UX for P2P Applications](part-8-ux-production.md)
 
 ---
+
+> **Verified against:** hypercore 11.35.2 · hyperbee 2.27.3 · hyperdrive 13.3.3 · hyperblobs 2.12.1 · corestore 7.12.2 — checked 2026-09-03. Every constant, default and byte count in this post is asserted in [`verify/`](https://github.com/heart-IT/p2p-from-scratch-labs/tree/main/verify), which installs whatever Holepunch publishes today and fails if the stack has moved.
 
 ## Quick Recap
 
@@ -17,7 +21,7 @@ In <a href="part-3-hypercore-merkle.md">Part 3</a>, we built Hypercore — an ap
 
 ---
 
-## The Problem: Access Patterns
+## Beyond Append-Only: Why P2P Apps Need Databases
 
 A Hypercore gives you `append(data)` and `get(index)`. For a chat log, that's fine — messages arrive in order and you read them sequentially. But consider a contacts app: you need to look up "Alice" without scanning every block. Or a file system: you need to read `/photos/vacation.jpg` without downloading every file in the drive.
 
@@ -27,13 +31,15 @@ You need data structures on top of the log. The challenge is building them in a 
 
 ## Hyperbee: A B-Tree on an Append-Only Log
 
+<!-- vg:hyperbee/btree-append-log -->
+
 <a href="https://github.com/holepunchto/hyperbee" target="_blank">Hyperbee</a> is a sorted key-value store built on a single Hypercore. It maps a <a href="https://en.wikipedia.org/wiki/B-tree" target="_blank">B-tree</a> onto sequential log blocks, giving you `O(log n)` lookups, range queries, and ordered iteration — all sparse-friendly.
 
 ### Why a B-Tree?
 
 A B-tree is a self-balancing search tree where each node can hold multiple keys and has multiple children. Compared to a binary search tree, a B-tree is *wider* and *shorter* — fewer levels means fewer blocks to download for a lookup.
 
-Hyperbee uses a B-tree (not a B+ tree — values are stored at every level, not just the leaves). The tree parameters are:
+Hyperbee uses a B-tree (not a B+ tree — values are stored at every level, not just the leaves). At the time of writing, the tree parameters are:
 
 - **Maximum children per node:** 9
 - **Maximum keys per node:** 8
@@ -41,7 +47,7 @@ Hyperbee uses a B-tree (not a B+ tree — values are stored at every level, not 
 
 When a node exceeds 8 keys, it splits. When it drops below 4, it rebalances.
 
-> **Feynman Moment:** Why does wider-and-shorter matter for P2P? Because every level in the tree is a potential network round-trip. In a binary tree with a million entries, a lookup traverses ~20 levels. In Hyperbee's B-tree with max 9 children, the same million entries fit in ~7 levels. Fewer levels = fewer blocks to download = faster sparse queries over the network.
+> **Feynman Moment:** Why does wider-and-shorter matter for P2P? Because every level in the tree is a set of blocks you must fetch before you know where to go next. In a binary tree with a million entries, a lookup traverses ~20 levels. In Hyperbee's B-tree with max 9 children, the same million entries fit in 7–9 levels (fuller nodes when keys arrive in random order, half-full ones when they arrive sorted). Fewer levels = fewer blocks to download = faster sparse queries over the network. And the levels don't have to be serial round-trips: Hyperbee ships a replication extension that lets a peer who has the data walk the path for you and send back the list of every block it touched in one message, so you fetch them all at once instead of one level at a time.
 
 ### How It Maps to Hypercore
 
@@ -74,7 +80,7 @@ Block 0 is always the header (protocol: `"hyperbee"`). Each subsequent block car
 
 ### Sparse Lookups
 
-When a remote peer queries `db.get("alice")`, Hyperbee only downloads the blocks along the B-tree path from the current root to the leaf containing "alice". For a database with a million entries, that's roughly 7 blocks — not a million.
+When a remote peer queries `db.get("alice")`, Hyperbee only downloads the blocks along the B-tree path from the current root to the leaf containing "alice" — plus the blocks holding the keys it compares against on the way down, because a node stores its keys as pointers to the blocks that wrote them. For a database with a million entries, that's about 70 blocks — under 10 KB when keys and values are small, a few tens of KB when they aren't — not a million blocks.
 
 Each downloaded block is a Hypercore block, which means it comes with a Merkle proof (from <a href="part-3-hypercore-merkle.md">Part 3</a>). The lookup is not only sparse but **cryptographically verified** — you know each block is authentic without trusting the peer who sent it.
 
@@ -218,6 +224,8 @@ entry.on('update', () => {
 
 ## Hyperdrive: A Distributed File System
 
+<!-- vg:hyperdrive/two-core-architecture -->
+
 <a href="https://github.com/holepunchto/hyperdrive" target="_blank">Hyperdrive</a> is a POSIX-like file system built on top of Hyperbee and a companion module called <a href="https://github.com/holepunchto/hyperblobs" target="_blank">Hyperblobs</a>. It uses a **two-core architecture**:
 
 ```
@@ -335,7 +343,7 @@ await drive.put('/docs/api/ref.md', Buffer.from('# API'))
 
 // List entry names (shallow, one level)
 for await (const name of drive.readdir('/docs')) {
-  console.log(name)  // 'readme.md', 'guide.md', 'api'
+  console.log(name)  // 'api', 'guide.md', 'readme.md' — sorted by key
 }
 
 // List full entries (recursive by default)
@@ -421,7 +429,8 @@ primaryKey (32-byte master seed)
      ▼
   Ed25519 keypair (crypto_sign_seed_keypair)
      │
-     ├── publicKey (32 bytes) ── identifies the Hypercore
+     ├── publicKey (32 bytes) ── the signer in the core's manifest
+     │                            (core.key = BLAKE2b hash of that manifest)
      └── secretKey (64 bytes) ── signs new appends
 ```
 
@@ -431,7 +440,7 @@ The derivation uses `crypto_generichash_batch` (BLAKE2b keyed hashing) with the 
 2. **namespace** — a 32-byte namespace (defaults to all zeros for the root store)
 3. **name** — the UTF-8 encoded name string you passed to `store.get()`
 
-The resulting 32-byte seed is fed into `crypto_sign_seed_keypair` to produce a deterministic Ed25519 keypair.
+The resulting 32-byte seed is fed into `crypto_sign_seed_keypair` to produce a deterministic Ed25519 keypair. Corestore then wraps the public key in a version-1 manifest (`{ version: 1, signers: [{ publicKey }] }`), and the Hypercore's key is the BLAKE2b hash of that manifest — still fully determined by the seed, but not byte-for-byte the public key (Part 3 covers why keys are manifest hashes).
 
 > **Key Insight:** The same `primaryKey` + `namespace` + `name` always produces the same keypair. This means a user can reconstruct every Hypercore they've ever created from their master seed alone — no need to store individual keypairs. It's the same principle as hierarchical deterministic wallets in cryptocurrency, applied to P2P data structures.
 
@@ -453,8 +462,8 @@ const again = store.get({ name: 'chat-log' })
 await again.ready()
 console.log(again.key.equals(core1.key))  // true
 
-// Open a remote core by public key (read-only, no keypair derived)
-const remote = store.get({ key: somePublicKey })
+// Open a remote core by its core key (read-only, no keypair derived)
+const remote = store.get({ key: someCoreKey })
 ```
 
 ### Namespaces
@@ -500,7 +509,7 @@ const store2 = new Corestore('./other-storage', {
 
 ### Sessions and Resource Management
 
-Corestore uses a garbage collection model for Hypercores. When a core becomes idle (no active sessions referencing it), it enters a GC cycle. A core is closed after 3 GC ticks (~6 seconds of idle time, at 2-second intervals):
+Corestore uses a garbage collection model for Hypercores. When a core becomes idle (no active sessions referencing it), it enters a GC cycle. In the current implementation, a core is closed after approximately 3 GC ticks (~6 seconds of idle time, at 2-second intervals):
 
 ```js title="corestore-sessions.js"
 // Sessions share the same underlying storage and cores
@@ -514,9 +523,11 @@ const core = session.get({ name: 'temp' })
 await session.close()
 
 // For mobile/embedded: suspend and resume storage
+// (on Android, pass { suspend: true } to the Corestore constructor —
+//  otherwise suspend() only flushes)
 await store.suspend()
 // ... app backgrounded ...
-store.resume()
+await store.resume()
 ```
 
 ### Replication
@@ -558,9 +569,9 @@ graph TD
 *Figure 1: Reading a file from a remote Hyperdrive. The B-tree lookup in Hyperbee requires only path nodes (sparse). The blob fetch in Hyperblobs downloads only the file's content blocks. Every block is Merkle-verified.*
 
 The total data downloaded:
-- **~7 Hyperbee blocks** (B-tree path for a million-file drive)
+- **~70 Hyperbee blocks, 15–25 KB** (the B-tree path plus the key blocks compared along it, for a million-file drive — the byte figure tracks how fat your entries are)
 - **3 Hyperblobs blocks** (the actual file content — 3 x 64 KB)
-- **Merkle proofs** for each block (a handful of 32-byte hashes)
+- **Merkle proofs** for each block (up to ~20 sibling hashes of 32 bytes for a million-block core, fewer once neighbouring proofs are cached — in practice those blocks move roughly 40–65 KB over the wire)
 
 Everything else in the drive stays undownloaded. And every byte is cryptographically verified.
 
@@ -581,7 +592,7 @@ Everything else in the drive stays undownloaded. And every byte is cryptographic
 
 ## Key Takeaways
 
-- **Hyperbee maps a B-tree onto Hypercore's sequential blocks.** Each mutation appends a new block with the key, value, and a snapshot of the modified path. With max 9 children per node, a million-entry database requires ~7 levels — 7 blocks to download for any lookup.
+- **Hyperbee maps a B-tree onto Hypercore's sequential blocks.** Each mutation appends a new block with the key, value, and a snapshot of the modified path. With max 9 children per node, a million-entry database is 7–9 levels deep — about 70 blocks — under 10 KB for small entries, a few tens of KB for fat ones — to download for any lookup, because each level also fetches the blocks holding the keys it compares against.
 
 - **Hyperdrive separates metadata from content.** A Hyperbee stores file entries (path, executable flag, blob pointer, metadata). A Hyperblobs core stores raw content in 64 KB chunks. Both are independent Hypercores managed by a single Corestore.
 
@@ -593,11 +604,28 @@ Everything else in the drive stays undownloaded. And every byte is cryptographic
 
 ---
 
+## Frequently Asked Questions
+
+### How does Hyperbee work?
+Hyperbee maps a B-tree onto Hypercore's sequential append-only log, giving O(log n) sorted lookups with sparse replication. Each mutation appends a new block containing the key, value, and a snapshot of the modified B-tree path. Unchanged subtrees are referenced by their existing sequence numbers.
+
+### What is the difference between Hyperbee and Hyperdrive?
+Hyperbee is a sorted key-value store built on a single Hypercore. Hyperdrive is a file system built on top of Hyperbee (for metadata like file paths and permissions) and Hyperblobs (for raw file content stored in 64 KB chunks on a separate Hypercore).
+
+### How does Corestore derive keys?
+Corestore uses BLAKE2b keyed hashing with a master seed (the primaryKey) to deterministically derive Ed25519 keypairs from human-readable names. The derivation chain is: primaryKey + namespace + name -> BLAKE2b keyed hash -> 32-byte seed -> Ed25519 keypair. The same inputs always produce the same keypair.
+
+---
+
 ## What's Next
 
 We have data structures: key-value stores, file systems, deterministic key management. But we're still missing a fundamental piece — how do peers *find each other*?
 
 In <a href="part-5-dht-discovery.md">Part 5</a>, we'll explore Hyperswarm's DHT-based discovery: how peers announce themselves on topics, how the Kademlia DHT routes queries without a central server, and how `joinPeer()` maintains persistent connections through the chaos of peer churn.
+
+[heartit_lab title="p2p-sparse-db" cmd="npx @heart-it/p2p-sparse-db seed" desc="Seed 10,000 invoices, then range-query 50 from a second terminal and count the kilobytes you actually downloaded." repo="https://github.com/heart-IT/p2p-from-scratch-labs" note="needs Node.js 18+ · two terminals — the seeder prints the second command"]
+
+[heartit_lab title="p2p-drop" cmd="npx @heart-it/p2p-drop seed" desc="Share a 2 MB drive, list every file from kilobytes of metadata, download exactly one — and watch the accounting prove the rest never traveled." repo="https://github.com/heart-IT/p2p-from-scratch-labs" note="needs Node.js 18+ · two terminals — the seeder prints the get command"]
 
 ---
 
@@ -616,4 +644,4 @@ In <a href="part-5-dht-discovery.md">Part 5</a>, we'll explore Hyperswarm's DHT-
 ---
 
 > **Series: P2P from Scratch — Building on the Holepunch Stack**
-> [Part 1: The Internet is Hostile](part-1-nat-holepunching.md) | [Part 2: Encrypted Pipes](part-2-encrypted-pipes.md) | [Part 3: Append-Only Truth](part-3-hypercore-merkle.md) | **Part 4: From Logs to Databases (You are here)** | [Part 5: Finding Peers](part-5-dht-discovery.md) | [Part 6: Many Writers, One Truth](part-6-autobase-consensus.md) | [Part 7: Trust No One](part-7-security-trust.md) | [Part 8: Building for Humans](part-8-ux-production.md)
+> [Part 1: NAT Hole Punching Explained](part-1-nat-holepunching.md) | [Part 2: P2P Encryption with the Noise Protocol](part-2-encrypted-pipes.md) | [Part 3: Merkle Trees and Append-Only Logs](part-3-hypercore-merkle.md) | **Part 4: Building P2P Databases with Hyperbee and Hyperdrive (You are here)** | [Part 5: Peer Discovery with Kademlia DHT](part-5-dht-discovery.md) | [Part 6: Multi-Writer Consensus with Autobase](part-6-autobase-consensus.md) | [Part 7: P2P Security — Threats, Defenses, and Trust](part-7-security-trust.md) | [Part 8: Offline-First UX for P2P Applications](part-8-ux-production.md)
