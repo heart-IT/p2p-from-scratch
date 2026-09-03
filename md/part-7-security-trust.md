@@ -315,7 +315,7 @@ Not all security properties are enforced the same way. Here's an honest accounti
 | 20-min ephemeral proving period | Default client only | Attacker-run nodes can skip it |
 | Noise IK mutual authentication | Yes | — |
 | Merkle proof + Ed25519 signature verification | Yes | — |
-| Discovery key hides public key | Yes | — |
+| Discovery key hides the core key | Yes | — |
 | Type-prefix domain separation (0x00/0x01/0x02) | Yes | — |
 | Primary key encryption at rest | — | Application must implement |
 | Peer diversity for Eclipse resistance | — | Application must maintain |

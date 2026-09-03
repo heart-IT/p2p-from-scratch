@@ -373,9 +373,9 @@ A typical replication exchange:
 4. The other responds with `data` — containing the block value *and* the Merkle proof (uncle hashes)
 5. The requester verifies the proof locally before accepting the block
 
-The discovery key (a hash of the Hypercore's public key) is used for the channel id instead of the public key itself. This prevents a network observer from learning *which* Hypercore is being replicated — they see the discovery key, but can't reverse it to the public key without already knowing it.
+The discovery key (a hash of the Hypercore's key) is used for the channel id instead of the key itself. This prevents a network observer from learning *which* Hypercore is being replicated — they see the discovery key, but can't reverse it to the core key without already knowing it.
 
-> **Terminology:** The **discovery key** is `BLAKE2b-256(data="hypercore", key=publicKey)` — a keyed BLAKE2b hash where the Hypercore's public key is the hash key parameter (libsodium's `crypto_generichash` key argument) and the string `"hypercore"` is the data being hashed. It's a one-way derivation: knowing the discovery key doesn't reveal the public key (which allows verification and replication). Peers use the discovery key to find each other via the DHT, but only peers who already know the public key can actually verify and replicate the data. This separates *findability* from *access*.
+> **Terminology:** The **discovery key** is `BLAKE2b-256(data="hypercore", key=core.key)` — a keyed BLAKE2b hash where the Hypercore's key is the hash key parameter (libsodium's `crypto_generichash` key argument) and the string `"hypercore"` is the data being hashed. Note that `core.key` is not the Ed25519 signing key: in Hypercore 11 it is the hash of the core's manifest, and hashing the signing key instead gives you a different value that finds nobody. It's a one-way derivation: knowing the discovery key doesn't reveal the core key (which allows verification and replication). Peers use the discovery key to find each other via the DHT, but only peers who already know the core key can actually verify and replicate the data. This separates *findability* from *access*.
 
 ---
 

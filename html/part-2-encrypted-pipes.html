@@ -369,7 +369,7 @@ textMessage.send('Hello from the other side')</code></pre>
 <p>When you replicate a Hypercore, the replication protocol opens a Protomux channel with:</p>
 <ul>
 <li><strong>Protocol name:</strong> <code>&#39;hypercore/alpha&#39;</code>, registered with <code>&#39;hypercore&#39;</code> as an alias, so a peer that opens the channel under either name pairs with the same replication channel</li>
-<li><strong>Channel id:</strong> The Hypercore&#39;s <strong>discoveryKey</strong> (a keyed BLAKE2b-256 hash: <code>BLAKE2b-256(data=ascii(&quot;hypercore&quot;), key=publicKey)</code> — the public key is the keyed-hash <em>key</em>, not the data being hashed. Using the public key directly would leak what data you&#39;re interested in.)</li>
+<li><strong>Channel id:</strong> The Hypercore&#39;s <strong>discoveryKey</strong> (a keyed BLAKE2b-256 hash: <code>BLAKE2b-256(data=ascii(&quot;hypercore&quot;), key=core.key)</code> — the core key is the keyed-hash <em>key</em>, not the data being hashed. Using the core key directly would leak what data you&#39;re interested in.)</li>
 </ul>
 <p>The Hypercore replication protocol currently defines 10 message types on this channel:</p>
 <figure class="wp-block-table"><table>

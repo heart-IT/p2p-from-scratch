@@ -121,15 +121,15 @@ A **topic** is a 32-byte buffer — any 256-bit value. The DHT stores records at
 
 > **Gotcha:** `swarm.join(topic)` expects a `Buffer` of exactly 32 bytes. Pass a string — even a hex one — and `join()` throws, but with an unhelpful `TypeError` about `byteLength` rather than anything naming the topic. Pass a buffer that is *too short* and `join()` still hands you a session, but the announce never lands: the request copies your short buffer into a fixed 32-byte target slot and leaves the rest as whatever that allocation held, so the node asked to store the record verifies the signature against the padded target — which is not what you signed. It drops the request without replying, the announce times out, `flushed()` resolves `false`, and peers never find each other. A buffer *longer* than 32 bytes is worse still: it takes the process down with an uncaught `RangeError` from the query decoder. That `false` is the only clue you get. Derive topics deterministically: `crypto.hash(Buffer.from('my-app:my-room'))` — always 32 bytes — or reuse a Hypercore's `discoveryKey`.
 
-For Hypercore replication, the topic is the **discovery key** — a keyed BLAKE2b hash of the Hypercore's public key (from <a href="part-3-hypercore-merkle.md">Part 3</a>):
+For Hypercore replication, the topic is the **discovery key** — a keyed BLAKE2b hash of the Hypercore's key (from <a href="part-3-hypercore-merkle.md">Part 3</a>):
 
 ```
-discoveryKey = BLAKE2b-256(data = "hypercore", key = publicKey)
+discoveryKey = BLAKE2b-256(data = "hypercore", key = core.key)
 ```
 
-The public key is the BLAKE2b **key** (the keyed-hash parameter), and the string `"hypercore"` is the **data** being hashed. This means only someone who already knows the public key can compute the discovery key — the hash is keyed to the identity.
+The core key is the BLAKE2b **key** (the keyed-hash parameter), and the string `"hypercore"` is the **data** being hashed. That is `core.key` — the manifest hash, not the Ed25519 signing key — so hashing the signing key gives you a topic nobody is announcing on. Only someone who already knows the core key can compute the discovery key; the hash is keyed to the identity.
 
-This one-way derivation is critical for privacy. When you join a topic on the DHT, every routing node along the path sees the topic hash. If the topic were the raw public key, observers could learn which Hypercores you're interested in — and since the public key lets you verify the Ed25519 signatures that authenticate the Hypercore, your traffic patterns would reveal your data interests. With the discovery key, observers see only an opaque hash. You must already know the public key to compute the discovery key and find peers.
+This one-way derivation is critical for privacy. When you join a topic on the DHT, every routing node along the path sees the topic hash. If the topic were the raw core key, observers could learn which Hypercores you're interested in — and since that key is what lets you verify the signatures authenticating the Hypercore, your traffic patterns would reveal your data interests. With the discovery key, observers see only an opaque hash. You must already know the core key to compute the discovery key and find peers.
 
 > **Key Insight:** Discovery keys separate *findability* from *access*. The DHT enables finding peers, but doesn't grant read access to the data. A node routing your lookup query learns *that* you're looking for something, but not *what* that something is. This is a meaningful privacy win over systems where the content hash is the lookup key.
 
@@ -395,7 +395,7 @@ The DHT routes queries through nodes that are progressively closer (in XOR dista
 XOR distance is a bitwise operation that measures how "far apart" two node IDs are in the 256-bit keyspace. It is symmetric (distance A to B equals distance B to A) and satisfies the triangle inequality. Nodes that share more leading bits in their IDs are "closer" in XOR distance.
 
 ### What is a discovery key?
-A discovery key is a one-way hash of a Hypercore's public key (specifically, `BLAKE2b-256(data="hypercore", key=publicKey)`) that enables peer discovery without revealing what data you're looking for. Observers on the DHT see the opaque hash but cannot reverse it to determine which Hypercore is being replicated.
+A discovery key is a one-way hash of a Hypercore's key (specifically, `BLAKE2b-256(data="hypercore", key=core.key)`, where `core.key` is the manifest hash rather than the Ed25519 signing key) that enables peer discovery without revealing what data you're looking for. Observers on the DHT see the opaque hash but cannot reverse it to determine which Hypercore is being replicated.
 
 ---
 

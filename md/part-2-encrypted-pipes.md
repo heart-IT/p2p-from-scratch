@@ -275,7 +275,7 @@ Every Protomux channel has three phases:
 When you replicate a Hypercore, the replication protocol opens a Protomux channel with:
 
 - **Protocol name:** `'hypercore/alpha'`, registered with `'hypercore'` as an alias, so a peer that opens the channel under either name pairs with the same replication channel
-- **Channel id:** The Hypercore's **discoveryKey** (a keyed BLAKE2b-256 hash: `BLAKE2b-256(data=ascii("hypercore"), key=publicKey)` — the public key is the keyed-hash *key*, not the data being hashed. Using the public key directly would leak what data you're interested in.)
+- **Channel id:** The Hypercore's **discoveryKey** (a keyed BLAKE2b-256 hash: `BLAKE2b-256(data=ascii("hypercore"), key=core.key)` — the core key is the keyed-hash *key*, not the data being hashed. Using the core key directly would leak what data you're interested in.)
 
 The Hypercore replication protocol currently defines 10 message types on this channel:
 
