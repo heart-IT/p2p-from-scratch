@@ -116,7 +116,7 @@ Both Alice and Bob connect to <a href="https://github.com/holepunchto/hyperdht" 
 
 Alice wants to connect to Bob. She finds Bob's announcement in the DHT and sends a connection request. But she doesn't send it directly to Bob — she can't, because Bob's NAT would drop it. Instead, she sends it to DHT nodes that are closest to Bob's announcement.
 
-This is a key design choice: Hyperswarm doesn't rely on external STUN/TURN servers like WebRTC does. Instead, the DHT nodes handle signaling — NAT type detection (STUN's role) and holepunch coordination. If holepunching fails and you've told the swarm which peer to fall back to, a separate mechanism kicks in: **blind relays** (any willing peer, not DHT nodes specifically) relay the data (TURN's role). The protocol is different, but the jobs are the same. No single company controls the infrastructure.
+This is a key design choice: Hyperswarm doesn't rely on external STUN/TURN servers like WebRTC does. Instead, the DHT nodes handle signaling — each one reports the external `ip:port` it sees for you, which is the job STUN actually kept, and the same nodes relay the punch coordination. Turning those samples into the OPEN/CONSISTENT/RANDOM reading above happens on your own node, not theirs. If holepunching fails and you've told the swarm which peer to fall back to, a separate mechanism kicks in: **blind relays** (any willing peer, not DHT nodes specifically) relay the data (TURN's role). The protocol is different, but the jobs are the same. No single company controls the infrastructure.
 
 ### Step 3: The Simultaneous Send
 
