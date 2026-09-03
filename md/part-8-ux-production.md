@@ -13,7 +13,7 @@
 
 ---
 
-> **Verified against:** hypercore 11.35.2 · corestore 7.12.2 · hypercore-storage 3.2.1 · autobase 7.28.1 · hyperswarm 4.17.0 — checked 2026-09-03. Every constant, default and byte count in this post is asserted in [`verify/`](https://github.com/heart-IT/p2p-from-scratch-labs/tree/main/verify), which installs whatever Holepunch publishes today and fails if the stack has moved.
+> **Verified against:** hypercore 11.35.2 · corestore 7.12.2 · hypercore-storage 3.2.1 · autobase 7.28.1 · hyperswarm 4.17.0 · pear 3.3.0 · pear-runtime 1.3.1 — checked 2026-09-03. Every constant, default and byte count in this post is asserted in [`verify/`](https://github.com/heart-IT/p2p-from-scratch-labs/tree/main/verify), which installs whatever Holepunch publishes today and fails if the stack has moved.
 
 ## Quick Recap
 
